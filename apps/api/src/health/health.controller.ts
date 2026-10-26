@@ -3,6 +3,7 @@ import { ApiOkResponse, ApiServiceUnavailableResponse, ApiTags } from '@nestjs/s
 import { Public } from '../auth/decorators.js';
 import { PrismaService } from '../infra/prisma.service.js';
 import { RedisService } from '../infra/redis.service.js';
+import { SkipThrottle } from '../common/throttle.js';
 
 type CheckStatus = 'up' | 'down';
 
@@ -28,6 +29,7 @@ async function check(fn: () => Promise<void>): Promise<{ status: CheckStatus; la
 
 @ApiTags('health')
 @Public()
+@SkipThrottle()
 @Controller('health')
 export class HealthController {
   constructor(

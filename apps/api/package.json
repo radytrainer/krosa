@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config ./vitest.config.integration.ts",
-    "admin:create": "node dist/cli/create-admin.js"
+    "admin:create": "node dist/cli/create-admin.js",
+    "demo:seed": "node dist/cli/seed-demo.js"
   },
   "dependencies": {
     "@nestjs/common": "^12.2.0",

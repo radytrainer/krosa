@@ -1,9 +1,6 @@
 import type { NextConfig } from 'next';
 
-// Where the Next.js server forwards /api/* when no reverse proxy sits in front of it
-// (local development). In production Caddy routes /api directly to the API service.
-const apiInternalUrl = process.env.API_INTERNAL_URL ?? 'http://localhost:4000';
-
+// The Content-Security-Policy is set per request with a nonce in src/proxy.ts.
 const securityHeaders = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'X-Frame-Options', value: 'DENY' },
@@ -15,6 +12,12 @@ const nextConfig: NextConfig = {
   output: 'standalone',
   poweredByHeader: false,
   cacheComponents: true,
+  experimental: {
+    // Every page renders per request (the CSP nonce in src/proxy.ts needs it; see the root layout),
+    // so dev-time instant-navigation checks can't render any page and only report it as skipped.
+    // Validate only segments that opt in with `export const instant`. Pinned: the default may change.
+    instantInsights: { validationLevel: 'manual-warning' },
+  },
   partialPrefetching: true,
   turbopack: {
     rules: {
@@ -23,9 +26,6 @@ const nextConfig: NextConfig = {
         as: '*.css',
       },
     },
-  },
-  async rewrites() {
-    return [{ source: '/api/:path*', destination: `${apiInternalUrl}/api/:path*` }];
   },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];

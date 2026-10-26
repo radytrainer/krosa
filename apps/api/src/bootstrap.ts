@@ -25,7 +25,17 @@ export function configureApp(app: NestExpressApplication, env: ApiEnv): void {
     next();
   });
 
-  // Same-origin deployment: CORS stays disabled (see docs/security.md §3).
+  // Same-origin deployment: CORS stays disabled unless CORS_ORIGINS lists exact origins
+  // (docs/security.md §3). Never a wildcard: credentials are always involved.
+  if (env.CORS_ORIGINS.length > 0) {
+    app.enableCors({
+      origin: env.CORS_ORIGINS,
+      credentials: true,
+      allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Request-Id'],
+      exposedHeaders: ['X-Request-Id', 'Retry-After', 'X-Issued-Count', 'Content-Disposition'],
+      maxAge: 600,
+    });
+  }
   app.setGlobalPrefix(API_PREFIX);
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
 

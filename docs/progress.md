@@ -6,34 +6,64 @@ _Last updated: 2026-10-26_
 
 ## Phases
 
-| Phase                         | Status | Notes                                                                                                          |
-| ----------------------------- | ------ | -------------------------------------------------------------------------------------------------------------- |
-| 0 Requirements & architecture | ✅     | Docs; decisions A1 (hybrid) and A7 (no `EX`) adopted as defaults                                               |
-| 1 Repository & infrastructure | ✅     | Monorepo, api/worker/web skeletons, compose, health                                                            |
-| 2 Database & authentication   | ✅     | Full schema + constraints, auth, guards, audit, admin bootstrap CLI                                            |
-| 3 Academic management         | ✅     | Grading engine; generations/terms, courses/offerings, criteria, versioned schemes, student accounts, audit API |
-| 4 Google Sheets integration   | ✅     | `@ssrs/sheets` (URL, Google reader with retries, template parser, fakes); source registration + preview API    |
-| 5 Synchronization engine      | ✅     | `@ssrs/sync` engine, BullMQ worker + orphan recovery, sync API, bulk credential CSV                            |
-| 6 Student results API         | ✅     | Results assembler + version-keyed cache; `/student/me*`; admin student results; `EXPLAIN` checked              |
-| 7 Admin frontend              | ⬜     | Next                                                                                                           |
-| 8 Student frontend            | ⬜     |                                                                                                                |
-| 9 Security & performance      | ⬜     |                                                                                                                |
-| 10 Testing & deployment       | ⬜     |                                                                                                                |
+| Phase                         | Status | Notes                                                                                                                           |
+| ----------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| 0 Requirements & architecture | ✅     | Docs; decisions A1 (hybrid) and A7 (no `EX`) adopted as defaults                                                                |
+| 1 Repository & infrastructure | ✅     | Monorepo, api/worker/web skeletons, compose, health                                                                             |
+| 2 Database & authentication   | ✅     | Full schema + constraints, auth, guards, audit, admin bootstrap CLI                                                             |
+| 3 Academic management         | ✅     | Grading engine; generations/terms, courses/offerings, criteria, versioned schemes, student accounts, audit API                  |
+| 4 Google Sheets integration   | ✅     | `@ssrs/sheets` (URL, Google reader with retries, template parser, fakes); source registration + preview API                     |
+| 5 Synchronization engine      | ✅     | `@ssrs/sync` engine, BullMQ worker + orphan recovery, sync API, bulk credential CSV                                             |
+| 6 Student results API         | ✅     | Results assembler + version-keyed cache; `/student/me*`; admin student results; `EXPLAIN` checked                               |
+| 7 Admin frontend              | ✅     | All admin pages incl. scheme editor with live 100% total, credential issuance, sync center with polling; `GET /admin/dashboard` |
+| 8 Student frontend            | ✅     | Overview with term chart, results by term (tables → cards on mobile), course detail, profile, forced password change            |
+| 9 Security & performance      | ✅     | Nonce CSP, throttling, CORS/CSRF tests, route-policy test, log/Sentry scrubbing, sync run lease, orphan sweep, load test        |
+| 10 Testing & deployment       | ⬜     | Next                                                                                                                            |
 
 ## Requirement groups (see `requirements.md`)
 
-| Group       | Status | Notes                                                                                               |
-| ----------- | ------ | --------------------------------------------------------------------------------------------------- |
-| AUTH-01…12  | ✅     | AUTH-11 admin reset (temporary password, shown once, expiring, forced change) done in Phase 3       |
-| ACAD-01…06  | ✅     | Enrollments are written by sync (ACAD-05)                                                           |
-| CRIT-01…05  | ✅     | Add / rename / reorder / disable; key immutable; deactivation policy                                |
-| GRADE-01…10 | ✅     | Engine applied on read to raw marks + the PUBLISHED scheme (GRADE-08)                               |
-| GS-01…07    | ✅     | Live Google access not yet exercised: needs a service-account key (see Blocked)                     |
-| SYNC-01…12  | ✅     | All twelve covered by engine, worker and API integration tests                                      |
-| PROV-01…04  | ✅     | PENDING accounts with a locked hash; single and bulk (CSV) issuance; 14-day expiry                  |
-| STU-01…05   | 🟡     | STU-01…04 API ✅ (session identity, five terms, dynamic criteria, VISIBLE only). STU-05 UI: Phase 8 |
-| ADM pages   | 🟡     | APIs for generations, courses, criteria, schemes, students and audit ✅; UI in Phase 7              |
-| OBS-01…04   | 🟡     | OBS-01 auth events audited ✅; OBS-02 logs ✅; OBS-03 health ✅; OBS-04 Sentry in Phase 9           |
+| Group       | Status | Notes                                                                                                                      |
+| ----------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
+| AUTH-01…12  | ✅     | AUTH-11 admin reset (temporary password, shown once, expiring, forced change) done in Phase 3                              |
+| ACAD-01…06  | ✅     | Enrollments are written by sync (ACAD-05)                                                                                  |
+| CRIT-01…05  | ✅     | Add / rename / reorder / disable; key immutable; deactivation policy                                                       |
+| GRADE-01…10 | ✅     | Engine applied on read to raw marks + the PUBLISHED scheme (GRADE-08)                                                      |
+| GS-01…07    | ✅     | Live Google access not yet exercised: needs a service-account key (see Blocked)                                            |
+| SYNC-01…12  | ✅     | All twelve covered by engine, worker and API integration tests                                                             |
+| PROV-01…04  | ✅     | PENDING accounts with a locked hash; single and bulk (CSV) issuance; 14-day expiry                                         |
+| STU-01…05   | ✅     | API + UI. STU-05: responsive (checked at 390 px and 1280 px, no page overflow), labelled controls, status never color-only |
+| ADM pages   | ✅     | Every admin page from the plan                                                                                             |
+| OBS-01…04   | ✅     | OBS-04: Sentry in API and worker, off without `SENTRY_DSN`, all data collection disabled                                   |
+
+## Phase 9 verification (2026-10-26, actually executed)
+
+| Check                                                                                                                                                                                                                                                                                               | Result                                                                                                                               |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm build` / `pnpm typecheck` / `pnpm lint` (zero warnings) / `pnpm format:check`                                                                                                                                                                                                                 | ✅                                                                                                                                   |
+| `pnpm test` (unit)                                                                                                                                                                                                                                                                                  | ✅ 181: shared 51 (incl. Sentry scrubbing 3), sheets 80, sync 3, api 45 (incl. route policy 4, log redaction 2), worker 2            |
+| `pnpm test:integration`                                                                                                                                                                                                                                                                             | ✅ 143: database 20, sync engine 26 (incl. run lease 4), worker 3 (incl. periodic sweep 1), API 94 (incl. security 7, concurrency 2) |
+| Throttling: global per-IP limit with `Retry-After`, health exempt; refresh 30/min per IP; credentials 20/min per admin shared by bulk and single                                                                                                                                                    | ✅                                                                                                                                   |
+| CSRF: missing / foreign Origin rejected, Referer fallback, other session's token rejected; CORS only for `CORS_ORIGINS`                                                                                                                                                                             | ✅                                                                                                                                   |
+| Route policy: every route has exactly one policy; `/admin` → ADMIN, `/student` → STUDENT; public surface fixed. Mutation check: removing `@Public()` from health fails the test                                                                                                                     | ✅                                                                                                                                   |
+| Concurrency: 6 simultaneous sync requests → one 202, five 409, one job row. Same job delivered twice at once → **found a bug** (ran twice); fixed with a run lease, now one run + one `busy`                                                                                                        | ✅                                                                                                                                   |
+| CSP in the browser (production build): nonce differs per request, full admin + student flow with zero CSP violations; dev server (port 3000) also violation-free. SRI-only policy tried first: blocked Next's inline scripts, page dead                                                             | ✅                                                                                                                                   |
+| Migration `20261026150000_sync_job_lease` applied; `prisma migrate diff` database → schema empty                                                                                                                                                                                                    | ✅                                                                                                                                   |
+| Load test (`scripts/load-test.mjs`, autocannon, 50 connections × 20 s, 4,000 students × 40 offerings, one API process on the dev machine): A cached `/student/me/results` 471 req/s, p50 97 ms, p99 254 ms; B uncached admin results over 1,000 students 78 req/s, p50 622 ms, p99 899 ms; 0 errors | ✅                                                                                                                                   |
+
+## Phases 7–8 verification (2026-10-26, actually executed)
+
+| Check                                                                                                                                                                                                                                   | Result                                                                    |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `pnpm build` (8/8, web: 21 routes) / `pnpm typecheck` / `pnpm lint` (zero warnings) / `pnpm format:check`                                                                                                                               | ✅                                                                        |
+| `pnpm test` (unit)                                                                                                                                                                                                                      | ✅ 172 (unchanged)                                                        |
+| `pnpm test:integration`                                                                                                                                                                                                                 | ✅ 129: database 20, sync engine 22, worker 2, API 85 (incl. dashboard 1) |
+| Browser run (Playwright driving installed Edge, production build, separate API on the test database, seeded demo data)                                                                                                                  | ✅ see below                                                              |
+| Admin: wrong password message; dashboard counts; generation detail; offerings; scheme editor shows 95% → publish disabled, 100% → published v1; criteria reorder; issue password (shown once); sync center, audit log, catalog, account | ✅                                                                        |
+| Student: temporary password → forced change; weak password rejected by the API policy; overview with chart and table view; results by term; hidden course absent; course detail                                                         | ✅                                                                        |
+| Access: student opening `/admin/*` is sent to `/student`; student calling an admin API → 403; after sign-out the API returns 401                                                                                                        | ✅                                                                        |
+| Mobile 390 px: navigation menu, results as cards, admin lists; horizontal page overflow 0 px                                                                                                                                            | ✅                                                                        |
+| No password text left in kept-alive pages after sign-in or sign-out; no 5xx and no unexpected 4xx during the run                                                                                                                        | ✅                                                                        |
+| Chart color validated with the dataviz palette checker against both surfaces                                                                                                                                                            | ✅                                                                        |
 
 ## Phase 6 verification (2026-10-26, actually executed)
 
@@ -100,15 +130,15 @@ _Last updated: 2026-10-26_
 - Graceful SIGTERM shutdown of api/worker is wired but cannot be exercised on Windows; verified in
   Linux containers in Phase 10.
 - Dockerfiles, `docker-compose.prod.yml`, Caddy and GitHub Actions: Phase 10.
+- The browser run above used a throwaway script; a committed Playwright suite is Phase 10.
 - Results summaries count only ENROLLED courses; withdrawn ones appear in the admin view only.
-- Global request throttling (`@nestjs/throttler`) and the route-metadata coverage test: Phase 9.
-  Login/change-password limiting and deny-by-default `RolesGuard` are already active.
 - If Redis is down when a session is revoked, its access token stays valid until expiry
   (≤ 15 min); the error is logged. Revocation checks themselves fall back to PostgreSQL.
-- Web: the API client handles CSRF + one-shot refresh; login pages and route protection arrive
-  with the frontends (Phases 7–8).
-- A RUNNING job whose worker dies after BullMQ has given up on it is marked `WORKER_LOST` at the next
-  worker start; there is no periodic sweeper while a worker keeps running (planned for Phase 9).
+- A duplicate delivery that arrives while a crashed worker's lease (≤ 2 min) has not expired yet is
+  completed as `BUSY`; the job then stays RUNNING until the orphan sweep (≤ 5 min) marks it
+  `WORKER_LOST`, and an admin retries it. Rare: it needs a crash and a fast redelivery together.
+- Per-request rendering (for the CSP nonce) costs a server render per page view. Fine for this
+  traffic; revisit if pages ever move behind a CDN.
 - Local machine: `POSTGRES_PORT=5433` (5432 is taken by another project); compose project name
   `student-score-system`.
 
@@ -116,7 +146,7 @@ _Last updated: 2026-10-26_
 
 - Windows 11, Node 22.17.0, npm 11.7.0, pnpm 11.20.0, Docker 29.9.2, Compose v5.6.1, Git 2.42.
 - PostgreSQL 17 and Redis 7.4 run in Docker.
-- Git repository initialised (`main`), nothing committed yet.
+- Git repository on `main`; Phases 0–6 committed by the user (`initial krosa`, `api`).
 
 ## Open questions
 

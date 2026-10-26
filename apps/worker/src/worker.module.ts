@@ -1,5 +1,5 @@
 import { Module, type DynamicModule } from '@nestjs/common';
-import { createSheetsReaderFromEnv } from '@ssrs/sheets';
+import { createSheetsReader } from '@ssrs/sheets';
 import { LoggerModule } from 'nestjs-pino';
 import { WORKER_ENV, type WorkerEnv } from './config/env.js';
 import { HeartbeatService } from './heartbeat/heartbeat.service.js';
@@ -31,7 +31,7 @@ export class WorkerModule {
       ],
       providers: [
         { provide: WORKER_ENV, useValue: env },
-        { provide: SHEETS_READER, useFactory: () => createSheetsReaderFromEnv(env) },
+        { provide: SHEETS_READER, useFactory: () => createSheetsReader(env) },
         PrismaService,
         RedisService,
         HeartbeatService,

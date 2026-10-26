@@ -2,7 +2,10 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
+import { Toaster } from '@/components/ui/sonner';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { ApiError } from '@/lib/api';
+import { AuthProvider } from '@/lib/auth';
 
 function makeQueryClient(): QueryClient {
   return new QueryClient({
@@ -20,5 +23,12 @@ function makeQueryClient(): QueryClient {
 
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(makeQueryClient);
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <TooltipProvider>{children}</TooltipProvider>
+        <Toaster position="top-right" richColors closeButton />
+      </AuthProvider>
+    </QueryClientProvider>
+  );
 }

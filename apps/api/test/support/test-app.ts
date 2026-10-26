@@ -30,7 +30,7 @@ export interface TestContext {
   close(): Promise<void>;
 }
 
-function testEnv(): ApiEnv {
+function testEnv(overrides: Record<string, string> = {}): ApiEnv {
   loadRootEnv();
   const dbUrl = process.env['TEST_DATABASE_URL'];
   const redisUrl = process.env['TEST_REDIS_URL'];
@@ -48,16 +48,21 @@ function testEnv(): ApiEnv {
     JWT_ACCESS_SECRET: 'integration-test-secret-integration-test-secret',
     SWAGGER_ENABLED: 'false',
     COOKIE_SECURE: 'false',
+    // High enough that ordinary suites never hit the global limit; throttling tests lower it.
+    RATE_LIMIT_PER_MINUTE: '10000',
+    ...overrides,
   });
 }
 
 export interface TestAppOptions {
   /** Replaces the Google Sheets reader (defaults to an empty in-memory reader). */
   sheetsReader?: SheetsReader;
+  /** Environment overrides, e.g. `{ RATE_LIMIT_PER_MINUTE: '20' }`. */
+  env?: Record<string, string>;
 }
 
 export async function createTestApp(options: TestAppOptions = {}): Promise<TestContext> {
-  const env = testEnv();
+  const env = testEnv(options.env);
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule.forRoot(env)],
     controllers: [TestRoutesController],

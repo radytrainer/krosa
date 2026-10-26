@@ -514,6 +514,66 @@ describe('failures before anything is written', () => {
   });
 });
 
+describe('run lease', () => {
+  it('lets only one of two simultaneous deliveries run, and releases the lease', async () => {
+    const job = await newJob();
+    const outcomes = await Promise.all([
+      runSourceSync({ prisma, reader }, job.id, ONCE),
+      runSourceSync({ prisma, reader }, job.id, ONCE),
+    ]);
+    expect(outcomes.map((o) => o.kind).toSorted()).toEqual(['busy', 'finished']);
+    const row = await prisma.syncJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(row).toMatchObject({ status: 'SUCCEEDED', leaseToken: null, leaseExpiresAt: null });
+    expect(
+      await prisma.auditLog.count({ where: { entityId: job.id, action: 'sync.completed' } }),
+    ).toBe(1);
+    expect(await prisma.assessmentScoreRevision.count()).toBe(29);
+  });
+
+  it('does not touch a job whose lease is held by a live run', async () => {
+    const job = await newJob();
+    await prisma.syncJob.update({
+      where: { id: job.id },
+      data: {
+        status: 'RUNNING',
+        leaseToken: crypto.randomUUID(),
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    expect(await runSourceSync({ prisma, reader }, job.id, ONCE)).toEqual({ kind: 'busy' });
+    expect(await prisma.student.count()).toBe(0);
+  });
+
+  it('takes over a job whose lease expired (the worker died)', async () => {
+    const job = await newJob();
+    await prisma.syncJob.update({
+      where: { id: job.id },
+      data: {
+        status: 'RUNNING',
+        phase: 'APPLY',
+        leaseToken: crypto.randomUUID(),
+        leaseExpiresAt: new Date(Date.now() - 1_000),
+      },
+    });
+    const outcome = await runSourceSync({ prisma, reader }, job.id, ONCE);
+    expect(outcome).toEqual({ kind: 'finished', status: 'SUCCEEDED' });
+    expect(await prisma.student.count()).toBe(3);
+  });
+
+  it('releases the lease when asking for a retry, so the next attempt can run', async () => {
+    reader.fail(ID, 'GOOGLE_UNAVAILABLE');
+    const job = await newJob();
+    const first = await runSourceSync({ prisma, reader }, job.id, { attempt: 1, maxAttempts: 3 });
+    expect(first.kind).toBe('retry');
+    expect(
+      (await prisma.syncJob.findUniqueOrThrow({ where: { id: job.id } })).leaseToken,
+    ).toBeNull();
+    reader.set(ID, workbookFixture('GEN2026'));
+    const second = await runSourceSync({ prisma, reader }, job.id, { attempt: 2, maxAttempts: 3 });
+    expect(second).toEqual({ kind: 'finished', status: 'SUCCEEDED' });
+  });
+});
+
 describe('multi-source parent jobs', () => {
   it('aggregates children honestly', async () => {
     const parent = await prisma.syncJob.create({

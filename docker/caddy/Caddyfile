@@ -1,0 +1,31 @@
+# Reverse proxy and TLS (docs/deployment.md). SITE_ADDRESS is the public host name, e.g.
+# scores.example.edu; Caddy obtains and renews its certificate automatically (Let's Encrypt).
+{
+	email {$ACME_EMAIL}
+}
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+		-Via
+	}
+
+	# The API serves /api/v1/*; Swagger stays off in production (SWAGGER_ENABLED=false).
+	handle /api/* {
+		reverse_proxy api:4000 {
+			header_up X-Request-Id {http.request.uuid}
+		}
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

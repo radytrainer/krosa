@@ -59,12 +59,13 @@
      cookie, because the access token may already have expired.
 - A refresh that fails CSRF does **not** clear cookies, so a forged request can't log the victim out.
 - CORS: disabled by default (same origin). If `CORS_ORIGINS` is set, only those exact origins with
-  `credentials: true`; never `*`.
+  `credentials: true`; never `*` (rejected at startup). The CSRF Origin check accepts the same list.
+  Verified by `apps/api/test/security.integration-spec.ts`.
 
 ## 4. Authorization
 
-- Global guards order: Throttler → JwtAuth (skipped for `@Public()`) → MustChangePassword →
-  Roles → Csrf.
+- Global guards order: IpThrottle → Auth (skipped for `@Public()`) → UserThrottle → Csrf →
+  MustChangePassword → Roles.
 - Controllers under `/admin/*` carry `@Roles('ADMIN')` at class level; `/student/*` carry
   `@Roles('STUDENT')`. A unit test walks Nest's route metadata to fail CI if any non-public route
   lacks a role decorator.
@@ -83,26 +84,45 @@ needs them only for registration checks.
 
 - HTTPS terminated by Caddy (automatic Let's Encrypt), HSTS 1 year.
 - API: Helmet defaults, `Cache-Control: no-store` on all authenticated responses.
-- Web: CSP (`default-src 'self'`; scripts via nonce), `frame-ancestors 'none'`,
-  `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy` minimal.
+- Web: CSP set per request in `apps/web/src/proxy.ts`: `script-src 'self' 'nonce-…' 'strict-dynamic'`
+  (fresh nonce per request; Next.js stamps it on its own scripts), `style-src 'self' 'unsafe-inline'`
+  (toast and chart libraries inject `<style>` at runtime), `object-src 'none'`, `base-uri 'self'`,
+  `form-action 'self'`, `frame-ancestors 'none'`, `connect-src 'self'`. Because a nonce only exists at
+  request time, pages are rendered per request (root layout: `connection()` + `instant = false`); a
+  prerendered shell would carry no nonce. Subresource Integrity alone was tried and rejected: it
+  covers script files but not the inline scripts Next.js uses to stream page data. Plus
+  `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`
+  minimal, `X-Content-Type-Options: nosniff`.
 
 ## 7. Rate limiting
 
-Implemented in Phase 2: Redis fixed-window counters for `/auth/login` (10/min per IP, 5/min per
-identifier, with the identifier hashed in the key) and `/auth/change-password` (5/min per user). If Redis
-is unavailable these limiters fail **open**, and the database-backed account lockout still protects
-accounts. The global limits below arrive with `@nestjs/throttler` in Phase 9.
+Redis fixed-window counters (`RateLimiter`), keyed by a hash of the subject so raw usernames and IPs
+never sit in Redis. If Redis is unavailable every limiter fails **open**; the database-backed account
+lockout still protects accounts. Responses: 429 `RATE_LIMITED` with `Retry-After`.
 
-`@nestjs/throttler` with Redis storage: global 300 req/min/IP; `/auth/login` 10/min/IP and
-5/min/identifier; `/auth/refresh` 30/min/IP; credential issuance/reset 20/min/admin;
-`POST /admin/sync` 10/min/admin.
+| Scope                                        | Limit                               | Where                                                       |
+| -------------------------------------------- | ----------------------------------- | ----------------------------------------------------------- |
+| Every request, per client IP                 | 300/min (`RATE_LIMIT_PER_MINUTE`)   | `IpThrottleGuard`, before authentication; `/health*` exempt |
+| `/auth/login`                                | 10/min per IP, 5/min per identifier | `AuthService`                                               |
+| `/auth/refresh`                              | 30/min per IP                       | `@Throttle` (IP guard)                                      |
+| `/auth/change-password`                      | 5/min per user                      | `AuthService`                                               |
+| Credential issuance + resets (shared budget) | 20/min per admin                    | `@Throttle` (user guard, after authentication)              |
+| `POST /admin/sync`                           | 10/min per admin                    | `SyncService`                                               |
+
+The plan named `@nestjs/throttler`; the project's own limiter was extended instead (one mechanism,
+same fail-open behaviour, no extra storage adapter). Route limits are declared with
+`@Throttle({ bucket, perIp?, perUser? })`. Client IPs honour `TRUST_PROXY_HOPS`.
 
 ## 8. Logging, audit, monitoring
 
 - `nestjs-pino` JSON logs, `requestId` (from `X-Request-Id` or generated) on every line; worker logs
   carry `syncJobId`. Redaction: `req.headers.cookie`, `req.headers.authorization`, `*.password`,
   `*.newPassword`, `*.currentPassword`, `*.temporaryPassword`, `*.token`, `*.privateKey`.
-- Sentry: `sendDefaultPii: false`; `beforeSend` strips cookies, headers, request bodies.
+- Sentry (`@ssrs/shared/node`, API 5xx that are not deliberate HTTP errors, worker final failures):
+  off unless `SENTRY_DSN` is set. Sentry 11 collects request data and **stack-frame local
+  variables** by default; every `dataCollection` option is turned off (a frame of the password
+  service would otherwise carry the plain password). `beforeSend` keeps only the request method and
+  path; HTTP breadcrumbs are dropped; no tracing.
 - Audit logs: append-only, metadata via allowlisted fields, retained 3 years (configurable).
   Only admins can read them.
 

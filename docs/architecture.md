@@ -34,7 +34,7 @@ pnpm workspaces + Turborepo.
 ```
 student-score-system/            (repository root = this folder)
   apps/
-    web/                         Next.js App Router, Tailwind, shadcn/ui, TanStack Query, RHF + Zod
+    web/                         Next.js App Router, Tailwind, shadcn/ui (Base UI), TanStack Query, Recharts
     api/                         NestJS REST API (/api/v1), Swagger at /api/docs (disabled in prod by default)
     worker/                      NestJS application context hosting BullMQ processors
   packages/
@@ -136,10 +136,18 @@ never `SUCCEEDED`.
 source. Each child commits independently. When a child finishes, the parent is recomputed under a row
 lock: all succeeded → SUCCEEDED, all failed → FAILED, otherwise SUCCEEDED_WITH_ERRORS.
 
+**One run at a time.** `runSourceSync` first claims a lease on the job row (an atomic update that only
+succeeds when `lease_expires_at` is empty or past), renews it every 40 s and clears it at the end. BullMQ
+can deliver the same job twice (it redelivers a job whose lock it believes lost); the second delivery
+gets `busy`, writes nothing and completes. A crashed worker's lease expires after 2 minutes, matching
+BullMQ's lock duration, so a redelivery can take over.
+
 **Recovery.** BullMQ stalled-job detection re-delivers jobs whose worker died mid-run, and the engine
-restarts them idempotently. At worker startup, `recoverOrphans` re-enqueues QUEUED jobs that Redis
-doesn't know about and marks RUNNING jobs that the queue no longer tracks as FAILED (`WORKER_LOST`,
-retryable). On SIGTERM, `worker.close()` lets active jobs finish.
+restarts them idempotently. `recoverOrphans` re-enqueues QUEUED jobs that Redis doesn't know about and
+marks RUNNING jobs that the queue no longer tracks as FAILED (`WORKER_LOST`, retryable). It runs at
+worker startup and then every `ORPHAN_SWEEP_INTERVAL_MS` (5 min), ignoring jobs younger than 2 minutes
+so a job recorded by the API but not yet enqueued is never touched. On SIGTERM, `worker.close()` lets
+active jobs finish.
 
 **Progress.** `phase` and `progress_current/total` (roster + one step per course) are written to
 `sync_jobs` as the job advances. The admin UI polls `GET /admin/sync/:jobId`.
@@ -159,7 +167,31 @@ cached. The generation version counter is incremented after any sync commit, sch
 visibility change, offering/criterion/term/generation edit shown to students, or score correction
 affecting that generation, so stale entries are never read and simply expire.
 
-## 7. Technology versions (verified against the npm registry, 2026-10-26)
+## 7. Web app (`apps/web`)
+
+- **Routes.** `/login`, `/change-password` (forced after a temporary password), `/admin/*` (dashboard,
+  generations, sources, offerings with criteria and the scheme editor, course catalog, students,
+  sync center and job pages, audit log, account) and `/student/*` (overview with term chart,
+  results by term, course detail, profile).
+- **Access.** The API enforces every rule. On the web side, `src/proxy.ts` redirects visitors without
+  the `ssrs_csrf` cookie to `/login` (session cookies are scoped to `/api`, so the proxy cannot see
+  them), and `useRequireRole` in the portal layouts routes users by `/auth/me` (sign-in, forced
+  password change, or their own portal). Pages render client-side after that check.
+- **Data.** `src/lib/api.ts` sends same-origin requests with the CSRF header and refreshes an expired
+  access token once. `useApi` keys queries by path segments, so invalidating `/admin/offerings`
+  refreshes every offering query. Response types for results come from `@ssrs/shared`.
+- **Forms** are plain HTML forms with native constraints for quick feedback; the API's validation
+  errors (`details[].field`) are shown next to the fields. No client-side copy of the rules.
+- **Rendering and CSP.** `proxy.ts` sets a Content-Security-Policy with a fresh nonce per request, so
+  pages are rendered per request (root layout: `connection()` + `instant = false`) instead of being
+  served from a prerendered shell, which could not carry the nonce. See docs/security.md §6.
+- **Kept-alive pages.** With Cache Components, Next keeps visited pages mounted but hidden. Forms that
+  hold passwords reset themselves after success, and signing out does a full page load to `/login`
+  so nothing of the previous user's data stays in the tab (shared computers).
+- **Lists** keep their filters in the URL (`useUrlState`), so dashboard links such as
+  `/admin/students?status=PENDING` open pre-filtered.
+
+## 8. Technology versions (verified against the npm registry, 2026-10-26)
 
 | Area         | Choice                                                                                                                                       | Notes                                                                                                            |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
@@ -176,7 +208,7 @@ affecting that generation, so stale entries are never read and simply expire.
 Prisma's generated client lives in `packages/database/src/generated/` (git-ignored), built with
 `moduleFormat = "esm"` and `importFileExtension = "js"` so that it compiles under `nodenext`.
 
-## 8. Environments
+## 9. Environments
 
 | Env        | Notes                                                                                                                                                                                                 |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

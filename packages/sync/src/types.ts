@@ -108,4 +108,6 @@ export interface RunOptions {
 export type RunOutcome =
   | { kind: 'finished'; status: 'SUCCEEDED' | 'SUCCEEDED_WITH_ERRORS' | 'FAILED' | 'CANCELLED' }
   /** Transient failure before any write: the caller should let the queue retry. */
-  | { kind: 'retry'; code: string; message: string };
+  | { kind: 'retry'; code: string; message: string }
+  /** Another delivery of this job is running right now; nothing was done. */
+  | { kind: 'busy' };

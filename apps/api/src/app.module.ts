@@ -8,6 +8,7 @@ import type { ApiEnv } from './config/env.js';
 import { EnvModule } from './config/env.module.js';
 import { CoursesModule } from './courses/courses.module.js';
 import { CriteriaModule } from './criteria/criteria.module.js';
+import { DashboardModule } from './dashboard/dashboard.module.js';
 import { GenerationsModule } from './generations/generations.module.js';
 import { GradingSchemesModule } from './grading-schemes/grading-schemes.module.js';
 import { HealthModule } from './health/health.module.js';
@@ -38,6 +39,7 @@ export class AppModule {
         ResultsModule,
         SheetsSourcesModule,
         SyncModule,
+        DashboardModule,
       ],
     };
   }

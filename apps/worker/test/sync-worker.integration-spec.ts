@@ -13,7 +13,7 @@ import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import { loadWorkerEnv } from '../src/config/env.js';
 import { PrismaService } from '../src/infra/prisma.service.js';
-import { SHEETS_READER } from '../src/sync/sync.processor.js';
+import { SHEETS_READER, SWEEP_GRACE_MS, SyncProcessor } from '../src/sync/sync.processor.js';
 import { WorkerModule } from '../src/worker.module.js';
 
 const TERMINAL: SyncStatus[] = ['SUCCEEDED', 'SUCCEEDED_WITH_ERRORS', 'FAILED', 'CANCELLED'];
@@ -149,5 +149,41 @@ describe('Sync worker (integration)', () => {
     expect(lostAfter).toMatchObject({ status: 'FAILED', failureCode: 'WORKER_LOST' });
     const waitingAfter = await waitForTerminal(waiting.id);
     expect(waitingAfter.status).toBe('SUCCEEDED');
+  });
+
+  it('sweeps orphans while running, but leaves jobs younger than the grace period alone', async () => {
+    await startWorker();
+    await seed();
+    const old = await prisma.syncJob.create({
+      data: {
+        scope: 'SOURCE',
+        sourceId: (await createSource('1OldOrphanSpreadsheet000000000000000000')).id,
+        requestedById: adminId,
+        status: 'RUNNING',
+        startedAt: new Date(),
+        queuedAt: new Date(Date.now() - SWEEP_GRACE_MS - 60_000),
+      },
+    });
+    // Just recorded by the API and not yet enqueued: must not be touched.
+    const young = await prisma.syncJob.create({
+      data: {
+        scope: 'SOURCE',
+        sourceId: (await createSource('1YoungJobSpreadsheet0000000000000000000')).id,
+        requestedById: adminId,
+      },
+    });
+
+    const result = await worker!
+      .get(SyncProcessor)
+      .recoverOrphans(redis, { olderThanMs: SWEEP_GRACE_MS });
+    expect(result).toEqual({ requeued: 0, failed: 1 });
+    expect(await prisma.syncJob.findUniqueOrThrow({ where: { id: old.id } })).toMatchObject({
+      status: 'FAILED',
+      failureCode: 'WORKER_LOST',
+    });
+    expect((await prisma.syncJob.findUniqueOrThrow({ where: { id: young.id } })).status).toBe(
+      'QUEUED',
+    );
+    expect(await queue.getJob(young.id)).toBeUndefined();
   });
 });

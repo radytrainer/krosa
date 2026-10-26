@@ -6,6 +6,6 @@ import { SyncService } from './sync.service.js';
 @Module({
   controllers: [SyncController],
   providers: [SyncQueueService, SyncService],
-  exports: [SyncQueueService],
+  exports: [SyncQueueService, SyncService],
 })
 export class SyncModule {}

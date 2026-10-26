@@ -57,4 +57,17 @@ describe('loadApiEnv', () => {
       loadApiEnv({ ...base, NODE_ENV: 'production', WEB_ORIGIN: 'https://scores.example.edu' }),
     ).toMatchObject({ COOKIE_SECURE: true });
   });
+
+  it('allows the fixture test mode only outside production', () => {
+    expect(loadApiEnv({ ...base, SHEETS_TEST_MODE: 'fixtures' }).SHEETS_TEST_MODE).toBe('fixtures');
+    expect(() =>
+      loadApiEnv({
+        ...base,
+        NODE_ENV: 'production',
+        WEB_ORIGIN: 'https://scores.example.edu',
+        SHEETS_TEST_MODE: 'fixtures',
+      }),
+    ).toThrow(/SHEETS_TEST_MODE/);
+    expect(() => loadApiEnv({ ...base, SHEETS_TEST_MODE: 'google' })).toThrow(EnvValidationError);
+  });
 });

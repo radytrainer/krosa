@@ -123,6 +123,37 @@ describe('Synchronization API (integration)', () => {
     await admin.post(`${V1}/sync`, { scope: 'SOURCE', sourceId }).expect(202);
   });
 
+  it('accepts exactly one of many simultaneous sync requests for a source', async () => {
+    const responses = await Promise.all(
+      Array.from({ length: 6 }, () => admin.post(`${V1}/sync`, { scope: 'SOURCE', sourceId })),
+    );
+    const statuses = responses.map((r) => r.status).toSorted();
+    expect(statuses).toEqual([202, 409, 409, 409, 409, 409]);
+    const accepted = responses.find((r) => r.status === 202)!.body.jobId as string;
+    for (const r of responses.filter((x) => x.status === 409)) {
+      expect(r.body.error).toMatchObject({ code: 'SYNC_IN_PROGRESS', jobId: accepted });
+    }
+    // The partial unique index allows one unfinished job per source; the losers left no rows.
+    expect(await ctx.prisma.syncJob.count({ where: { sourceId } })).toBe(1);
+  });
+
+  it('applies a job once even when it is delivered twice at the same time', async () => {
+    const jobId = (await admin.post(`${V1}/sync`, { scope: 'SOURCE', sourceId }).expect(202)).body
+      .jobId as string;
+    const outcomes = await Promise.all([runJob(jobId), runJob(jobId)]);
+    // One run holds the lease; the other backs off without writing anything.
+    expect(outcomes.map((o) => o.kind).toSorted()).toEqual(['busy', 'finished']);
+    expect(
+      await ctx.prisma.auditLog.count({ where: { action: 'sync.completed', entityId: jobId } }),
+    ).toBe(1);
+    const done = await ctx.prisma.syncJob.findUniqueOrThrow({ where: { id: jobId } });
+    expect(done.status).toBe('SUCCEEDED');
+    // No duplicates: one row per student and mark, one creation revision per mark.
+    expect(await ctx.prisma.student.count()).toBe(3);
+    expect(await ctx.prisma.assessmentScore.count()).toBe(29);
+    expect(await ctx.prisma.assessmentScoreRevision.count()).toBe(29);
+  });
+
   it('exposes row-level errors and retries failed jobs as new jobs', async () => {
     const broken = cloneSpreadsheet(workbookFixture('GEN2026'));
     broken.tabs['T1 Math']![2]![2] = 11;

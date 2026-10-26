@@ -15,7 +15,8 @@
   },
   "files": [
     "dist",
-    "prisma"
+    "prisma",
+    "prisma7.config.ts"
   ],
   "scripts": {
     "generate": "prisma generate",

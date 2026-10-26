@@ -1,0 +1,20 @@
+{
+  "name": "@ssrs/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "@ssrs/config": "workspace:*",
+    "@ssrs/database": "workspace:*",
+    "@ssrs/shared": "workspace:*",
+    "@ssrs/sheets": "workspace:*",
+    "@types/node": "^22.20.5",
+    "ioredis": "^6.0.0",
+    "typescript": "~6.0.3"
+  }
+}

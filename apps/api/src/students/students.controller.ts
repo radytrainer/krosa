@@ -24,6 +24,10 @@ import {
   UpdateStudentStatusDto,
 } from './students.dto.js';
 import { StudentsService } from './students.service.js';
+import { Throttle } from '../common/throttle.js';
+
+/** Bulk issuance and single resets share one budget per admin (docs/security.md §7). */
+const CREDENTIALS_LIMIT = { bucket: 'credentials', perUser: { limit: 20, windowSeconds: 60 } };
 
 @ApiTags('admin: students')
 @ApiCookieAuth()
@@ -45,6 +49,7 @@ export class StudentsController {
    * passwords exist in plain text; the response is never cached (Cache-Control: no-store).
    */
   @Post('issue-credentials')
+  @Throttle(CREDENTIALS_LIMIT)
   @HttpCode(HttpStatus.OK)
   @ApiProduces('text/csv')
   @ApiOkResponse({
@@ -86,6 +91,7 @@ export class StudentsController {
 
   /** Returns the temporary password once. Responses are `Cache-Control: no-store`. */
   @Post(':id/reset-password')
+  @Throttle(CREDENTIALS_LIMIT)
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ description: '{ studentCode, temporaryPassword, expiresAt }; shown only once' })
   resetPassword(

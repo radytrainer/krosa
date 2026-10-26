@@ -1,5 +1,9 @@
 import { GoogleSheetsReader } from './google-reader.js';
-import { createSheetsReaderFromEnv, NotConfiguredSheetsReader } from './reader-factory.js';
+import {
+  createSheetsReader,
+  createSheetsReaderFromEnv,
+  NotConfiguredSheetsReader,
+} from './reader-factory.js';
 
 describe('createSheetsReaderFromEnv', () => {
   it('returns a not-configured reader without credentials', async () => {
@@ -26,5 +30,24 @@ describe('createSheetsReaderFromEnv', () => {
         GOOGLE_PRIVATE_KEY: 'k',
       }),
     ).toThrow(/either/);
+  });
+});
+
+describe('createSheetsReader', () => {
+  it('serves the fixture workbook in test mode', async () => {
+    const { FIXTURE_SPREADSHEET_ID } = await import('./testing/index.js');
+    const reader = await createSheetsReader({ SHEETS_TEST_MODE: 'fixtures' });
+    const meta = await reader.getMetadata(FIXTURE_SPREADSHEET_ID);
+    expect(meta.title).toContain('GEN2026');
+  });
+
+  it('refuses test mode in production', async () => {
+    await expect(
+      createSheetsReader({ NODE_ENV: 'production', SHEETS_TEST_MODE: 'fixtures' }),
+    ).rejects.toThrow(/production/);
+  });
+
+  it('uses the configured Google reader otherwise', async () => {
+    expect(await createSheetsReader({})).toBeInstanceOf(NotConfiguredSheetsReader);
   });
 });

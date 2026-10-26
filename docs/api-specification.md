@@ -236,10 +236,10 @@ Apply-time issue codes: `STUDENT_IN_OTHER_GENERATION`, `STUDENT_ID_CONFLICT`, `O
 
 ### Admin accounts & audit
 
-| Method | Path              | Description                                                                                                              |
-| ------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| GET    | /admin/audit-logs | ✅ paginated; filters `action` (exact, or a prefix ending in `.`), `actorUserId`, `entityType`, `entityId`, `from`, `to` |
-| GET    | /admin/dashboard  | counts: generations, students, pending accounts, recent jobs, failed jobs                                                |
+| Method | Path              | Description                                                                                                                                                                                                                                    |
+| ------ | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | /admin/audit-logs | ✅ paginated; filters `action` (exact, or a prefix ending in `.`), `actorUserId`, `entityType`, `entityId`, `from`, `to`                                                                                                                       |
+| GET    | /admin/dashboard  | ✅ `{ generations { active, archived }, students { total, pending, active, disabled }, sources { active, disabled }, offerings { total, visible, withoutPublishedScheme }, jobs { active, failedRecently, failedWindowDays }, recentJobs[5] }` |
 
 ## 5. Health
 

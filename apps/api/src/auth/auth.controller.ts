@@ -41,6 +41,7 @@ import {
 } from './decorators.js';
 import { ChangePasswordDto, LoginDto, type MeResponse } from './dto.js';
 import { TokenService } from './token.service.js';
+import { Throttle } from '../common/throttle.js';
 
 function csrfHeader(req: Request): string | undefined {
   const value = req.headers[CSRF_HEADER];
@@ -76,6 +77,7 @@ export class AuthController {
   }
 
   @Post('refresh')
+  @Throttle({ bucket: 'refresh', perIp: { limit: 30, windowSeconds: 60 } })
   @Public()
   @SkipCsrfToken()
   @HttpCode(HttpStatus.NO_CONTENT)

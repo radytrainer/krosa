@@ -507,6 +507,10 @@ model SyncJob {
   failureCode     String?    @map("failure_code")
   failureMessage  String?    @map("failure_message")
   retryOfId       String?    @map("retry_of_id") @db.Uuid
+  /// Run lease: the worker currently executing the job. A second delivery of the same job
+  /// cannot claim it until the lease is released or expires (crashed worker).
+  leaseToken      String?    @map("lease_token") @db.Uuid
+  leaseExpiresAt  DateTime?  @map("lease_expires_at") @db.Timestamptz(3)
   requestedById   String     @map("requested_by") @db.Uuid
   queuedAt        DateTime   @default(now()) @map("queued_at") @db.Timestamptz(3)
   startedAt       DateTime?  @map("started_at") @db.Timestamptz(3)

@@ -7,6 +7,7 @@ import {
   type ExceptionFilter,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { reportError } from '@ssrs/shared/node';
 
 export interface ErrorDetail {
   field?: string;
@@ -124,6 +125,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
       this.logger.error(
         exception instanceof Error ? (exception.stack ?? exception.message) : String(exception),
       );
+      // Expected dependency failures (503 from Google or the queue) are not bugs.
+      if (!(exception instanceof HttpException)) reportError(exception, { requestId });
     }
     if (res.headersSent) return;
     const retryAfter = body.error['retryAfterSeconds'];

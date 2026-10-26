@@ -16,6 +16,7 @@ export interface ApiErrorBody {
     message: string;
     details?: { field?: string; message: string }[];
     requestId?: string;
+    [extra: string]: unknown;
   };
 }
 
@@ -26,6 +27,8 @@ export class ApiError extends Error {
     message: string,
     public readonly details?: ApiErrorBody['error']['details'],
     public readonly requestId?: string,
+    /** The whole `error` object, including endpoint-specific fields such as `jobId`. */
+    public readonly data: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = 'ApiError';
@@ -63,7 +66,7 @@ async function parseBody(res: Response): Promise<unknown> {
 function toApiError(res: Response, body: unknown): ApiError {
   if (isErrorBody(body)) {
     const { code, message, details, requestId } = body.error;
-    return new ApiError(res.status, code, message, details, requestId);
+    return new ApiError(res.status, code, message, details, requestId, body.error);
   }
   return new ApiError(res.status, `HTTP_${res.status}`, res.statusText || 'Request failed');
 }
@@ -95,21 +98,49 @@ export function refreshSession(): Promise<boolean> {
   return refreshing;
 }
 
-export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  let res = await send(path, init);
-  let body = await parseBody(res);
-
-  if (
-    res.status === 401 &&
-    !path.startsWith('/auth/') &&
-    isErrorBody(body) &&
-    REFRESHABLE_CODES.has(body.error.code) &&
-    (await refreshSession())
-  ) {
-    res = await send(path, init);
-    body = await parseBody(res);
+/** Sends the request, refreshing the session once on an expired access token. */
+async function request(path: string, init: RequestInit): Promise<Response> {
+  const res = await send(path, init);
+  if (res.status !== 401 || path.startsWith('/auth/')) return res;
+  const body = await parseBody(res.clone());
+  if (isErrorBody(body) && REFRESHABLE_CODES.has(body.error.code) && (await refreshSession())) {
+    return send(path, init);
   }
+  return res;
+}
 
+export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await request(path, init);
+  const body = await parseBody(res);
   if (!res.ok) throw toApiError(res, body);
   return body as T;
+}
+
+/** For file responses (CSV): returns the body as a Blob with the response headers. */
+export async function apiDownload(
+  path: string,
+  init: RequestInit = {},
+): Promise<{ blob: Blob; filename: string; headers: Headers }> {
+  const res = await request(path, init);
+  if (!res.ok) throw toApiError(res, await parseBody(res));
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'download';
+  return { blob: await res.blob(), filename, headers: res.headers };
+}
+
+/** Saves a Blob through a temporary object URL (revoked right after). */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/** The API error code of a failed request, or null. */
+export function errorCode(error: unknown): string | null {
+  return error instanceof ApiError ? error.code : null;
 }

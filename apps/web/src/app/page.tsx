@@ -1,5 +1,8 @@
-import { GraduationCap } from 'lucide-react';
-import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { GraduationCap, LogIn } from 'lucide-react';
+import Link from 'next/link';
+import { HomeRedirect } from '@/components/app/home-redirect';
+import { buttonVariants } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { SystemStatus } from '@/components/system-status';
 
 export default function Home() {
@@ -13,13 +16,20 @@ export default function Home() {
           <div className="space-y-1">
             <CardTitle className="text-2xl">Student Score Record System</CardTitle>
             <CardDescription>
-              View academic results across all five terms. Sign-in becomes available once accounts
-              are set up.
+              View academic results across all five terms. Students sign in with their student ID;
+              administrators with their username.
             </CardDescription>
           </div>
           <SystemStatus />
         </CardHeader>
+        <CardContent>
+          <Link href="/login" className={buttonVariants({ size: 'lg', className: 'w-full' })}>
+            <LogIn aria-hidden />
+            Sign in
+          </Link>
+        </CardContent>
       </Card>
+      <HomeRedirect />
     </main>
   );
 }

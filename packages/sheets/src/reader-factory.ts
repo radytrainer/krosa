@@ -56,3 +56,28 @@ export function createSheetsReaderFromEnv(env: GoogleEnv): SheetsReader {
   }
   return new NotConfiguredSheetsReader();
 }
+
+export interface SheetsReaderEnv extends GoogleEnv {
+  NODE_ENV?: string;
+  /** `fixtures`: end-to-end test mode with the bundled fixture workbook. Never in production. */
+  SHEETS_TEST_MODE?: 'fixtures';
+}
+
+/**
+ * The reader the API and worker use. In end-to-end test mode it serves the fixture workbook
+ * (docs/google-sheets-template.md) under `FIXTURE_SPREADSHEET_ID`, so tests exercise the real
+ * services without Google. Test mode is refused with NODE_ENV=production, and the fake is loaded
+ * lazily from `./testing`, which production images delete (see docker/), so it cannot be enabled
+ * there at all.
+ */
+export async function createSheetsReader(env: SheetsReaderEnv): Promise<SheetsReader> {
+  if (env.SHEETS_TEST_MODE !== 'fixtures') return createSheetsReaderFromEnv(env);
+  if (env.NODE_ENV === 'production') {
+    throw new Error('SHEETS_TEST_MODE cannot be used with NODE_ENV=production');
+  }
+  const testing = await import('./testing/index.js');
+  return new testing.InMemorySheetsReader().set(
+    testing.FIXTURE_SPREADSHEET_ID,
+    testing.workbookFixture(testing.FIXTURE_GENERATION_CODE),
+  );
+}

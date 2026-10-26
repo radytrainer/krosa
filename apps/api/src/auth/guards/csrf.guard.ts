@@ -31,26 +31,29 @@ export function requestOrigin(req: Pick<Request, 'headers'>): string | null {
 
 /**
  * Global guard #2 (docs/security.md §3). For every state-changing request:
- *  1. Origin (or Referer) must equal WEB_ORIGIN — also covers login CSRF.
+ *  1. Origin (or Referer) must equal WEB_ORIGIN or a CORS_ORIGINS entry — also covers login CSRF.
  *  2. Authenticated requests must carry X-CSRF-Token = HMAC(sessionId).
  */
 @Injectable()
 export class CsrfGuard implements CanActivate {
-  private readonly allowedOrigin: string;
+  private readonly allowedOrigins: Set<string>;
 
   constructor(
     @Inject(API_ENV) env: ApiEnv,
     private readonly reflector: Reflector,
     private readonly tokens: TokenService,
   ) {
-    this.allowedOrigin = new URL(env.WEB_ORIGIN).origin;
+    this.allowedOrigins = new Set(
+      [env.WEB_ORIGIN, ...env.CORS_ORIGINS].map((o) => new URL(o).origin),
+    );
   }
 
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
     if (SAFE_METHODS.has(req.method)) return true;
 
-    if (requestOrigin(req) !== this.allowedOrigin) {
+    const origin = requestOrigin(req);
+    if (!origin || !this.allowedOrigins.has(origin)) {
       throw new ForbiddenException({
         code: 'ORIGIN_NOT_ALLOWED',
         message: 'Cross-origin request rejected',

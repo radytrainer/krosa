@@ -13,6 +13,33 @@ export const apiEnvSchema = z
     /** Number of reverse-proxy hops to trust for client IPs (0 = none). */
     TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
     SWAGGER_ENABLED: envFields.booleanFlag(false),
+    /** Global per-IP request budget per minute (docs/security.md §7). Raise only for load tests. */
+    RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(10).max(1_000_000).default(300),
+    /**
+     * Comma-separated origins allowed for cross-origin requests with credentials. Empty (default):
+     * CORS stays disabled because the web app is served from the same origin.
+     */
+    CORS_ORIGINS: z
+      .string()
+      .optional()
+      .transform((v, ctx) => {
+        const list = (v ?? '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        for (const origin of list) {
+          if (origin === '*' || !/^https?:\/\/[^/\s]+$/.test(origin)) {
+            ctx.addIssue({
+              code: 'custom',
+              message: `invalid origin "${origin}" (no "*", no path)`,
+            });
+          }
+        }
+        return list;
+      }),
+    /** Error reporting. Unset: Sentry is disabled. */
+    SENTRY_DSN: z.string().url().optional(),
+    SENTRY_ENVIRONMENT: z.string().min(1).max(64).optional(),
 
     /** HS256 key for access tokens; also derives CSRF tokens. ≥ 32 characters of randomness. */
     JWT_ACCESS_SECRET: z.string().min(32, 'must be at least 32 characters'),
@@ -35,6 +62,8 @@ export const apiEnvSchema = z
     GOOGLE_SERVICE_ACCOUNT_EMAIL: z.string().email().optional(),
     /** PEM private key; literal "\n" sequences are converted to newlines. */
     GOOGLE_PRIVATE_KEY: z.string().min(1).optional(),
+    /** End-to-end test mode: serve the fixture workbook instead of Google. Never in production. */
+    SHEETS_TEST_MODE: z.literal('fixtures').optional(),
   })
   .superRefine((env, ctx) => {
     const inline =
@@ -76,6 +105,13 @@ export const apiEnvSchema = z
         code: 'custom',
         path: ['COOKIE_SECURE'],
         message: 'must be true in production',
+      });
+    }
+    if (env.SHEETS_TEST_MODE) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SHEETS_TEST_MODE'],
+        message: 'test mode cannot be enabled in production',
       });
     }
   });

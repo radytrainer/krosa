@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient, SyncStatus } from '@ssrs/database';
 import {
   readWorkbook,
@@ -26,6 +27,9 @@ const TERMINAL: readonly SyncStatus[] = [
   'CANCELLED',
 ];
 const ERROR_BATCH = 1_000;
+/** Run lease length; matches the BullMQ lock duration so a crashed worker's job is reclaimable. */
+export const LEASE_MS = 120_000;
+const LEASE_RENEW_MS = LEASE_MS / 3;
 const MAX_STORED_ISSUES = 20_000;
 
 /** Counts parser rejections into the job report (students, courses and cells). */
@@ -71,6 +75,12 @@ async function persistIssues(
  * Runs one SOURCE sync job end to end (docs/architecture.md §5). The job row in PostgreSQL is
  * the source of truth for status and progress; the queue only delivers the job id.
  *
+ * Exactly one run at a time: the run first claims a lease on the job row (atomic update that
+ * succeeds only when no unexpired lease exists), renews it while working and releases it at the
+ * end. A second delivery of the same job (BullMQ redelivers a job whose lock it thinks is lost)
+ * gets `busy` and writes nothing. If the worker dies, the lease expires after LEASE_MS and a
+ * redelivery takes over.
+ *
  * Outcome semantics:
  *  - FAILED: nothing was applied (access/config problem, file-level template error, roster
  *    failure) — or every course failed to apply.
@@ -79,6 +89,57 @@ async function persistIssues(
  *  - retry: a transient Google failure before any write; the caller lets the queue retry.
  */
 export async function runSourceSync(
+  deps: SyncDeps,
+  syncJobId: string,
+  options: RunOptions,
+): Promise<RunOutcome> {
+  const { prisma } = deps;
+  const now = deps.now ?? (() => new Date());
+  const token = randomUUID();
+  const leaseUntil = () => new Date(now().getTime() + LEASE_MS);
+
+  const claimed = await prisma.syncJob.updateMany({
+    where: {
+      id: syncJobId,
+      finishedAt: null,
+      OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now() } }],
+    },
+    data: { leaseToken: token, leaseExpiresAt: leaseUntil() },
+  });
+  if (claimed.count === 0) {
+    const job = await prisma.syncJob.findUnique({
+      where: { id: syncJobId },
+      select: { status: true },
+    });
+    if (!job) throw new Error(`Sync job ${syncJobId} not found`);
+    if (TERMINAL.includes(job.status)) {
+      return { kind: 'finished', status: job.status as 'SUCCEEDED' };
+    }
+    return { kind: 'busy' };
+  }
+
+  const renew = setInterval(() => {
+    void prisma.syncJob
+      .updateMany({
+        where: { id: syncJobId, leaseToken: token },
+        data: { leaseExpiresAt: leaseUntil() },
+      })
+      .catch(() => undefined); // a missed renewal only shortens the lease
+  }, LEASE_RENEW_MS);
+  renew.unref();
+  try {
+    return await execute(deps, syncJobId, options);
+  } finally {
+    clearInterval(renew);
+    await prisma.syncJob.updateMany({
+      where: { id: syncJobId, leaseToken: token },
+      data: { leaseToken: null, leaseExpiresAt: null },
+    });
+  }
+}
+
+/** The run itself; only called while holding the job's lease. */
+async function execute(
   deps: SyncDeps,
   syncJobId: string,
   options: RunOptions,

@@ -68,18 +68,18 @@ Docs in `docs/`. Decisions A1–A13 recorded in `requirements.md`.
 3. Indexes verified with `EXPLAIN` on seeded data (≈2k students × 40 offerings).
 4. Security tests: cross-student access attempts by every vector, hidden offerings, cache isolation.
 
-## Phase 7 — Admin frontend
+## Phase 7 — Admin frontend ✅
 
 Login, layout + responsive nav, dashboard, generations, sources, offerings/criteria/scheme editor
 (live 100% total indicator), students (list/detail/status/reset/issue credentials), sync center
 (polling progress), job details/errors, audit logs, account settings.
 
-## Phase 8 — Student frontend
+## Phase 8 — Student frontend ✅
 
 Login, forced password change, dashboard (summary + Recharts term chart), results with term tabs,
 dynamic criteria tables (cards on mobile), course detail, profile, change password.
 
-## Phase 9 — Security & performance hardening
+## Phase 9 — Security & performance hardening ✅
 
 Headers/CSP, CORS/CSRF verification tests, throttling limits, route-role coverage test, load test
 of results endpoint (autocannon), concurrent sync test, Sentry wiring, log redaction tests.

@@ -1,0 +1,20 @@
+# Build context for the production Dockerfile: sources only, never local builds or secrets.
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+**/test-results
+**/playwright-report
+.git
+.github
+.vscode
+.idea
+.env
+.env.*
+!.env.example
+secrets
+backups
+*.pem
+*service-account*.json
