@@ -17,6 +17,7 @@ import type { Request, Response } from 'express';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CurrentUser, Roles } from '../auth/decorators.js';
 import { requestMeta } from '../common/request-meta.js';
+import { ResultsService } from '../results/results.service.js';
 import {
   IssueCredentialsDto,
   ListStudentsQueryDto,
@@ -29,7 +30,10 @@ import { StudentsService } from './students.service.js';
 @Roles('ADMIN')
 @Controller('admin/students')
 export class StudentsController {
-  constructor(private readonly students: StudentsService) {}
+  constructor(
+    private readonly students: StudentsService,
+    private readonly results: ResultsService,
+  ) {}
 
   @Get()
   list(@Query() query: ListStudentsQueryDto) {
@@ -62,6 +66,12 @@ export class StudentsController {
   @Get(':id')
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.students.get(id);
+  }
+
+  /** Same shape as the student view, plus hidden offerings and withdrawn enrollments. */
+  @Get(':id/results')
+  getResults(@Param('id', ParseUUIDPipe) id: string) {
+    return this.results.forAdmin(id);
   }
 
   @Patch(':id/status')

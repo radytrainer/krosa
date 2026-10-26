@@ -3,7 +3,7 @@
 Admins sync academic marks from Google Sheets into PostgreSQL; students view their own results across
 five terms. Stack: Next.js · NestJS · Prisma/PostgreSQL · Redis/BullMQ · Google Sheets API.
 
-> Status: Phase 5 (synchronization engine) complete. See [docs/progress.md](docs/progress.md).
+> Status: Phase 6 (student results API) complete. See [docs/progress.md](docs/progress.md).
 
 ## Repository layout
 

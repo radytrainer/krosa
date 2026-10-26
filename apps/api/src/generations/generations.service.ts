@@ -203,6 +203,8 @@ export class GenerationsService {
         where: { id },
         data: { name: dto.name ?? existing.name, startDate, endDate },
       });
+      // The generation name is part of every cached student view.
+      await this.guard.bumpCacheVersion(id, tx);
       await this.audit.record(
         {
           action: 'generation.updated',
@@ -287,6 +289,7 @@ export class GenerationsService {
         where: { id },
         data: { name: dto.name ?? term.name, startDate, endDate },
       });
+      await this.guard.bumpCacheVersion(term.generationId, tx);
       await this.audit.record(
         {
           action: 'term.updated',

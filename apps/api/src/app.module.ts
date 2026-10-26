@@ -12,6 +12,7 @@ import { GenerationsModule } from './generations/generations.module.js';
 import { GradingSchemesModule } from './grading-schemes/grading-schemes.module.js';
 import { HealthModule } from './health/health.module.js';
 import { InfraModule } from './infra/infra.module.js';
+import { ResultsModule } from './results/results.module.js';
 import { SheetsSourcesModule } from './sheets-sources/sheets-sources.module.js';
 import { SyncModule } from './sync/sync.module.js';
 import { StudentsModule } from './students/students.module.js';
@@ -34,6 +35,7 @@ export class AppModule {
         CriteriaModule,
         GradingSchemesModule,
         StudentsModule,
+        ResultsModule,
         SheetsSourcesModule,
         SyncModule,
       ],

@@ -69,7 +69,12 @@ are provided alongside where relevant (`"41.50"`).
 | POST   | /auth/change-password | any    | `{ currentPassword, newPassword }` → 204. Policy: 10–128 characters, doesn't contain the username/student ID, not a common password, not one repeated character, differs from the current password. Revokes the user's other sessions and re-issues the access cookie. Errors: 400 `INVALID_CURRENT_PASSWORD`, 422 `WEAK_PASSWORD` (with `details`), 429 |
 | GET    | /auth/me              | any    | `{ id, role, username, displayName, mustChangePassword, student?: { id, studentCode, fullName } }`                                                                                                                                                                                                                                                       |
 
-## 3. Student (role STUDENT; identity from session)
+## 3. Student (role STUDENT; identity from session) ✅ (Phase 6)
+
+Students see only offerings that are `VISIBLE` and where their enrollment is `ENROLLED`. Hidden,
+withdrawn, unknown and other students' offerings all return the same 404 `NOT_FOUND`. No route
+accepts a student identifier; unknown query parameters are rejected with 400. Students who must
+change their password get 403 `PASSWORD_CHANGE_REQUIRED`.
 
 | Method | Path                            | Description                                                                |
 | ------ | ------------------------------- | -------------------------------------------------------------------------- |
@@ -131,8 +136,22 @@ are provided alongside where relevant (`"41.50"`).
 ```
 
 Course `status`: `COMPLETE` | `INCOMPLETE` (finalScore null; attemptedWeight/earnedSoFar shown) |
-`NOT_CONFIGURED` (no published scheme; criteria and scores omitted).
-`score` is `null` when no mark has been entered.
+`NEEDS_REVIEW` (a stored mark lies outside 0…maxMark; that criterion has `invalidMark: true` and
+no contribution; no final score) | `NOT_CONFIGURED` (no published scheme; `criteria` is `[]`,
+`schemeVersion` is null).
+`score` is `null` when no mark has been entered. `ABS` appears as `{ "status": "ABSENT", "mark": "0.000" }`.
+Courses also carry `termNumber`; terms carry `startDate`/`endDate` (`YYYY-MM-DD` or null). All five
+terms are always returned; a term without courses has summary status `EMPTY`. Courses within a
+term are ordered by course code.
+
+Term `summary`: `status` (`COMPLETE` | `INCOMPLETE` | `EMPTY`), `average` (credit-weighted, only
+when every course is COMPLETE), `provisionalAverage` (credit-weighted over COMPLETE courses so far),
+`completedCourses`, `totalCourses`, `creditsCompleted`, `creditsTotal`. Averages use exact final
+scores and are rounded once.
+
+`GET /student/me/summary` → `{ student, terms: [{ number, name, summary }], overall }`, where
+`overall` has the same shape as a term summary, across all terms.
+`GET /student/me/courses` → `[{ offeringId, termNumber, courseCode, title, credits, status, finalScore }]`.
 
 ## 4. Admin (role ADMIN)
 
@@ -194,7 +213,7 @@ increment the generation's `cache_version`.
 | ------ | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GET    | /admin/students                    | filters `generationId`, `className`, `status`, `q` (name/ID)                                                                                                                                                                                      |
 | GET    | /admin/students/:id                | profile + account status                                                                                                                                                                                                                          |
-| GET    | /admin/students/:id/results        | same shape as student results, all offerings incl. hidden                                                                                                                                                                                         |
+| GET    | /admin/students/:id/results        | ✅ same shape as student results, all offerings incl. hidden and withdrawn; each course adds `admin: { visibility, enrollmentStatus, presentInSource }`. Withdrawn courses are listed but not counted in summaries. Never cached                  |
 | PATCH  | /admin/students/:id/status         | ✅ `{ status }` with status `ACTIVE` or `DISABLED`. Disabling revokes all sessions. PENDING → ACTIVE: 409 `CREDENTIALS_NOT_ISSUED` (use reset-password)                                                                                           |
 | POST   | /admin/students/:id/reset-password | ✅ → 200 `{ studentCode, temporaryPassword, expiresAt }`, shown once (`no-store`). Also activates PENDING accounts. Forces a password change at next login, expires after `TEMP_PASSWORD_TTL_DAYS` (14), revokes sessions. 409 `ACCOUNT_DISABLED` |
 | POST   | /admin/students/issue-credentials  | ✅ `{ studentIds?                                                                                                                                                                                                                                 | generationId?, className?, onlyPending = true }`→ 200`text/csv` attachment (`student_id, student_name, class, temporary_password, expires_at`; UTF-8 BOM, formula-injection safe), header `X-Issued-Count`, `no-store`. At most 500 students per request (422 `TOO_MANY_STUDENTS`; 422 `SELECTION_REQUIRED`without a selection).`onlyPending: false`also resets active accounts. Each student is audited as`student.credentials.issued`; passwords are never stored or logged |

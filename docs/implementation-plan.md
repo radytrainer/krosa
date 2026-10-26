@@ -61,7 +61,7 @@ Docs in `docs/`. Decisions A1–A13 recorded in `requirements.md`.
    (all unchanged), changed marks (revisions), duplicate prevention, partial failure, rollback of a
    failed offering tx, concurrent job rejection, scheme draft on weight change.
 
-## Phase 6 — Student results API
+## Phase 6 — Student results API ✅
 
 1. Results assembler (3 batched queries) + caching with generation version keys.
 2. `/student/me*` endpoints; admin student results.

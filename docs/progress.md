@@ -14,26 +14,39 @@ _Last updated: 2026-10-26_
 | 3 Academic management         | ✅     | Grading engine; generations/terms, courses/offerings, criteria, versioned schemes, student accounts, audit API |
 | 4 Google Sheets integration   | ✅     | `@ssrs/sheets` (URL, Google reader with retries, template parser, fakes); source registration + preview API    |
 | 5 Synchronization engine      | ✅     | `@ssrs/sync` engine, BullMQ worker + orphan recovery, sync API, bulk credential CSV                            |
-| 6 Student results API         | ⬜     | Next                                                                                                           |
-| 7 Admin frontend              | ⬜     |                                                                                                                |
+| 6 Student results API         | ✅     | Results assembler + version-keyed cache; `/student/me*`; admin student results; `EXPLAIN` checked              |
+| 7 Admin frontend              | ⬜     | Next                                                                                                           |
 | 8 Student frontend            | ⬜     |                                                                                                                |
 | 9 Security & performance      | ⬜     |                                                                                                                |
 | 10 Testing & deployment       | ⬜     |                                                                                                                |
 
 ## Requirement groups (see `requirements.md`)
 
-| Group       | Status | Notes                                                                                         |
-| ----------- | ------ | --------------------------------------------------------------------------------------------- |
-| AUTH-01…12  | ✅     | AUTH-11 admin reset (temporary password, shown once, expiring, forced change) done in Phase 3 |
-| ACAD-01…06  | ✅     | Enrollments are written by sync (ACAD-05)                                                     |
-| CRIT-01…05  | ✅     | Add / rename / reorder / disable; key immutable; deactivation policy                          |
-| GRADE-01…10 | 🟡     | Engine + publish validation ✅. Applying the engine to student results is Phase 6             |
-| GS-01…07    | ✅     | Live Google access not yet exercised: needs a service-account key (see Blocked)               |
-| SYNC-01…12  | ✅     | All twelve covered by engine, worker and API integration tests                                |
-| PROV-01…04  | ✅     | PENDING accounts with a locked hash; single and bulk (CSV) issuance; 14-day expiry            |
-| STU-01…05   | 🟡     | STU-01 identity from session only (`@CurrentUser`) ✅                                         |
-| ADM pages   | 🟡     | APIs for generations, courses, criteria, schemes, students and audit ✅; UI in Phase 7        |
-| OBS-01…04   | 🟡     | OBS-01 auth events audited ✅; OBS-02 logs ✅; OBS-03 health ✅; OBS-04 Sentry in Phase 9     |
+| Group       | Status | Notes                                                                                               |
+| ----------- | ------ | --------------------------------------------------------------------------------------------------- |
+| AUTH-01…12  | ✅     | AUTH-11 admin reset (temporary password, shown once, expiring, forced change) done in Phase 3       |
+| ACAD-01…06  | ✅     | Enrollments are written by sync (ACAD-05)                                                           |
+| CRIT-01…05  | ✅     | Add / rename / reorder / disable; key immutable; deactivation policy                                |
+| GRADE-01…10 | ✅     | Engine applied on read to raw marks + the PUBLISHED scheme (GRADE-08)                               |
+| GS-01…07    | ✅     | Live Google access not yet exercised: needs a service-account key (see Blocked)                     |
+| SYNC-01…12  | ✅     | All twelve covered by engine, worker and API integration tests                                      |
+| PROV-01…04  | ✅     | PENDING accounts with a locked hash; single and bulk (CSV) issuance; 14-day expiry                  |
+| STU-01…05   | 🟡     | STU-01…04 API ✅ (session identity, five terms, dynamic criteria, VISIBLE only). STU-05 UI: Phase 8 |
+| ADM pages   | 🟡     | APIs for generations, courses, criteria, schemes, students and audit ✅; UI in Phase 7              |
+| OBS-01…04   | 🟡     | OBS-01 auth events audited ✅; OBS-02 logs ✅; OBS-03 health ✅; OBS-04 Sentry in Phase 9           |
+
+## Phase 6 verification (2026-10-26, actually executed)
+
+| Check                                                                                                                                                                                               | Result                                                                                     |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `pnpm typecheck` / `pnpm lint` (zero warnings) / `pnpm format:check`                                                                                                                                | ✅                                                                                         |
+| `pnpm test` (unit)                                                                                                                                                                                  | ✅ 172 (unchanged)                                                                         |
+| `pnpm test:integration`                                                                                                                                                                             | ✅ 128: database 20, sync engine 22, worker 2, API 84 (incl. results 11)                   |
+| Results: five terms; contributions, final, ABSENT, INCOMPLETE progress, NOT_CONFIGURED; term filter; profile, course list, course detail, summary                                                   | ✅                                                                                         |
+| Access: hidden / withdrawn / not-enrolled / unknown → 404; `?studentId`/`?studentCode` → 400; spoofed header ignored; admin route → 403; unauthenticated 401; admin 403; forced password change 403 | ✅                                                                                         |
+| Cache: per-student keys under the generation version; served from cache; isolation between students; invalidated by visibility, term and generation edits; corrupt entry falls back to PostgreSQL   | ✅                                                                                         |
+| Admin view: hidden + withdrawn with `admin` metadata, withdrawn not counted, not cached                                                                                                             | ✅                                                                                         |
+| `EXPLAIN ANALYZE` on 4,000 students (2 generations × 2,000) × 40 offerings, 160k enrollments, 800k scores                                                                                           | ✅ Large tables use indexes (≤ 0.9 ms each); small tables seq-scan but have usable indexes |
 
 ## Phase 5 verification (2026-10-26, actually executed)
 
@@ -87,6 +100,7 @@ _Last updated: 2026-10-26_
 - Graceful SIGTERM shutdown of api/worker is wired but cannot be exercised on Windows; verified in
   Linux containers in Phase 10.
 - Dockerfiles, `docker-compose.prod.yml`, Caddy and GitHub Actions: Phase 10.
+- Results summaries count only ENROLLED courses; withdrawn ones appear in the admin view only.
 - Global request throttling (`@nestjs/throttler`) and the route-metadata coverage test: Phase 9.
   Login/change-password limiting and deny-by-default `RolesGuard` are already active.
 - If Redis is down when a session is revoked, its access token stays valid until expiry
