@@ -1,0 +1,11 @@
+course_key,criterion_key,criterion_name,category,max_mark,weight,order,description
+T1-MATH101,Q1,Quiz 1,QUIZ,10,5,1,
+T1-MATH101,Q2,Quiz 2,QUIZ,10,5,2,
+T1-MATH101,MID,Midterm Exam,EXAM,50,30,3,
+T1-MATH101,FINAL,Final Exam,EXAM,100,40,4,
+T1-MATH101,HW,Homework,HOMEWORK,10,10,5,
+T1-MATH101,PART,Participation,PARTICIPATION,10,10,6,
+T2-ENG101,PROJECT,Project,PROJECT,100,30,1,
+T2-ENG101,MID,Midterm Exam,EXAM,50,30,2,
+T2-ENG101,FINAL,Final Exam,EXAM,50,30,3,
+T2-ENG101,PART,Participation,PARTICIPATION,10,10,4,

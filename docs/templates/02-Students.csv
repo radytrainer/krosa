@@ -1,0 +1,4 @@
+student_id,student_name,gender,class
+GEN26-0001,Example Student A,F,A
+GEN26-0002,Example Student B,M,A
+GEN26-0003,Example Student C,,B

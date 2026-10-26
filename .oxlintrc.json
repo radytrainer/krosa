@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "vitest"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "no-console": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-assertion": "warn",
+    "import/no-cycle": "error",
+    "no-underscore-dangle": ["warn", { "allow": ["_count", "_max", "_min", "_sum", "_avg"] }],
+    "typescript/no-extraneous-class": ["warn", { "allowWithDecorator": true }],
+    "import/no-unassigned-import": ["warn", { "allow": ["reflect-metadata", "**/*.css"] }]
+  },
+  "ignorePatterns": ["**/dist/**", "**/src/generated/**", "**/node_modules/**"],
+  "overrides": [
+    {
+      "files": ["**/scripts/**", "**/*.config.ts", "**/prisma7.config.ts"],
+      "rules": { "no-console": "off" }
+    },
+    {
+      "files": ["**/*.spec.ts", "**/*-spec.ts", "**/test/**"],
+      "rules": { "typescript/no-non-null-assertion": "off" }
+    }
+  ]
+}

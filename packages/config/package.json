@@ -1,0 +1,13 @@
+{
+  "name": "@ssrs/config",
+  "version": "0.1.0",
+  "private": true,
+  "files": [
+    "tsconfig.node.json",
+    "tsconfig.lib.json"
+  ],
+  "exports": {
+    "./tsconfig.node.json": "./tsconfig.node.json",
+    "./tsconfig.lib.json": "./tsconfig.lib.json"
+  }
+}

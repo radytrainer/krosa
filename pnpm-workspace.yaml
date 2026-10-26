@@ -1,0 +1,13 @@
+packages:
+  - apps/*
+  - packages/*
+
+# pnpm blocks dependency install scripts unless explicitly allowed.
+allowBuilds:
+  prisma: true
+  argon2: true
+  '@prisma/engines': true
+  sharp: false
+  unrs-resolver: false
+  '@scarf/scarf': false # swagger-ui telemetry
+  msgpackr-extract: false # optional native accelerator for BullMQ; pure-JS fallback is used

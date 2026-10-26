@@ -1,0 +1,590 @@
+// Student Score Record System — PostgreSQL schema.
+// Design reference: docs/database-design.md.
+//
+// Constraints Prisma cannot express (CHECK constraints, immutability triggers) live in raw SQL
+// inside the migrations. Prisma does not manage them, so they never appear as drift.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+  previewFeatures     = ["partialIndexes", "postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [citext, pg_trgm]
+}
+
+// ---------------------------------------------------------------------------------------------
+// Users, sessions
+// ---------------------------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  STUDENT
+}
+
+enum UserStatus {
+  /// Provisioned by sync; no credentials issued yet. Cannot log in.
+  PENDING
+  ACTIVE
+  DISABLED
+}
+
+enum SessionRevokeReason {
+  LOGOUT
+  REUSE_DETECTED
+  PASSWORD_CHANGED
+  PASSWORD_RESET
+  ACCOUNT_DISABLED
+  ADMIN
+}
+
+model User {
+  id                 String     @id @default(uuid(7)) @db.Uuid
+  /// Admins: chosen login name. Students: normalized student code.
+  username           String     @unique @db.Citext
+  role               UserRole
+  status             UserStatus @default(ACTIVE)
+  /// Argon2id PHC string.
+  passwordHash       String     @map("password_hash")
+  mustChangePassword Boolean    @default(false) @map("must_change_password")
+  passwordExpiresAt  DateTime?  @map("password_expires_at") @db.Timestamptz(3)
+  passwordChangedAt  DateTime?  @map("password_changed_at") @db.Timestamptz(3)
+  failedLoginCount   Int        @default(0) @map("failed_login_count")
+  lockedUntil        DateTime?  @map("locked_until") @db.Timestamptz(3)
+  lastLoginAt        DateTime?  @map("last_login_at") @db.Timestamptz(3)
+  displayName        String?    @map("display_name")
+  createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  student            Student?
+  sessions           AuthSession[]
+  auditLogs          AuditLog[]
+  sourcesCreated     GoogleSheetSource[]
+  syncJobsRequested  SyncJob[]
+  schemesCreated     GradingScheme[]             @relation("SchemeCreatedBy")
+  schemesPublished   GradingScheme[]             @relation("SchemePublishedBy")
+  scoresUpdated      AssessmentScore[]
+  scoreRevisions     AssessmentScoreRevision[]
+
+  @@index([role, status])
+  @@map("users")
+}
+
+model AuthSession {
+  id           String               @id @default(uuid(7)) @db.Uuid
+  userId       String               @map("user_id") @db.Uuid
+  createdAt    DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastUsedAt   DateTime             @default(now()) @map("last_used_at") @db.Timestamptz(3)
+  /// Absolute lifetime; refresh never extends it.
+  expiresAt    DateTime             @map("expires_at") @db.Timestamptz(3)
+  revokedAt    DateTime?            @map("revoked_at") @db.Timestamptz(3)
+  revokeReason SessionRevokeReason? @map("revoke_reason")
+  ip           String?
+  userAgent    String?              @map("user_agent")
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([userId], map: "auth_sessions_active_user_idx", where: raw("revoked_at IS NULL"))
+  @@map("auth_sessions")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  sessionId String    @map("session_id") @db.Uuid
+  /// SHA-256 hex of a 256-bit random token.
+  tokenHash String    @unique @map("token_hash") @db.Char(64)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  /// Set when rotated. Presenting a used token revokes the whole session.
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  session AuthSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Academic structure
+// ---------------------------------------------------------------------------------------------
+
+enum GenerationStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model Generation {
+  id           String           @id @default(uuid(7)) @db.Uuid
+  /// Must equal the spreadsheet `_meta.generation_code`.
+  code         String           @unique @db.Citext
+  name         String
+  startDate    DateTime         @map("start_date") @db.Date
+  endDate      DateTime?        @map("end_date") @db.Date
+  status       GenerationStatus @default(ACTIVE)
+  /// Incremented to invalidate cached results for this generation.
+  cacheVersion Int              @default(1) @map("cache_version")
+  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  terms     Term[]
+  offerings CourseOffering[]
+  sources   GoogleSheetSource[]
+  students  Student[]
+  syncJobs  SyncJob[]
+
+  @@map("generations")
+}
+
+model Term {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  generationId String    @map("generation_id") @db.Uuid
+  number       Int       @db.SmallInt
+  name         String
+  startDate    DateTime? @map("start_date") @db.Date
+  endDate      DateTime? @map("end_date") @db.Date
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  generation Generation       @relation(fields: [generationId], references: [id])
+  offerings  CourseOffering[]
+
+  @@unique([generationId, number])
+  /// Target of the composite FK that keeps course_offerings.generation_id consistent.
+  @@unique([id, generationId])
+  @@map("terms")
+}
+
+/// Course catalog. Criteria and grading belong to offerings, not to catalog courses.
+model Course {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  code        String   @unique @db.Citext
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  offerings CourseOffering[]
+
+  @@map("courses")
+}
+
+enum ResultsVisibility {
+  HIDDEN
+  VISIBLE
+}
+
+enum OfferingStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+/// A catalog course taught in one term of one generation.
+model CourseOffering {
+  id                   String            @id @default(uuid(7)) @db.Uuid
+  termId               String            @map("term_id") @db.Uuid
+  generationId         String            @map("generation_id") @db.Uuid
+  courseId             String            @map("course_id") @db.Uuid
+  /// `course_key` from the spreadsheet; stable identifier within the generation.
+  externalKey          String            @map("external_key") @db.Citext
+  title                String
+  credits              Decimal           @default(1) @db.Decimal(4, 1)
+  visibility           ResultsVisibility @default(HIDDEN)
+  /// Once an admin sets visibility, sync no longer overwrites it.
+  visibilityOverridden Boolean           @default(false) @map("visibility_overridden")
+  /// Owning spreadsheet source; NULL when created manually.
+  sourceId             String?           @map("source_id") @db.Uuid
+  sheetTab             String?           @map("sheet_tab")
+  status               OfferingStatus    @default(ACTIVE)
+  createdAt            DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  term        Term               @relation(fields: [termId, generationId], references: [id, generationId])
+  generation  Generation         @relation(fields: [generationId], references: [id])
+  course      Course             @relation(fields: [courseId], references: [id])
+  source      GoogleSheetSource? @relation(fields: [sourceId], references: [id])
+  criteria    AssessmentCriterion[]
+  schemes     GradingScheme[]
+  enrollments Enrollment[]
+
+  @@unique([termId, courseId])
+  @@unique([generationId, externalKey])
+  @@index([generationId, visibility])
+  @@index([sourceId])
+  @@map("course_offerings")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Google Sheets sources
+// ---------------------------------------------------------------------------------------------
+
+enum SourceStatus {
+  ACTIVE
+  DISABLED
+}
+
+model GoogleSheetSource {
+  id               String       @id @default(uuid(7)) @db.Uuid
+  generationId     String       @map("generation_id") @db.Uuid
+  /// One spreadsheet file can belong to only one generation.
+  spreadsheetId    String       @unique @map("spreadsheet_id")
+  label            String
+  spreadsheetTitle String?      @map("spreadsheet_title")
+  status           SourceStatus @default(ACTIVE)
+  lastSyncedAt     DateTime?    @map("last_synced_at") @db.Timestamptz(3)
+  lastSyncJobId    String?      @map("last_sync_job_id") @db.Uuid
+  createdById      String       @map("created_by") @db.Uuid
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  generation Generation       @relation(fields: [generationId], references: [id])
+  createdBy  User             @relation(fields: [createdById], references: [id])
+  offerings  CourseOffering[]
+  students   Student[]
+  syncJobs   SyncJob[]
+
+  @@index([generationId])
+  @@map("google_sheet_sources")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Students & enrollment
+// ---------------------------------------------------------------------------------------------
+
+enum Gender {
+  FEMALE
+  MALE
+  OTHER
+  UNSPECIFIED
+}
+
+model Student {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  /// Business student ID, normalized to upper case (see @ssrs/shared normalizeStudentId).
+  studentCode       String   @unique @map("student_code")
+  userId            String   @unique @map("user_id") @db.Uuid
+  generationId      String   @map("generation_id") @db.Uuid
+  fullName          String   @map("full_name")
+  gender            Gender   @default(UNSPECIFIED)
+  className         String?  @map("class_name")
+  /// Roster source that last updated the profile.
+  sourceId          String?  @map("source_id") @db.Uuid
+  lastSeenSyncJobId String?  @map("last_seen_sync_job_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user        User               @relation(fields: [userId], references: [id])
+  generation  Generation         @relation(fields: [generationId], references: [id])
+  source      GoogleSheetSource? @relation(fields: [sourceId], references: [id])
+  enrollments Enrollment[]
+
+  @@index([generationId, className])
+  @@index([fullName(ops: raw("gin_trgm_ops"))], map: "students_full_name_trgm_idx", type: Gin)
+  @@map("students")
+}
+
+enum EnrollmentStatus {
+  ENROLLED
+  WITHDRAWN
+}
+
+model Enrollment {
+  id                String           @id @default(uuid(7)) @db.Uuid
+  studentId         String           @map("student_id") @db.Uuid
+  offeringId        String           @map("offering_id") @db.Uuid
+  status            EnrollmentStatus @default(ENROLLED)
+  /// False when the student's row disappeared from the source sheet (never auto-deleted).
+  presentInSource   Boolean          @default(true) @map("present_in_source")
+  lastSeenSyncJobId String?          @map("last_seen_sync_job_id") @db.Uuid
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  student  Student           @relation(fields: [studentId], references: [id])
+  offering CourseOffering    @relation(fields: [offeringId], references: [id])
+  scores   AssessmentScore[]
+
+  @@unique([studentId, offeringId])
+  /// Target of the composite FK guaranteeing a score's criterion belongs to the same offering.
+  @@unique([id, offeringId])
+  @@index([offeringId])
+  @@map("enrollments")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Criteria & grading
+// ---------------------------------------------------------------------------------------------
+
+enum CriterionCategory {
+  QUIZ
+  EXAM
+  HOMEWORK
+  ASSIGNMENT
+  PROJECT
+  PRESENTATION
+  PARTICIPATION
+  OTHER
+}
+
+model AssessmentCriterion {
+  id             String            @id @default(uuid(7)) @db.Uuid
+  offeringId     String            @map("offering_id") @db.Uuid
+  /// Stable identifier (e.g. Q1). Never changes; renames change `name` only.
+  key            String            @db.Citext
+  name           String
+  category       CriterionCategory @default(OTHER)
+  displayOrder   Int               @map("display_order")
+  isActive       Boolean           @default(true) @map("is_active")
+  description    String?
+  /// Column key in the sheet when it differs from `key`.
+  sheetColumnKey String?           @map("sheet_column_key") @db.Citext
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  offering    CourseOffering      @relation(fields: [offeringId], references: [id])
+  schemeItems GradingSchemeItem[]
+  scores      AssessmentScore[]
+
+  @@unique([offeringId, key])
+  @@unique([offeringId, sheetColumnKey])
+  @@unique([id, offeringId])
+  @@map("assessment_criteria")
+}
+
+enum SchemeStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum SchemeOrigin {
+  SHEET
+  ADMIN
+}
+
+model GradingScheme {
+  id            String       @id @default(uuid(7)) @db.Uuid
+  offeringId    String       @map("offering_id") @db.Uuid
+  version       Int
+  status        SchemeStatus @default(DRAFT)
+  origin        SchemeOrigin
+  totalWeight   Decimal      @default(0) @map("total_weight") @db.Decimal(7, 3)
+  publishedAt   DateTime?    @map("published_at") @db.Timestamptz(3)
+  publishedById String?      @map("published_by") @db.Uuid
+  /// NULL when created by sync.
+  createdById   String?      @map("created_by") @db.Uuid
+  syncJobId     String?      @map("sync_job_id") @db.Uuid
+  notes         String?
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  offering    CourseOffering      @relation(fields: [offeringId], references: [id])
+  publishedBy User?               @relation("SchemePublishedBy", fields: [publishedById], references: [id])
+  createdBy   User?               @relation("SchemeCreatedBy", fields: [createdById], references: [id])
+  items       GradingSchemeItem[]
+
+  @@unique([offeringId, version])
+  @@unique([id, offeringId])
+  @@unique([offeringId], map: "grading_schemes_one_published", where: raw("status = 'PUBLISHED'"))
+  @@unique([offeringId], map: "grading_schemes_one_draft", where: raw("status = 'DRAFT'"))
+  @@map("grading_schemes")
+}
+
+/// Max mark and weight per criterion for one scheme version (a.k.a. criterion_weights).
+model GradingSchemeItem {
+  id          String  @id @default(uuid(7)) @db.Uuid
+  schemeId    String  @map("scheme_id") @db.Uuid
+  /// Denormalized so composite FKs force scheme and criterion to share one offering.
+  offeringId  String  @map("offering_id") @db.Uuid
+  criterionId String  @map("criterion_id") @db.Uuid
+  maxMark     Decimal @map("max_mark") @db.Decimal(8, 3)
+  weight      Decimal @db.Decimal(6, 3)
+
+  scheme    GradingScheme       @relation(fields: [schemeId, offeringId], references: [id, offeringId], onDelete: Cascade)
+  criterion AssessmentCriterion @relation(fields: [criterionId, offeringId], references: [id, offeringId])
+
+  @@unique([schemeId, criterionId])
+  @@index([criterionId])
+  @@map("grading_scheme_items")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Scores
+// ---------------------------------------------------------------------------------------------
+
+enum ScoreStatus {
+  RECORDED
+  /// Explicit zero ("ABS" in the sheet).
+  ABSENT
+}
+
+/// A missing mark is the absence of a row, never a zero.
+model AssessmentScore {
+  id           String      @id @default(uuid(7)) @db.Uuid
+  enrollmentId String      @map("enrollment_id") @db.Uuid
+  /// Denormalized so composite FKs force enrollment and criterion to share one offering.
+  offeringId   String      @map("offering_id") @db.Uuid
+  criterionId  String      @map("criterion_id") @db.Uuid
+  status       ScoreStatus
+  mark         Decimal     @db.Decimal(8, 3)
+  sourceId     String?     @map("source_id") @db.Uuid
+  sourceTab    String?     @map("source_tab")
+  sourceRow    Int?        @map("source_row")
+  /// Last sync job that changed the value.
+  syncJobId    String?     @map("sync_job_id") @db.Uuid
+  /// Admin who made a manual correction.
+  updatedById  String?     @map("updated_by") @db.Uuid
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  enrollment Enrollment                @relation(fields: [enrollmentId, offeringId], references: [id, offeringId])
+  criterion  AssessmentCriterion       @relation(fields: [criterionId, offeringId], references: [id, offeringId])
+  updatedBy  User?                     @relation(fields: [updatedById], references: [id])
+  revisions  AssessmentScoreRevision[]
+
+  @@unique([enrollmentId, criterionId])
+  @@index([criterionId])
+  @@map("assessment_scores")
+}
+
+/// Append-only history of score changes.
+model AssessmentScoreRevision {
+  id          String       @id @default(uuid(7)) @db.Uuid
+  scoreId     String       @map("score_id") @db.Uuid
+  oldStatus   ScoreStatus? @map("old_status")
+  oldMark     Decimal?     @map("old_mark") @db.Decimal(8, 3)
+  newStatus   ScoreStatus  @map("new_status")
+  newMark     Decimal      @map("new_mark") @db.Decimal(8, 3)
+  syncJobId   String?      @map("sync_job_id") @db.Uuid
+  changedById String?      @map("changed_by") @db.Uuid
+  sourceTab   String?      @map("source_tab")
+  sourceRow   Int?         @map("source_row")
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  score     AssessmentScore @relation(fields: [scoreId], references: [id])
+  changedBy User?           @relation(fields: [changedById], references: [id])
+
+  @@index([scoreId, createdAt])
+  @@map("assessment_score_revisions")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Synchronization
+// ---------------------------------------------------------------------------------------------
+
+enum SyncScope {
+  SOURCE
+  GENERATION
+  ALL
+}
+
+enum SyncStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  SUCCEEDED_WITH_ERRORS
+  FAILED
+  CANCELLED
+}
+
+model SyncJob {
+  id              String     @id @default(uuid(7)) @db.Uuid
+  parentId        String?    @map("parent_id") @db.Uuid
+  scope           SyncScope
+  sourceId        String?    @map("source_id") @db.Uuid
+  generationId    String?    @map("generation_id") @db.Uuid
+  status          SyncStatus @default(QUEUED)
+  phase           String?
+  progressCurrent Int        @default(0) @map("progress_current")
+  progressTotal   Int        @default(0) @map("progress_total")
+  /// Report summary: per-entity created/updated/unchanged/skipped/rejected counts.
+  counts          Json       @default("{}")
+  errorCount      Int        @default(0) @map("error_count")
+  warningCount    Int        @default(0) @map("warning_count")
+  failureCode     String?    @map("failure_code")
+  failureMessage  String?    @map("failure_message")
+  retryOfId       String?    @map("retry_of_id") @db.Uuid
+  requestedById   String     @map("requested_by") @db.Uuid
+  queuedAt        DateTime   @default(now()) @map("queued_at") @db.Timestamptz(3)
+  startedAt       DateTime?  @map("started_at") @db.Timestamptz(3)
+  finishedAt      DateTime?  @map("finished_at") @db.Timestamptz(3)
+
+  parent      SyncJob?           @relation("SyncJobChildren", fields: [parentId], references: [id])
+  children    SyncJob[]          @relation("SyncJobChildren")
+  retryOf     SyncJob?           @relation("SyncJobRetries", fields: [retryOfId], references: [id])
+  retries     SyncJob[]          @relation("SyncJobRetries")
+  source      GoogleSheetSource? @relation(fields: [sourceId], references: [id])
+  generation  Generation?        @relation(fields: [generationId], references: [id])
+  requestedBy User               @relation(fields: [requestedById], references: [id])
+  errors      SyncError[]
+
+  @@unique([sourceId], map: "sync_jobs_one_active_per_source", where: raw("scope = 'SOURCE' AND finished_at IS NULL"))
+  @@index([sourceId, queuedAt(sort: Desc)])
+  @@index([parentId])
+  @@index([status])
+  @@index([queuedAt(sort: Desc)])
+  @@map("sync_jobs")
+}
+
+enum SyncErrorSeverity {
+  ERROR
+  WARNING
+}
+
+model SyncError {
+  id           String            @id @default(uuid(7)) @db.Uuid
+  jobId        String            @map("job_id") @db.Uuid
+  severity     SyncErrorSeverity
+  code         String
+  message      String
+  sheetTab     String?           @map("sheet_tab")
+  rowNumber    Int?              @map("row_number")
+  columnKey    String?           @map("column_key")
+  studentCode  String?           @map("student_code")
+  courseKey    String?           @map("course_key")
+  criterionKey String?           @map("criterion_key")
+  /// Truncated to 200 characters by the writer.
+  rawValue     String?           @map("raw_value")
+  createdAt    DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  job SyncJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, severity])
+  @@map("sync_errors")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------------------------
+
+enum ActorType {
+  USER
+  SYSTEM
+}
+
+/// Append-only (UPDATE/DELETE rejected by trigger).
+model AuditLog {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  actorUserId String?   @map("actor_user_id") @db.Uuid
+  actorType   ActorType @map("actor_type")
+  /// Dotted action name, e.g. auth.login.success
+  action      String
+  entityType  String?   @map("entity_type")
+  entityId    String?   @map("entity_id")
+  metadata    Json      @default("{}")
+  ip          String?
+  userAgent   String?   @map("user_agent")
+  requestId   String?   @map("request_id")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  actor User? @relation(fields: [actorUserId], references: [id])
+
+  @@index([createdAt(sort: Desc)])
+  @@index([entityType, entityId])
+  @@index([actorUserId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}

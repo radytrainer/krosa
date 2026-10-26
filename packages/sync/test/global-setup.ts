@@ -1,0 +1,10 @@
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { prepareTestDatabase } from '@ssrs/database/testing';
+import { config } from 'dotenv';
+
+export default async function setup(): Promise<void> {
+  const rootEnv = resolve(import.meta.dirname, '../../../.env');
+  if (existsSync(rootEnv)) config({ path: rootEnv, override: false, quiet: true });
+  await prepareTestDatabase(process.env['TEST_DATABASE_URL']);
+}

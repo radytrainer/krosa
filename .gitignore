@@ -1,0 +1,31 @@
+node_modules/
+dist/
+.next/
+out/
+coverage/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# generated Prisma client
+packages/database/src/generated/
+
+# env & secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*service-account*.json
+
+# test output
+playwright-report/
+test-results/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.log

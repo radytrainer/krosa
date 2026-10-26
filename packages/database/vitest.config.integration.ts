@@ -1,0 +1,13 @@
+import { defineConfig } from 'vitest/config';
+
+// Runs against TEST_DATABASE_URL (recreated from migrations by the global setup).
+export default defineConfig({
+  test: {
+    globals: true,
+    include: ['test/**/*.integration-spec.ts'],
+    globalSetup: ['./test/global-setup.ts'],
+    fileParallelism: false,
+    testTimeout: 30_000,
+    hookTimeout: 120_000,
+  },
+});
