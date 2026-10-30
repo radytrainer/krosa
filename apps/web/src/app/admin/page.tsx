@@ -116,23 +116,11 @@ export default function AdminDashboardPage() {
               detail={`${data.generations.archived} archived · ${data.sources.active} active sheet sources`}
             />
             <Stat
-              label="Course offerings"
+              label="Subjects"
               value={data.offerings.total}
-              href="/admin/offerings"
+              href="/admin/generations"
               icon={<BookOpen className="size-4" />}
-              attention={data.offerings.withoutPublishedScheme > 0}
-              detail={
-                <>
-                  {data.offerings.visible} visible to students ·{' '}
-                  <span
-                    className={
-                      data.offerings.withoutPublishedScheme ? 'font-medium text-warning' : undefined
-                    }
-                  >
-                    {data.offerings.withoutPublishedScheme} without a published scheme
-                  </span>
-                </>
-              }
+              detail={`${data.offerings.visible} released to students`}
             />
             <Stat
               label="Failed syncs"

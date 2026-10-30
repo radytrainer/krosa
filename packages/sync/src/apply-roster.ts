@@ -1,5 +1,5 @@
 import type { Prisma, PrismaClient } from '@ssrs/database';
-import type { ParsedStudent } from '@ssrs/sheets';
+import type { RosterStudent } from '@ssrs/sheets';
 import { lockedPasswordHash } from '@ssrs/shared/node';
 import type { SyncCounts, SyncIssue } from './types.js';
 
@@ -7,6 +7,8 @@ export interface RosterContext {
   syncJobId: string;
   sourceId: string;
   generationId: string;
+  /** Tab the roster came from, for issue reports. */
+  rosterTab: string;
 }
 
 export interface RosterResult {
@@ -31,15 +33,19 @@ const TX_OPTIONS = { maxWait: 30_000, timeout: 120_000 } as const;
 export async function applyRoster(
   prisma: PrismaClient,
   ctx: RosterContext,
-  students: readonly ParsedStudent[],
+  students: readonly RosterStudent[],
   now: Date,
+  /** Runs inside this transaction instead of its own (all-or-nothing sheet changes). */
+  shared?: Prisma.TransactionClient,
 ): Promise<RosterResult> {
   const issues: SyncIssue[] = [];
   const counts = { created: 0, updated: 0, unchanged: 0, rejected: 0 };
   const studentIdByCode = new Map<string, string>();
   if (students.length === 0) return { studentIdByCode, issues, counts };
 
-  await prisma.$transaction(async (tx) => {
+  const run = (work: (tx: Prisma.TransactionClient) => Promise<void>) =>
+    shared ? work(shared) : prisma.$transaction(work, TX_OPTIONS);
+  await run(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${ROSTER_LOCK}))`;
     const codes = students.map((s) => s.studentCode);
     const existingStudents = await tx.student.findMany({ where: { studentCode: { in: codes } } });
@@ -50,11 +56,11 @@ export async function applyRoster(
     });
     const takenUsernames = new Set(usersWithoutStudent.map((u) => u.username.toUpperCase()));
 
-    const toCreate: ParsedStudent[] = [];
+    const toCreate: RosterStudent[] = [];
     const seenIds: string[] = [];
     for (const parsed of students) {
       const at = {
-        sheetTab: 'Students',
+        sheetTab: ctx.rosterTab,
         rowNumber: parsed.rowNumber,
         studentCode: parsed.studentCode,
       };
@@ -87,12 +93,20 @@ export async function applyRoster(
       }
       const changed =
         existing.fullName !== parsed.fullName ||
+        (existing.firstName ?? null) !== parsed.firstName ||
+        (existing.lastName ?? null) !== parsed.lastName ||
         existing.gender !== parsed.gender ||
         (existing.className ?? null) !== parsed.className;
       if (changed) {
         await tx.student.update({
           where: { id: existing.id },
-          data: { fullName: parsed.fullName, gender: parsed.gender, className: parsed.className },
+          data: {
+            fullName: parsed.fullName,
+            firstName: parsed.firstName,
+            lastName: parsed.lastName,
+            gender: parsed.gender,
+            className: parsed.className,
+          },
         });
         counts.updated++;
       } else {
@@ -125,6 +139,8 @@ export async function applyRoster(
           userId: userIdFor(s.studentCode),
           generationId: ctx.generationId,
           fullName: s.fullName,
+          firstName: s.firstName,
+          lastName: s.lastName,
           gender: s.gender,
           className: s.className,
           sourceId: ctx.sourceId,
@@ -156,7 +172,7 @@ export async function applyRoster(
         data: { lastSeenSyncJobId: ctx.syncJobId, sourceId: ctx.sourceId },
       });
     }
-  }, TX_OPTIONS);
+  });
 
   return { studentIdByCode, issues, counts };
 }

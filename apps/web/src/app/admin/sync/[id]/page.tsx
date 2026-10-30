@@ -3,7 +3,7 @@
 import { RotateCcw, XCircle } from 'lucide-react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { IssuesTable } from '@/components/admin/issues-table';
 import { SyncJobsTable, jobTarget } from '@/components/admin/sync-jobs-table';
 import { NativeSelect } from '@/components/app/form';
@@ -26,7 +26,7 @@ import {
 import { apiFetch } from '@/lib/api';
 import { formatDateTime, formatDuration, humanize } from '@/lib/format';
 import { qs, useApi, useApiMutation } from '@/lib/query';
-import type { Paginated, SyncError, SyncJobDetail } from '@/lib/types';
+import type { SyncErrorPage, SyncJobDetail } from '@/lib/types';
 
 const PHASES: Record<string, string> = {
   FETCH: 'Reading the spreadsheet',
@@ -71,34 +71,78 @@ function CountsTable({ counts }: { counts: SyncJobDetail['counts'] }) {
   );
 }
 
-function JobIssues({ jobId, active }: { jobId: string; active: boolean }) {
+function JobIssues({ job, active }: { job: SyncJobDetail; active: boolean }) {
   const [severity, setSeverity] = useState('');
+  const [sheetTab, setSheetTab] = useState('');
+  const [sourceId, setSourceId] = useState('');
   const [page, setPage] = useState(1);
-  const errors = useApi<Paginated<SyncError>>(
-    `/admin/sync/${jobId}/errors${qs({ severity, page, pageSize: 50 })}`,
+  const sources = job.children.flatMap((c) => (c.source ? [c.source] : []));
+  const errors = useApi<SyncErrorPage>(
+    `/admin/sync/${job.id}/errors${qs({ severity, sheetTab, sourceId, page, pageSize: 50 })}`,
     {
       keepPrevious: true,
       refetchInterval: active ? 5000 : false,
     },
   );
+  const { refetch } = errors;
+  // A job saves its issues as it ends, often between two polls: read them once more.
+  useEffect(() => {
+    if (!active) void refetch();
+  }, [active, refetch]);
   return (
     <Section
       title="Issues"
       description="Rejected rows and cells, and warnings, with their location in the spreadsheet."
       actions={
-        <NativeSelect
-          aria-label="Severity"
-          className="w-40"
-          value={severity}
-          onChange={(e) => {
-            setSeverity(e.target.value);
-            setPage(1);
-          }}
-        >
-          <option value="">Errors and warnings</option>
-          <option value="ERROR">Errors only</option>
-          <option value="WARNING">Warnings only</option>
-        </NativeSelect>
+        <div className="flex flex-wrap gap-2">
+          {sources.length > 1 ? (
+            <NativeSelect
+              aria-label="Workbook"
+              className="w-48"
+              value={sourceId}
+              onChange={(e) => {
+                setSourceId(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">All workbooks</option>
+              {sources.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.generation.name}, {s.term.name}
+                </option>
+              ))}
+            </NativeSelect>
+          ) : null}
+          <NativeSelect
+            aria-label="Tab"
+            className="w-40"
+            value={sheetTab}
+            onChange={(e) => {
+              setSheetTab(e.target.value);
+              setPage(1);
+            }}
+          >
+            <option value="">All tabs</option>
+            {errors.data?.tabs.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </NativeSelect>
+          <NativeSelect
+            aria-label="Severity"
+            className="w-40"
+            value={severity}
+            onChange={(e) => {
+              setSeverity(e.target.value);
+              setPage(1);
+            }}
+          >
+            <option value="">Errors and warnings</option>
+            <option value="ERROR">Errors only</option>
+            <option value="WARNING">Warnings only</option>
+          </NativeSelect>
+        </div>
       }
     >
       {errors.error ? (
@@ -108,11 +152,11 @@ function JobIssues({ jobId, active }: { jobId: string; active: boolean }) {
       ) : errors.data.data.length === 0 ? (
         <EmptyState
           title="No issues"
-          description={active ? 'Nothing reported so far.' : 'Everything in the file was accepted.'}
+          description={active ? 'Nothing reported so far.' : 'Nothing to show for these filters.'}
         />
       ) : (
         <>
-          <IssuesTable issues={errors.data.data} />
+          <IssuesTable issues={errors.data.data} showWorkbook={sources.length > 1} />
           <Pagination {...errors.data.meta} onPage={setPage} />
         </>
       )}
@@ -264,7 +308,7 @@ export default function SyncJobPage() {
           </Section>
         ) : null}
 
-        <JobIssues jobId={job.id} active={active} />
+        <JobIssues job={job} active={active} />
       </div>
     </>
   );

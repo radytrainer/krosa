@@ -3,28 +3,43 @@ import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
+  IsInt,
   IsOptional,
   IsString,
   IsUUID,
   Length,
+  Min,
   ValidateIf,
 } from 'class-validator';
 import { PaginationQueryDto } from '../common/pagination.js';
 
 export class RequestSyncDto {
-  @ApiProperty({ enum: ['SOURCE', 'GENERATION', 'ALL'] })
-  @IsEnum(['SOURCE', 'GENERATION', 'ALL'])
-  scope!: 'SOURCE' | 'GENERATION' | 'ALL';
+  @ApiProperty({ enum: ['SOURCE', 'TERM', 'GENERATION', 'ALL'] })
+  @IsEnum(['SOURCE', 'TERM', 'GENERATION', 'ALL'])
+  scope!: 'SOURCE' | 'TERM' | 'GENERATION' | 'ALL';
 
   @ApiPropertyOptional({ description: 'Required for scope SOURCE' })
   @ValidateIf((o: RequestSyncDto) => o.scope === 'SOURCE')
   @IsUUID()
   sourceId?: string;
 
-  @ApiPropertyOptional({ description: 'Required for scope GENERATION' })
-  @ValidateIf((o: RequestSyncDto) => o.scope === 'GENERATION')
+  @ApiPropertyOptional({ description: 'Required for scopes GENERATION and TERM' })
+  @ValidateIf((o: RequestSyncDto) => o.scope === 'GENERATION' || o.scope === 'TERM')
   @IsUUID()
   generationId?: string;
+
+  @ApiPropertyOptional({ description: 'Required for scope TERM; must belong to generationId' })
+  @ValidateIf((o: RequestSyncDto) => o.scope === 'TERM')
+  @IsUUID()
+  termId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Scope ALL only: sync this term number of every active generation',
+  })
+  @ValidateIf((o: RequestSyncDto) => o.scope === 'ALL' && o.termNumber !== undefined)
+  @IsInt()
+  @Min(1)
+  termNumber?: number;
 }
 
 const STATUSES = [
@@ -84,4 +99,9 @@ export class ListSyncErrorsQueryDto extends PaginationQueryDto {
   @IsString()
   @Length(1, 200)
   sheetTab?: string;
+
+  @ApiPropertyOptional({ description: "Only this source's issues (child jobs of a parent job)" })
+  @IsOptional()
+  @IsUUID()
+  sourceId?: string;
 }

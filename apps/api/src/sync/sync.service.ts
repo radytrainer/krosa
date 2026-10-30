@@ -7,7 +7,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { Prisma, SyncJob } from '@ssrs/database';
-import { failJob } from '@ssrs/sync';
+import { failJob, previewGate } from '@ssrs/sync';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { RateLimiter } from '../auth/login-rate-limiter.js';
@@ -28,7 +28,15 @@ const SYNC_REQUEST_LIMIT = { limit: 10, windowSeconds: 60 };
 const RETRYABLE = new Set(['FAILED', 'SUCCEEDED_WITH_ERRORS']);
 
 const JOB_INCLUDE = {
-  source: { select: { id: true, label: true, spreadsheetId: true } },
+  source: {
+    select: {
+      id: true,
+      label: true,
+      spreadsheetId: true,
+      generation: { select: { id: true, code: true, name: true } },
+      term: { select: { id: true, number: true, name: true } },
+    },
+  },
   generation: { select: { id: true, code: true, name: true } },
   requestedBy: { select: { id: true, username: true } },
 } satisfies Prisma.SyncJobInclude;
@@ -46,8 +54,16 @@ export interface SyncJobView {
   warningCount: number;
   failureCode: string | null;
   failureMessage: string | null;
-  source: { id: string; label: string; spreadsheetId: string } | null;
+  source: {
+    id: string;
+    label: string;
+    spreadsheetId: string;
+    generation: { id: string; code: string; name: string };
+    term: { id: string; number: number; name: string };
+  } | null;
   generation: { id: string; code: string; name: string } | null;
+  /** Scope ALL only: the term number this run was limited to. */
+  termNumber: number | null;
   requestedBy: { id: string; username: string };
   parentId: string | null;
   retryOfId: string | null;
@@ -70,6 +86,7 @@ function toView(j: JobRow): SyncJobView {
     failureMessage: j.failureMessage,
     source: j.source,
     generation: j.generation,
+    termNumber: j.termNumber,
     requestedBy: j.requestedBy,
     parentId: j.parentId,
     retryOfId: j.retryOfId,
@@ -83,6 +100,14 @@ interface Target {
   scope: 'SOURCE' | 'GENERATION' | 'ALL';
   sourceId?: string | null;
   generationId?: string | null;
+  termNumber?: number | null;
+}
+
+export interface SyncTargetOption {
+  id: string;
+  code: string;
+  name: string;
+  terms: { id: string; number: number; name: string }[];
 }
 
 @Injectable()
@@ -103,12 +128,62 @@ export class SyncService {
   ): Promise<{ jobId: string }> {
     const limit = await this.limiter.hit('sync:request', actor.userId, SYNC_REQUEST_LIMIT);
     if (!limit.allowed) throw new RateLimitedException(limit.retryAfterSeconds);
+    if (dto.scope === 'TERM') {
+      const sourceId = await this.termSource(dto.generationId ?? '', dto.termId ?? '');
+      return this.start({ scope: 'SOURCE', sourceId }, actor, meta, null);
+    }
     return this.start(
-      { scope: dto.scope, sourceId: dto.sourceId, generationId: dto.generationId },
+      {
+        scope: dto.scope,
+        sourceId: dto.sourceId,
+        generationId: dto.generationId,
+        termNumber: dto.scope === 'ALL' ? dto.termNumber : null,
+      },
       actor,
       meta,
       null,
     );
+  }
+
+  /** Resolves a Generation + Term pair to that term's active workbook. */
+  private async termSource(generationId: string, termId: string): Promise<string> {
+    const generation = await this.prisma.client.generation.findUnique({
+      where: { id: generationId },
+    });
+    if (!generation)
+      throw new NotFoundException({ code: 'NOT_FOUND', message: 'Generation not found' });
+    const term = await this.prisma.client.term.findFirst({ where: { id: termId, generationId } });
+    if (!term) {
+      throw new UnprocessableEntityException({
+        code: 'TERM_NOT_IN_GENERATION',
+        message: `This term does not belong to ${generation.name}.`,
+      });
+    }
+    const source = await this.prisma.client.googleSheetSource.findFirst({
+      where: { termId, status: 'ACTIVE' },
+      select: { id: true },
+    });
+    if (!source) {
+      throw new UnprocessableEntityException({
+        code: 'NO_WORKBOOK_FOR_TERM',
+        message: `${generation.name}, ${term.name} has no active workbook.`,
+      });
+    }
+    return source.id;
+  }
+
+  /** Generation and Term options for the sync form: active generations with their terms. */
+  async targets(): Promise<SyncTargetOption[]> {
+    return this.prisma.client.generation.findMany({
+      where: { status: 'ACTIVE' },
+      orderBy: [{ startDate: 'desc' }, { code: 'asc' }],
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        terms: { orderBy: { number: 'asc' }, select: { id: true, number: true, name: true } },
+      },
+    });
   }
 
   async retry(jobId: string, actor: AuthUser, meta: RequestMeta): Promise<{ jobId: string }> {
@@ -138,7 +213,7 @@ export class SyncService {
       });
       if (!source)
         throw new NotFoundException({ code: 'NOT_FOUND', message: 'Spreadsheet source not found' });
-      if (source.status !== 'ACTIVE') {
+      if (source.status === 'DISABLED') {
         throw new ConflictException({
           code: 'SOURCE_DISABLED',
           message: 'This spreadsheet source is disabled.',
@@ -150,11 +225,24 @@ export class SyncService {
           message: 'The generation is archived.',
         });
       }
-      const job = await this.createSourceJob(source.id, actor.userId, null, retryOfId);
+      const confirmed = await db.sheetTabMapping.count({
+        where: { sourceId: source.id, status: 'CONFIRMED' },
+      });
+      if (confirmed === 0) {
+        throw new UnprocessableEntityException({
+          code: 'NO_CONFIRMED_TABS',
+          message: 'Confirm at least one subject tab before syncing this workbook.',
+        });
+      }
+      if (source.status === 'PENDING') {
+        const gate = await previewGate(db, source.id, null);
+        if (gate) throw new UnprocessableEntityException(gate);
+      }
+      const job = await this.createSourceJob(source, actor.userId, null, retryOfId);
       if (!job.ok) {
         throw new ConflictException({
           code: 'SYNC_IN_PROGRESS',
-          message: 'A sync of this spreadsheet is already queued or running.',
+          message: 'A sync of this term is already queued or running.',
           jobId: job.activeJobId,
         });
       }
@@ -179,10 +267,12 @@ export class SyncService {
     const sources = await db.googleSheetSource.findMany({
       where: {
         status: 'ACTIVE',
+        tabMappings: { some: { status: 'CONFIRMED' } },
         generation: { status: 'ACTIVE' },
         ...(target.scope === 'GENERATION' ? { generationId: target.generationId ?? '' } : {}),
+        ...(target.termNumber ? { term: { number: target.termNumber } } : {}),
       },
-      select: { id: true, label: true },
+      select: { id: true, label: true, termId: true },
       orderBy: { createdAt: 'asc' },
     });
     if (sources.length === 0) {
@@ -197,6 +287,7 @@ export class SyncService {
       data: {
         scope: target.scope,
         generationId: target.scope === 'GENERATION' ? target.generationId : null,
+        termNumber: target.scope === 'ALL' ? (target.termNumber ?? null) : null,
         requestedById: actor.userId,
         retryOfId,
         progressTotal: sources.length,
@@ -205,7 +296,7 @@ export class SyncService {
     const childIds: string[] = [];
     const busy: { id: string; label: string; activeJobId: string | null }[] = [];
     for (const source of sources) {
-      const child = await this.createSourceJob(source.id, actor.userId, parent.id, null);
+      const child = await this.createSourceJob(source, actor.userId, parent.id, null);
       if (child.ok) childIds.push(child.id);
       else busy.push({ id: source.id, label: source.label, activeJobId: child.activeJobId });
     }
@@ -239,20 +330,27 @@ export class SyncService {
   }
 
   private async createSourceJob(
-    sourceId: string,
+    source: { id: string; termId: string },
     requestedById: string,
     parentId: string | null,
     retryOfId: string | null,
   ): Promise<{ ok: true; id: string } | { ok: false; activeJobId: string | null }> {
     try {
       const job = await this.prisma.client.syncJob.create({
-        data: { scope: 'SOURCE', sourceId, requestedById, parentId, retryOfId },
+        data: {
+          scope: 'SOURCE',
+          sourceId: source.id,
+          termId: source.termId,
+          requestedById,
+          parentId,
+          retryOfId,
+        },
       });
       return { ok: true, id: job.id };
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;
       const active = await this.prisma.client.syncJob.findFirst({
-        where: { scope: 'SOURCE', sourceId, finishedAt: null },
+        where: { scope: 'SOURCE', termId: source.termId, finishedAt: null },
         select: { id: true },
       });
       return { ok: false, activeJobId: active?.id ?? null };
@@ -276,6 +374,7 @@ export class SyncService {
         scope: target.scope,
         sourceId: target.sourceId ?? null,
         generationId: target.generationId ?? null,
+        termNumber: target.termNumber ?? null,
         retryOfId,
         ...extra,
       },
@@ -346,36 +445,58 @@ export class SyncService {
     return { ...toView(job), children: job.children.map(toView) };
   }
 
+  /**
+   * Issues of a job. Issues are stored on the per-source job that found them, so a parent job
+   * reads its children's rows as well as its own (job-level warnings). Nothing is copied.
+   */
   async errors(id: string, query: ListSyncErrorsQueryDto) {
     const exists = await this.prisma.client.syncJob.findUnique({
       where: { id },
       select: { id: true },
     });
     if (!exists) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Sync job not found' });
+    const ofJob: Prisma.SyncErrorWhereInput = { OR: [{ jobId: id }, { job: { parentId: id } }] };
     const where: Prisma.SyncErrorWhereInput = {
-      jobId: id,
+      ...ofJob,
       ...(query.severity ? { severity: query.severity } : {}),
       ...(query.code ? { code: query.code } : {}),
       ...(query.sheetTab ? { sheetTab: query.sheetTab } : {}),
+      ...(query.sourceId ? { job: { sourceId: query.sourceId } } : {}),
     };
-    const [rows, total] = await Promise.all([
+    const [rows, total, tabs] = await Promise.all([
       this.prisma.client.syncError.findMany({
         where,
+        include: { job: { select: { source: { select: { id: true, label: true } } } } },
         orderBy: [
           { severity: 'asc' },
           { sheetTab: 'asc' },
           { rowNumber: 'asc' },
           { createdAt: 'asc' },
+          { id: 'asc' },
         ],
         ...skipTake(query),
       }),
       this.prisma.client.syncError.count({ where }),
+      this.prisma.client.syncError.findMany({
+        where: { ...ofJob, sheetTab: { not: null } },
+        distinct: ['sheetTab'],
+        select: { sheetTab: true },
+        orderBy: { sheetTab: 'asc' },
+      }),
     ]);
-    return paginated(
-      rows.map(({ jobId: _jobId, ...e }) => ({ ...e, createdAt: e.createdAt.toISOString() })),
-      total,
-      query,
-    );
+    return {
+      ...paginated(
+        rows.map(({ jobId: _jobId, job, ...e }) => ({
+          ...e,
+          source: job.source,
+          createdAt: e.createdAt.toISOString(),
+        })),
+        total,
+        query,
+      ),
+      /** Every tab with issues in this job, for the filter (not limited by the filters). */
+      tabs: tabs.flatMap((t) => (t.sheetTab ? [t.sheetTab] : [])),
+    };
   }
 
   async sourceHistory(

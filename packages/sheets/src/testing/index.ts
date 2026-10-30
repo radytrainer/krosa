@@ -1,2 +1,2 @@
 export * from './in-memory-reader.js';
-export * from './fixtures.js';
+export * from './term-workbook-fixture.js';

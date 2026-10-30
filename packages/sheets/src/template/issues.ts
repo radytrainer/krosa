@@ -5,7 +5,7 @@ export type IssueSeverity = 'ERROR' | 'WARNING';
 /**
  * Blast radius of an issue:
  *  FILE   – the whole source is rejected, nothing is written.
- *  COURSE – that course offering is skipped (or, for scheme issues, stays unconfigured).
+ *  COURSE – that subject tab is skipped.
  *  ROW    – that row is skipped.
  *  CELL   – only that cell is skipped.
  */
@@ -13,34 +13,21 @@ export type IssueScope = 'FILE' | 'COURSE' | 'ROW' | 'CELL';
 
 export type IssueCode =
   // file
-  | 'TEMPLATE_TAB_MISSING'
-  | 'UNSUPPORTED_TEMPLATE_VERSION'
-  | 'GENERATION_CODE_MISSING'
+  | 'ROSTER_TAB_MISSING'
   | 'GENERATION_MISMATCH'
+  | 'TERM_MISMATCH'
   | 'MISSING_COLUMN'
   | 'TAB_TOO_LARGE'
-  | 'TOO_MANY_COURSES'
-  // course
-  | 'INVALID_COURSE_KEY'
-  | 'INVALID_TERM'
-  | 'INVALID_COURSE_CODE'
-  | 'MISSING_COURSE_NAME'
-  | 'INVALID_CREDITS'
-  | 'DUPLICATE_COURSE'
-  | 'DUPLICATE_WORKSHEET'
-  | 'WORKSHEET_NOT_FOUND'
-  | 'NO_CRITERIA'
-  | 'INVALID_CRITERION_KEY'
-  | 'DUPLICATE_CRITERION'
-  | 'INVALID_MAX_MARK'
-  | 'INVALID_WEIGHT'
-  | 'WEIGHTS_NOT_100'
+  | 'NO_CONFIRMED_TABS'
+  // tab (scope COURSE)
   | 'MISSING_STUDENT_ID_COLUMN'
-  | 'UNKNOWN_COLUMN'
   | 'DUPLICATE_COLUMN'
+  | 'NO_CRITERIA'
+  | 'WORKSHEET_NOT_FOUND'
+  | 'NEEDS_REMAP'
   // row
-  | 'UNKNOWN_COURSE'
   | 'INVALID_STUDENT_ID'
+  | 'MISSING_STUDENT_ID'
   | 'MISSING_STUDENT_NAME'
   | 'DUPLICATE_STUDENT'
   | 'UNKNOWN_STUDENT'
@@ -49,13 +36,13 @@ export type IssueCode =
   | 'INVALID_MARK'
   // warnings
   | 'UNKNOWN_GENDER'
-  | 'UNKNOWN_CATEGORY'
-  | 'INVALID_VISIBLE'
-  | 'INVALID_ORDER'
-  | 'MISSING_CRITERION_COLUMN'
   | 'PROFILE_MISMATCH'
-  | 'IGNORED_COLUMN'
-  | 'IGNORED_TAB';
+  | 'MISSING_WEIGHT'
+  | 'WEIGHTS_NOT_100'
+  | 'GROUP_WEIGHT_MISMATCH'
+  | 'WEIGHTS_DISAGREE_WITH_SHEET_TOTAL'
+  | 'UNRECOGNIZED_COLUMN'
+  | 'UNMAPPED_TAB';
 
 export interface TemplateIssue {
   severity: IssueSeverity;

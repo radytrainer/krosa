@@ -38,6 +38,11 @@ export interface Term {
   endDate: string | null;
 }
 
+export interface TermDetail extends Term {
+  subjects: number;
+  visibleSubjects: number;
+}
+
 export interface Generation {
   id: string;
   code: string;
@@ -50,18 +55,20 @@ export interface Generation {
 }
 
 export interface GenerationDetail extends Generation {
-  terms: Term[];
+  terms: TermDetail[];
   counts: { students: number; offerings: number; sources: number };
 }
 
 export interface Source {
   id: string;
   generation: { id: string; code: string; name: string };
+  term: { id: string; number: number; name: string };
+  rosterTab: string;
   spreadsheetId: string;
   spreadsheetUrl: string;
   label: string;
   spreadsheetTitle: string | null;
-  status: 'ACTIVE' | 'DISABLED';
+  status: 'ACTIVE' | 'PENDING' | 'DISABLED';
   lastSyncedAt: string | null;
   lastSyncJobId: string | null;
   ownedOfferings: number;
@@ -83,118 +90,114 @@ export interface SheetIssue {
   rawValue?: string | null;
 }
 
-export interface SourcePreview {
+export type ColumnRole =
+  | 'STUDENT_ID'
+  | 'FIRST_NAME'
+  | 'LAST_NAME'
+  | 'FULL_NAME'
+  | 'GENDER'
+  | 'CLASS'
+  | 'CRITERION'
+  | 'REFERENCE_TOTAL'
+  | 'COMMENT'
+  | 'IGNORE';
+
+export interface ColumnMapping {
+  columnIndex: number;
+  headerLabel: string | null;
+  groupLabel: string | null;
+  role: ColumnRole;
+  criterionId: string | null;
+  proposedName: string | null;
+  proposedWeight: string | null;
+}
+
+export interface TabMapping {
+  id: string;
+  tabName: string;
+  status: 'DRAFT' | 'CONFIRMED' | 'IGNORED';
+  version: number;
+  headerRow: number;
+  offeringId: string | null;
+  confirmedAt: string | null;
+  columns: ColumnMapping[];
+  carriedFrom: { subject: string; headersMatch: boolean } | null;
+}
+
+export interface SheetCheck {
+  spreadsheetId: string;
+  spreadsheetTitle: string;
+  tabs: string[];
+}
+
+export interface TermWorkbooks {
+  generation: { id: string; code: string; name: string };
+  term: { id: string; number: number; name: string };
+  active: Source | null;
+  pending: (Source & { previewState: 'NONE' | 'NOT_CONFIRMED' | 'CONFIRMED' }) | null;
+  history: Source[];
+  runningJobId: string | null;
+}
+
+export interface ImpactCounts {
+  new: number;
+  changed: number;
+  unchanged: number;
+  invalid: number;
+}
+
+export interface PreviewTab {
+  tabName: string;
+  subject: string;
+  status: 'OK' | 'MISSING' | 'HEADERS_CHANGED' | 'INVALID';
+  scores: ImpactCounts;
+  keptBlank: number;
+  weightsChanged: boolean;
+}
+
+export interface SheetPreview {
+  id: string;
+  createdAt: string;
+  confirmedAt: string | null;
+  summary: {
+    spreadsheetTitle: string;
+    canConfirm: boolean;
+    students: ImpactCounts;
+    scores: ImpactCounts;
+    tabs: PreviewTab[];
+    unmappedTabs: string[];
+    subjectsNotInSheet: string[];
+    missingStudents: { total: number; sample: { studentCode: string; fullName: string }[] };
+    issues: SheetIssue[];
+    issuesTruncated: boolean;
+  };
+}
+
+export interface DetectedTab {
+  tabName: string;
+  mapping: TabMapping | null;
+  detected: {
+    headerRow: number;
+    totalWeight: string | null;
+    studentRows: number;
+    unknownStudents: number;
+    crossCheck: {
+      comparableRows: number;
+      mismatchedRows: number;
+      blanksAsZeroRows: number;
+    } | null;
+    headersChanged: boolean;
+  } | null;
+}
+
+export interface Detection {
   spreadsheetTitle: string;
   fatal: boolean;
-  stats: {
-    students: number;
-    courses: number;
-    coursesWithValidScheme: number;
-    markRows: number;
-    marks: number;
-    blankMarks: number;
-    errors: number;
-    warnings: number;
-  };
+  rosterTab: string | null;
+  rosterStudents: number;
   issues: SheetIssue[];
   issuesTruncated: boolean;
-  courses: {
-    courseKey: string;
-    termNumber: number;
-    title: string;
-    criteria: number;
-    rows: number;
-    schemeValid: boolean;
-  }[];
-}
-
-export interface Course {
-  id: string;
-  code: string;
-  name: string;
-  description: string | null;
-}
-
-export type Visibility = 'HIDDEN' | 'VISIBLE';
-
-export interface Offering {
-  id: string;
-  generationId: string;
-  term: { id: string; number: number; name: string };
-  course: { id: string; code: string; name: string };
-  externalKey: string;
-  title: string;
-  credits: string;
-  visibility: Visibility;
-  visibilityOverridden: boolean;
-  status: 'ACTIVE' | 'ARCHIVED';
-  sourceId: string | null;
-  sheetTab: string | null;
-  criteriaCount: number;
-  publishedSchemeVersion: number | null;
-  hasDraftScheme: boolean;
-}
-
-export const CRITERION_CATEGORIES = [
-  'QUIZ',
-  'EXAM',
-  'HOMEWORK',
-  'ASSIGNMENT',
-  'PROJECT',
-  'PRESENTATION',
-  'PARTICIPATION',
-  'OTHER',
-] as const;
-export type CriterionCategory = (typeof CRITERION_CATEGORIES)[number];
-
-export interface Criterion {
-  id: string;
-  offeringId: string;
-  key: string;
-  name: string;
-  category: CriterionCategory;
-  displayOrder: number;
-  isActive: boolean;
-  description: string | null;
-  sheetColumnKey: string | null;
-  published: { maxMark: string; weight: string } | null;
-  scoreCount: number;
-}
-
-export interface SchemeIssue {
-  code: string;
-  message: string;
-  criterionId?: string;
-  count?: number;
-}
-
-export interface SchemeValidation {
-  valid: boolean;
-  totalWeight: string;
-  issues: SchemeIssue[];
-}
-
-export interface Scheme {
-  id: string;
-  offeringId: string;
-  version: number;
-  status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
-  origin: 'SHEET' | 'ADMIN';
-  totalWeight: string;
-  publishedAt: string | null;
-  publishedBy: { id: string; username: string } | null;
-  notes: string | null;
-  createdAt: string;
-  items: {
-    criterionId: string;
-    key: string;
-    name: string;
-    isActive: boolean;
-    displayOrder: number;
-    maxMark: string;
-    weight: string;
-  }[];
-  validation?: SchemeValidation;
+  tabs: DetectedTab[];
 }
 
 export type AccountStatus = 'PENDING' | 'ACTIVE' | 'DISABLED';
@@ -238,8 +241,15 @@ export interface SyncJob {
   warningCount: number;
   failureCode: string | null;
   failureMessage: string | null;
-  source: { id: string; label: string; spreadsheetId: string } | null;
+  source: {
+    id: string;
+    label: string;
+    spreadsheetId: string;
+    generation: { id: string; code: string; name: string };
+    term: { id: string; number: number; name: string };
+  } | null;
   generation: { id: string; code: string; name: string } | null;
+  termNumber: number | null;
   requestedBy: { id: string; username: string };
   parentId: string | null;
   retryOfId: string | null;
@@ -254,6 +264,19 @@ export interface SyncJobDetail extends SyncJob {
 
 export interface SyncError extends SheetIssue {
   id: string;
+  /** The workbook that found it; null for a job-level issue. */
+  source: { id: string; label: string } | null;
+}
+
+export interface SyncErrorPage extends Paginated<SyncError> {
+  tabs: string[];
+}
+
+export interface SyncTargetOption {
+  id: string;
+  code: string;
+  name: string;
+  terms: { id: string; number: number; name: string }[];
 }
 
 export interface AuditEntry {

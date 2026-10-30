@@ -5,6 +5,5 @@ export * from './google-reader.js';
 export * from './template/constants.js';
 export * from './template/issues.js';
 export * from './template/cells.js';
-export * from './template/parse.js';
-export * from './template/read-workbook.js';
+export * from './term-workbook/index.js';
 export * from './reader-factory.js';

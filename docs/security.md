@@ -1,17 +1,19 @@
 # Security Design
 
+Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+
 ## 1. Threat model (summary)
 
-| Asset                   | Threat                            | Primary controls                                                                                                          |
-| ----------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Student results         | Another student reads them (IDOR) | Identity from session only; student routes take no student identifier; 404 on foreign resources; tests                    |
-| Admin functions         | Student escalates                 | `RolesGuard` on every admin controller (deny by default); tests enumerate all admin routes                                |
-| Accounts                | Brute force / credential stuffing | Throttling (IP + identifier), progressive lockout, Argon2id, generic errors                                               |
-| Sessions                | Token theft / replay              | HttpOnly cookies, short access TTL, refresh rotation with reuse detection, revocation denylist                            |
-| Browser                 | CSRF / XSS                        | SameSite + session-bound CSRF token + Origin check; CSP via Next.js headers; React escaping; no `dangerouslySetInnerHTML` |
-| Google credentials      | Leak                              | Server-only env/secret file, read-only scope, never logged or returned                                                    |
-| Academic data integrity | Bad import                        | Validate-then-apply, unique constraints, revisions, draft schemes, generation-code guard                                  |
-| Logs                    | Secret leakage                    | pino redaction paths, Sentry `beforeSend` scrubbing, audit metadata allowlist                                             |
+| Asset                   | Threat                            | Primary controls                                                                                                                     |
+| ----------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Student results         | Another student reads them (IDOR) | Identity from session only; student routes take no student identifier; 404 on foreign resources; tests                               |
+| Admin functions         | Student escalates                 | `RolesGuard` on every admin controller (deny by default); tests enumerate all admin routes                                           |
+| Accounts                | Brute force / credential stuffing | Throttling (IP + identifier), progressive lockout, Argon2id, generic errors                                                          |
+| Sessions                | Token theft / replay              | HttpOnly cookies, short access TTL, refresh rotation with reuse detection, revocation denylist                                       |
+| Browser                 | CSRF / XSS                        | SameSite + session-bound CSRF token + Origin check; Per-request nonce CSP (`proxy.ts`); React escaping; no `dangerouslySetInnerHTML` |
+| Google credentials      | Leak                              | Server-only env/secret file, read-only scope, never logged or returned                                                               |
+| Academic data integrity | Bad import                        | Validate-then-apply, unique constraints, revisions, tab confirmation, preview of replacement sheets, generation-code guard           |
+| Logs                    | Secret leakage                    | pino redaction paths, Sentry `beforeSend` scrubbing, audit metadata allowlist                                                        |
 
 ## 2. Authentication
 
@@ -22,11 +24,13 @@
   Argon2 verification against a dummy hash equalizes timing, and the response is identical to a
   wrong password (`INVALID_CREDENTIALS`). Status-specific errors (`ACCOUNT_DISABLED`,
   `ACCOUNT_PENDING`, `TEMPORARY_PASSWORD_EXPIRED`) are only returned after the password has been
-  verified, so they reveal nothing to someone guessing passwords.
+  verified, so they reveal nothing to someone guessing passwords. `ACCOUNT_LOCKED` is the exception:
+  it is returned before verification and never for unknown accounts, so it shows that an account
+  exists.
 - **Lockout**: the 5th consecutive failure locks the account for 1 min, and each further failure doubles
   the lock (2, 4, 8 min), capped at 15 min. The counter is incremented atomically and reset on success
   or password change. A locked account returns 429 `ACCOUNT_LOCKED` with `Retry-After`. Admins unlock
-  an account by resetting its password (Phase 3).
+  a student account by resetting its password. Admin account locks expire on their own.
 - **Access token**: JWT HS256, `JWT_ACCESS_SECRET` (≥ 32 random bytes), 15 min, claims
   `sub, role, sid, mcp (mustChangePassword)`, `iss`/`aud` validated.
 - **Refresh token**: 32 random bytes base64url, cookie only, SHA-256 hash stored. Rotation on every
@@ -34,15 +38,16 @@
   detection). Absolute session lifetime 7 days. No `JWT_REFRESH_SECRET` is needed because refresh
   tokens are opaque, not JWTs.
 - **Revocation**: logout / password change / disable / reuse detection set `auth_sessions.revoked_at`
-  and write `ssrs:v1:auth:revoked:{sid}` to Redis with TTL = access TTL. The JWT guard rejects
+  and write `ssrs:v1:auth:revoked:{sid}` to Redis with TTL = access TTL + 60 s. The JWT guard rejects
   revoked `sid`s. If Redis is unavailable the guard falls back to a DB lookup (fail closed, not open).
+  See §13.
 - **Forced password change**: `MustChangePasswordGuard` allows only routes marked
   `@AllowWhenPasswordChangeRequired` (`/auth/me`, `/auth/change-password`; login, refresh and logout are
   public) while `mcp` is true. A successful change re-issues the access cookie with `mcp=false` and
   revokes the user's other sessions.
   Temporary passwords past `password_expires_at` cannot log in (admin must re-issue).
-- **Password policy**: min 10 chars, max 128, rejects username/student ID and a bundled list of
-  common passwords. No composition rules (NIST 800-63B).
+- **Password policy**: min 10 chars, max 128, rejects username/student ID (when 3+ characters), one
+  repeated character, and a bundled list of common passwords. No composition rules (NIST 800-63B).
 
 ## 3. Cookies, CSRF, CORS
 
@@ -78,7 +83,7 @@ Preferred: mount the service-account JSON as a file (Docker secret) and set
 file secrets: `GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_PRIVATE_KEY` (with `\n` escapes). Exactly one
 mechanism must be configured. Startup validation enforces this. Scope:
 `https://www.googleapis.com/auth/spreadsheets.readonly`. The worker needs the credentials; the API
-needs them only for registration checks.
+needs them for checks, tab detection and previews.
 
 ## 6. Transport & headers
 
@@ -115,9 +120,12 @@ same fail-open behaviour, no extra storage adapter). Route limits are declared w
 
 ## 8. Logging, audit, monitoring
 
-- `nestjs-pino` JSON logs, `requestId` (from `X-Request-Id` or generated) on every line; worker logs
-  carry `syncJobId`. Redaction: `req.headers.cookie`, `req.headers.authorization`, `*.password`,
-  `*.newPassword`, `*.currentPassword`, `*.temporaryPassword`, `*.token`, `*.privateKey`.
+- `nestjs-pino` JSON logs, `req.id` on every line, taken from `X-Request-Id` when it matches the
+  expected pattern, else generated. Caddy overwrites the header in production. Worker logs carry
+  `syncJobId`. API redaction: `req.headers.cookie`, `req.headers.authorization`,
+  `req.headers.x-csrf-token`, `res.headers.set-cookie`, `*.password`, `*.newPassword`,
+  `*.currentPassword`, `*.temporaryPassword`, `*.token`, `*.refreshToken`, `*.privateKey`. The worker
+  redacts a shorter list of 4 paths (`apps/worker/src/worker.module.ts`).
 - Sentry (`@ssrs/shared/node`, API 5xx that are not deliberate HTTP errors, worker final failures):
   off unless `SENTRY_DSN` is set. Sentry 11 collects request data and **stack-frame local
   variables** by default; every `dataCollection` option is turned off (a frame of the password
@@ -151,8 +159,8 @@ creation is audited as `admin.created` (actor SYSTEM).
   2,000 students would take minutes. Each provisioning is audited (`student.provisioned`, actor
   SYSTEM). Existing accounts are never modified by sync: password, status and sessions stay untouched.
 - **Issuing credentials (admin).** `POST /admin/students/:id/reset-password` (one student) or
-  `POST /admin/students/issue-credentials` (≤ 500 per request, CSV download) generates 16-character
-  random temporary passwords (~79 bits, no look-alike characters). They are hashed with Argon2id,
+  `POST /admin/students/issue-credentials` (≤ 500 per request, CSV download) generates temporary
+  passwords of 16 random characters, grouped with hyphens (~79 bits, no look-alike characters). They are hashed with Argon2id,
   expire after `TEMP_PASSWORD_TTL_DAYS`, force a password change at first login, and revoke existing
   sessions. Plain passwords exist only in that single response (`Cache-Control: no-store`). They are
   never stored, logged or audited. The audit records who issued credentials to whom.
@@ -171,3 +179,23 @@ creation is audited as `admin.created` (actor SYSTEM).
 All secrets via environment or Docker secrets, validated at startup (Zod). `.env` is git-ignored;
 `.env.example` contains placeholders only. Rotation: changing `JWT_ACCESS_SECRET` invalidates
 access tokens (users silently refresh); revoking all sessions is available via an admin CLI script.
+See §13.
+
+## 13. Known deviations
+
+The rules above stay as written. The code does not meet them yet. Review:
+[doc-review.md](doc-review.md).
+
+| Rule                                                                         | What the code does                                                                                                                     | Evidence                                                                            | Status             |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------ |
+| §2 revocation fails closed                                                   | A failed denylist write is only logged, and a Redis miss does not check `revoked_at`. A revoked access token can work until it expires | `apps/api/src/auth/session.service.ts:213-217,241-245`                              | Fix before go-live |
+| [Database design](database-design.md): audit role has INSERT and SELECT only | Production connects as the bootstrap role. No GRANT exists. Only a trigger protects the table                                          | `docker-compose.prod.yml:13`                                                        | Fix before go-live |
+| §9 backups 30 daily + 12 monthly                                             | 14 daily, no monthly tier                                                                                                              | `docker/backup/backup.sh:12,27`; `docker-compose.prod.yml:148`                      | Fix before go-live |
+| §12 admin CLI revokes all sessions                                           | Does not exist                                                                                                                         | `apps/api/src/cli/`                                                                 | Fix before go-live |
+| §1, §8 audit metadata allowlist                                              | Key denylist. Unlisted keys pass, including raw `changes: dto`                                                                         | `apps/api/src/audit/audit.service.ts:17,33`                                         | Open               |
+| §4 student services accept `AuthUser`                                        | They take `userId: string`, always from the session. No IDOR path was found                                                            | `apps/api/src/results/results.service.ts:103,134,138,147,163`                       | Open               |
+| §5 exactly one Google mechanism                                              | None is also accepted. The app then reports `GOOGLE_NOT_CONFIGURED`                                                                    | `apps/api/src/config/env.ts:59-60`; `apps/worker/src/config/env.ts:27-29`           | Open               |
+| §8 audit kept 3 years, configurable                                          | No setting and no purge job                                                                                                            | No match in code                                                                    | Open               |
+| §9 sync errors kept 1 year                                                   | No purge                                                                                                                               | `packages/sync/src/engine.ts:221`                                                   | Open               |
+| §9 Redis dangerous commands disabled                                         | `requirepass` only                                                                                                                     | `docker-compose.prod.yml:118-126`                                                   | Open               |
+| §12 rotation: users silently refresh                                         | The CSRF key derives from the same secret, so `/auth/refresh` fails with 403 `CSRF_INVALID` and users sign in again                    | `apps/api/src/auth/token.service.ts:31`; `apps/api/src/auth/session.service.ts:111` | Open               |

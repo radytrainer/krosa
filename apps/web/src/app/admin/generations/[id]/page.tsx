@@ -4,7 +4,6 @@ import {
   Archive,
   ArchiveRestore,
   BookOpen,
-  ExternalLink,
   FileSpreadsheet,
   Pencil,
   Plus,
@@ -12,17 +11,18 @@ import {
   Users,
 } from 'lucide-react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Confirm } from '@/components/app/confirm';
 import { Field, fieldErrors, onSubmit } from '@/components/app/form';
 import { PageHeader, Section } from '@/components/app/page-header';
-import { ActivePill, StatusPill } from '@/components/app/status';
-import { EmptyState, ErrorState, PageLoading } from '@/components/app/states';
+import { StatusPill } from '@/components/app/status';
+import { ErrorState, PageLoading } from '@/components/app/states';
+import { TermSheet } from '@/components/admin/term-sheet';
 import { useStartSync } from '@/components/admin/use-start-sync';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Button, buttonVariants } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -44,7 +44,7 @@ import {
 import { apiFetch, errorCode } from '@/lib/api';
 import { formatDate, formatDateTime } from '@/lib/format';
 import { json, useApi, useApiMutation } from '@/lib/query';
-import type { GenerationDetail, Source, Term } from '@/lib/types';
+import type { GenerationDetail, Source, Term, TermDetail } from '@/lib/types';
 
 function DatesFields({
   start,
@@ -158,7 +158,7 @@ function EditTermDialog({
         <span className="sr-only sm:not-sr-only">Edit</span>
         <span className="sr-only"> {term.name}</span>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
         <form
           className="space-y-4"
           onSubmit={onSubmit((d) =>
@@ -185,6 +185,7 @@ function EditTermDialog({
             </Button>
           </DialogFooter>
         </form>
+        <TermSheet term={term} />
       </DialogContent>
     </Dialog>
   );
@@ -199,18 +200,25 @@ const SOURCE_ERRORS: Record<string, string> = {
   SHEET_NOT_FOUND: 'The spreadsheet does not exist or was deleted.',
 };
 
-function AddSourceDialog({ generation }: { generation: GenerationDetail }) {
+function ConnectWorkbookDialog({
+  generation,
+  term,
+}: {
+  generation: GenerationDetail;
+  term: TermDetail;
+}) {
   const [open, setOpen] = useState(false);
+  const router = useRouter();
   const account = useApi<{ configured: boolean; email: string | null }>(
     open ? '/admin/sources/service-account' : null,
   );
   const add = useApiMutation(
     (body: { url: string; label: string }) =>
-      apiFetch<Source>(`/admin/generations/${generation.id}/sources`, json(body)),
+      apiFetch<Source>(`/admin/terms/${term.id}/sources`, json(body)),
     {
-      success: (s) => `Connected "${s.label}". Preview it before the first sync.`,
+      success: (s) => `Connected "${s.label}". Detect its tabs next.`,
       invalidate: [`/admin/generations/${generation.id}`],
-      onSuccess: () => setOpen(false),
+      onSuccess: (s) => router.push(`/admin/sources/${s.id}`),
     },
   );
   const errors = fieldErrors(add.error);
@@ -219,10 +227,10 @@ function AddSourceDialog({ generation }: { generation: GenerationDetail }) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger
-        render={<Button variant="outline" disabled={generation.status === 'ARCHIVED'} />}
+        render={<Button variant="outline" size="sm" disabled={generation.status === 'ARCHIVED'} />}
       >
         <Plus aria-hidden />
-        Connect sheet
+        Connect workbook
       </DialogTrigger>
       <DialogContent className="sm:max-w-lg">
         <form
@@ -232,10 +240,11 @@ function AddSourceDialog({ generation }: { generation: GenerationDetail }) {
           )}
         >
           <DialogHeader>
-            <DialogTitle>Connect a Google Sheet</DialogTitle>
+            <DialogTitle>Connect the {term.name} workbook</DialogTitle>
             <DialogDescription>
-              The file must follow the template and its <code>_meta</code> tab must name{' '}
-              <code>{generation.code}</code>.
+              One workbook per term, one tab per subject, with the student list in the{' '}
+              <code>ALL</code> tab. If it has a <code>_meta</code> tab, that tab must say{' '}
+              <code>{generation.code}</code> and term {term.number}.
             </DialogDescription>
           </DialogHeader>
           {account.data ? (
@@ -275,10 +284,12 @@ function AddSourceDialog({ generation }: { generation: GenerationDetail }) {
           <Field
             label="Label"
             required
-            hint="How the source appears in lists, e.g. “Term marks 2026”."
+            hint="How the workbook appears in lists, e.g. “Term 1 scores”."
             error={errors.label}
           >
-            {(p) => <Input {...p} name="label" maxLength={120} />}
+            {(p) => (
+              <Input {...p} name="label" maxLength={120} defaultValue={`${term.name} scores`} />
+            )}
           </Field>
           {add.error && code && !SOURCE_ERRORS[code] && !errors.url ? (
             <p className="text-sm text-destructive" role="alert">
@@ -293,6 +304,45 @@ function AddSourceDialog({ generation }: { generation: GenerationDetail }) {
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ReleaseButton({ term, disabled }: { term: TermDetail; disabled: boolean }) {
+  const released = term.subjects > 0 && term.visibleSubjects === term.subjects;
+  const release = useApiMutation(
+    (visible: boolean) =>
+      apiFetch<{ visible: boolean }>(`/admin/terms/${term.id}/release`, json({ visible })),
+    {
+      success: (r) =>
+        r.visible ? `${term.name} released to students.` : `${term.name} hidden from students.`,
+      invalidate: ['/admin/generations', '/admin/dashboard'],
+    },
+  );
+  if (term.subjects === 0) return null;
+  return released ? (
+    <Confirm
+      trigger={
+        <Button variant="outline" size="sm" disabled={disabled}>
+          Hide scores
+        </Button>
+      }
+      title={`Hide ${term.name} from students?`}
+      description="Students stop seeing the scores of this term until you release it again. Nothing is deleted."
+      confirmLabel="Hide scores"
+      onConfirm={() => release.mutateAsync(false)}
+    />
+  ) : (
+    <Confirm
+      trigger={
+        <Button size="sm" disabled={disabled}>
+          Release scores
+        </Button>
+      }
+      title={`Release ${term.name} to students?`}
+      description={`Students will see their scores for all ${term.subjects} subjects of this term.`}
+      confirmLabel="Release scores"
+      onConfirm={() => release.mutateAsync(true)}
+    />
   );
 }
 
@@ -359,7 +409,7 @@ export default function GenerationDetailPage() {
                   </Button>
                 }
                 title={`Archive ${g.code}?`}
-                description="Terms, offerings, criteria and grading schemes become read-only and syncs are refused. Students keep seeing their results. You can activate it again later."
+                description="Terms and workbooks become read-only and syncs are refused. Students keep seeing their results. You can activate it again later."
                 confirmLabel="Archive generation"
                 onConfirm={() => setStatus.mutateAsync('archive')}
               />
@@ -369,7 +419,7 @@ export default function GenerationDetailPage() {
               onClick={() => startSync.mutate({ scope: 'GENERATION', generationId: g.id })}
             >
               <RefreshCw aria-hidden />
-              Sync all sources
+              Sync all workbooks
             </Button>
           </>
         }
@@ -395,15 +445,15 @@ export default function GenerationDetailPage() {
               icon: Users,
             },
             {
-              label: 'Course offerings',
+              label: 'Subjects',
               value: g.counts.offerings,
-              href: `/admin/offerings?generationId=${g.id}`,
+              href: '#terms',
               icon: BookOpen,
             },
             {
-              label: 'Sheet sources',
+              label: 'Workbooks',
               value: g.counts.sources,
-              href: '#sources',
+              href: '#terms',
               icon: FileSpreadsheet,
             },
           ].map((s) => (
@@ -425,92 +475,100 @@ export default function GenerationDetailPage() {
           ))}
         </div>
 
-        <Section title="Terms" description="Every generation has exactly five terms.">
-          <div className="overflow-x-auto rounded-xl ring-1 ring-foreground/10">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-12">#</TableHead>
-                  <TableHead>Name</TableHead>
-                  <TableHead className="hidden sm:table-cell">Dates</TableHead>
-                  <TableHead className="text-right">
-                    <span className="sr-only">Actions</span>
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {g.terms.map((t) => (
-                  <TableRow key={t.id}>
-                    <TableCell className="tabular-nums">{t.number}</TableCell>
-                    <TableCell className="font-medium">{t.name}</TableCell>
-                    <TableCell className="hidden text-muted-foreground sm:table-cell">
-                      {t.startDate || t.endDate
-                        ? `${formatDate(t.startDate)} – ${formatDate(t.endDate)}`
-                        : 'No dates'}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <EditTermDialog term={t} disabled={archived} generationId={g.id} />
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </Section>
-
-        <div id="sources" className="scroll-mt-20">
+        <div id="terms" className="scroll-mt-20">
           <Section
-            title="Google Sheet sources"
-            description="Spreadsheets that provide this generation's students, courses and marks."
-            actions={<AddSourceDialog generation={g} />}
+            title="Terms"
+            description="Connect one workbook per term, confirm its tabs and sync. Scores stay hidden from students until you release the term."
           >
             {sources.error ? (
               <ErrorState error={sources.error} onRetry={() => sources.refetch()} />
-            ) : !sources.data ? null : sources.data.length === 0 ? (
-              <EmptyState
-                icon={<FileSpreadsheet className="size-8" />}
-                title="No spreadsheets connected"
-                description="Connect the generation's Google Sheet, preview it, then run the first sync."
-              />
-            ) : (
-              <ul className="grid gap-3 md:grid-cols-2">
-                {sources.data.map((s) => (
-                  <li key={s.id}>
-                    <Card size="sm">
-                      <CardHeader>
-                        <CardTitle className="flex items-center justify-between gap-2">
-                          <Link
-                            href={`/admin/sources/${s.id}`}
-                            className="truncate hover:underline"
-                          >
-                            {s.label}
-                          </Link>
-                          <ActivePill active={s.status === 'ACTIVE'} />
-                        </CardTitle>
-                        <CardDescription className="truncate">
-                          {s.spreadsheetTitle ?? s.spreadsheetId}
-                        </CardDescription>
-                      </CardHeader>
-                      <CardContent className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                        <span>
-                          {s.ownedOfferings} offerings · last sync {formatDateTime(s.lastSyncedAt)}
-                        </span>
-                        <a
-                          href={s.spreadsheetUrl}
-                          target="_blank"
-                          rel="noreferrer noopener"
-                          className={buttonVariants({ variant: 'ghost', size: 'xs' })}
-                        >
-                          Open sheet
-                          <ExternalLink aria-hidden />
-                          <span className="sr-only">(opens in a new tab)</span>
-                        </a>
-                      </CardContent>
-                    </Card>
-                  </li>
-                ))}
-              </ul>
-            )}
+            ) : null}
+            <div className="overflow-x-auto rounded-xl ring-1 ring-foreground/10">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-12">#</TableHead>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Workbook</TableHead>
+                    <TableHead>Scores</TableHead>
+                    <TableHead className="text-right">
+                      <span className="sr-only">Actions</span>
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {g.terms.map((t) => {
+                    const own = sources.data?.filter((s) => s.term.id === t.id);
+                    const source = own?.find((s) => s.status === 'ACTIVE');
+                    const pending = own?.find((s) => s.status === 'PENDING');
+                    return (
+                      <TableRow key={t.id}>
+                        <TableCell className="tabular-nums">{t.number}</TableCell>
+                        <TableCell className="font-medium">
+                          {t.name}
+                          <span className="block text-xs font-normal text-muted-foreground">
+                            {t.startDate || t.endDate
+                              ? `${formatDate(t.startDate)} – ${formatDate(t.endDate)}`
+                              : 'No dates'}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          {source ? (
+                            <Link href={`/admin/sources/${source.id}`} className="hover:underline">
+                              {source.label}
+                              <span className="block text-xs text-muted-foreground">
+                                Last sync {formatDateTime(source.lastSyncedAt)}
+                              </span>
+                            </Link>
+                          ) : !own || pending ? null : own.some((s) => s.lastSyncedAt) ? (
+                            <span className="text-muted-foreground">
+                              No sheet connected
+                              <span className="block text-xs">
+                                Scores stay. Connect a new sheet from Edit.
+                              </span>
+                            </span>
+                          ) : (
+                            <ConnectWorkbookDialog generation={g} term={t} />
+                          )}
+                          {pending ? (
+                            <Link
+                              href={`/admin/sources/${pending.id}`}
+                              className="mt-1 block hover:underline"
+                            >
+                              <StatusPill tone="warning">
+                                New sheet connected, not synced yet
+                              </StatusPill>
+                              <span className="block text-xs text-muted-foreground">
+                                {pending.label}
+                              </span>
+                            </Link>
+                          ) : null}
+                        </TableCell>
+                        <TableCell>
+                          {t.subjects === 0 ? (
+                            <span className="text-muted-foreground">Not synced</span>
+                          ) : (
+                            <StatusPill tone={t.visibleSubjects ? 'success' : 'neutral'}>
+                              {t.visibleSubjects === t.subjects
+                                ? 'Released'
+                                : t.visibleSubjects
+                                  ? `${t.visibleSubjects} of ${t.subjects} released`
+                                  : 'Hidden'}
+                            </StatusPill>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="inline-flex items-center gap-2">
+                            <ReleaseButton term={t} disabled={archived} />
+                            <EditTermDialog term={t} disabled={archived} generationId={g.id} />
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
           </Section>
         </div>
       </div>

@@ -1,21 +1,25 @@
 # Delivery Plan: Term Workbooks, Programs and Go-Live (1 January 2027)
 
+Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+
 _Written 2026-10-30. Builds on the existing code and docs (`architecture.md`, `database-design.md`,
 `google-sheets-template.md`, `progress.md`)._
 
 ## 0. Executive summary
 
-**Most of the system already exists.** Phases 0–9 in `progress.md` are done and tested: auth
+**Most of the system already existed when this plan was written.** Phases 0–9 in `progress.md` were
+done and tested: auth
 (Argon2id, rotating refresh tokens, CSRF, lockout), RBAC with a route-policy test, audit log,
 generations/terms/offerings, versioned grading schemes, an idempotent sync engine with score
-revisions, a BullMQ worker, a results cache, and the admin and student UIs. 181 unit and 143
-integration tests pass.
+revisions, a BullMQ worker, a results cache, and the admin and student UIs. Current test counts are
+in `verifying-term-workbooks.md`.
 
-**The gap is the input format, not the platform.** The existing parser needs a "strict" workbook:
+**The gap was the input format, not the platform.** The old parser, since removed (D14), needed a
+"strict" workbook:
 `_meta`, `Students`, `Courses` and `Criteria` tabs, plus a machine-key row 1 on every tab. The
 school's real workbook (`TERM1- GEN 2027 Scoring.xlsx`) is different:
 
-| Real workbook                                                                     | Existing parser expects                     |
+| Real workbook                                                                     | Old parser expected                         |
 | --------------------------------------------------------------------------------- | ------------------------------------------- |
 | One workbook **per term**                                                         | One workbook per generation (intake)        |
 | One tab per subject (`Logic`, `ENG`, `PL`, `BCU`, `MsOffice`)                     | Subjects listed in a `Courses` tab          |
@@ -41,7 +45,7 @@ of solo work, which leaves UAT and a buffer before 1 January.
 
 ## 1. Decisions and assumptions
 
-Decisions **D1–D13** were confirmed on 2026-10-30. **A1–A3** are working assumptions.
+Decisions **D1–D29** were confirmed on 2026-10-30. **A1–A3** are working assumptions.
 
 | #   | Decision                                                                                                                                                                                                                                               |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -49,21 +53,62 @@ Decisions **D1–D13** were confirmed on 2026-10-30. **A1–A3** are working ass
 | D2  | **Each teacher edits their own subject tab.** Headers can change mid-term, so header-change detection (`NEEDS_REMAP`) is a must-have.                                                                                                                  |
 | D3  | **Blank cell = not entered yet** (subject shows INCOMPLETE), never zero. The BCU tab's own `Total` counts blanks as 0, so it will differ from the system total. Expected; explain it in UAT.                                                           |
 | D4  | **Group weights are split equally** across their columns (ENG `Projects (15%)` → Role Play 7.5 + English for IT 7.5). The admin can override on the mapping screen; the cross-check against the sheet `TOTAL` flags a wrong split.                     |
-| D5  | **Letter grades are in the MVP.** One editable grade scale per intake. Placeholder bands until the school confirms: A ≥ 85, B ≥ 70, C ≥ 50, F < 50. Students see letters only once the admin marks the scale **confirmed**.                            |
-| D6  | **Teacher `COMMENTS` are shown to students**, on the subject detail page, once that subject is released.                                                                                                                                               |
-| D7  | **Scores are hidden until an admin releases** the subject or term (existing `visibility`).                                                                                                                                                             |
-| D8  | **Admins assign SNA/WEP in the app** (bulk by class or by selection). Sheets don't need a program column.                                                                                                                                              |
+| D5  | **Letter grades are in the MVP (not built yet).** One editable grade scale per intake. Placeholder bands until the school confirms: A ≥ 85, B ≥ 70, C ≥ 50, F < 50. Students see letters only once the admin marks the scale **confirmed**.            |
+| D6  | **Teacher `COMMENTS` are shown to students**, on the subject detail page, once the term is released. Not built: comments are stored only.                                                                                                              |
+| D7  | **Scores are hidden until an admin releases** them. Superseded by D16: release is per term.                                                                                                                                                            |
+| D8  | **Admins assign SNA/WEP in the app** (not built yet; bulk by class or by selection). Sheets don't need a program column.                                                                                                                               |
 | D9  | **`ALL` is the master roster** (IDs, first/last name, gender, class). Subject tabs only add enrollments and scores; a name that differs from `ALL` is a warning. A student in a subject tab but missing from `ALL` → row rejected (`UNKNOWN_STUDENT`). |
-| D10 | **5 terms per intake** (matches the current default; `term_count` stays configurable).                                                                                                                                                                 |
+| D10 | **5 terms per intake** (matches the current default, so no `term_count` column was added; terms stay fixed at 5).                                                                                                                                      |
 | D11 | **GEN2027 only** on 1 January. GEN2026 (no student IDs in its sheet) is post-launch.                                                                                                                                                                   |
 | D12 | **Production on one cloud VPS** with Docker Compose + Caddy (already prepared in `docker-compose.prod.yml`).                                                                                                                                           |
 | D13 | **All 5 admins have equal rights** (single ADMIN role, everything audited). **First passwords are printed on paper per class** from the existing CSV export.                                                                                           |
+
+Later on 2026-10-30, after the first connect attempt with the real workbook:
+
+| #   | Decision                                                                                                                                                                                                                                                                                                                             |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D14 | **The strict template is removed.** Term workbooks are the only source format. Dry-run preview went with it; Detect tabs replaces it.                                                                                                                                                                                                |
+| D15 | **Course catalog, Course offerings, Criteria and Grading-scheme pages and APIs are removed.** Their tables stay: scores depend on them.                                                                                                                                                                                              |
+| D16 | **Scores are released per term**, not per subject (`POST /admin/terms/:id/release`).                                                                                                                                                                                                                                                 |
+| D17 | **Weights are managed on the tab review screen.** A re-confirmed tab publishes a new weight version at the next sync, with no draft step.                                                                                                                                                                                            |
+| D18 | **GEN2026 was deleted from the dev database** (it was empty) and GEN2027 created.                                                                                                                                                                                                                                                    |
+| D19 | **Sync targets are Generation + Term.** Defaults are All active generations and All terms. The Term list shows every term, and a term with no workbook gives a clear error.                                                                                                                                                          |
+| D20 | **All generations + one term is allowed**: it syncs that term number in every active generation (`sync_jobs.term_number`).                                                                                                                                                                                                           |
+| D21 | **Job issues roll up when read.** A parent lists its own rows and its children's; filters are by tab and, on multi-workbook jobs, by workbook.                                                                                                                                                                                       |
+| D22 | **Job-level warnings count.** Job total = the sources' issues + job-level warnings, so totals match the rows shown, up to 20,000 stored issues per job. Above that, totals count all issues.                                                                                                                                         |     |
+| D23 | **A term can change sheets.** The new sheet is PENDING and the old one stays ACTIVE until the new sheet's sync completes. Earlier sheets are kept as DISABLED history.                                                                                                                                                               |
+| D24 | **A new sheet's sync is all or nothing**, with zero errors required. Any error rolls everything back and the sheet stays pending. Normal re-syncs stay per tab.                                                                                                                                                                      |
+| D25 | **Mappings carry over by tab name as drafts**; the admin confirms each tab.                                                                                                                                                                                                                                                          |
+| D26 | **`_meta` naming another generation or term stays a hard error**, also for sheet changes.                                                                                                                                                                                                                                            |
+| D27 | **No Cancel button.** The code treats a `CANCELLED` job as not promoted.                                                                                                                                                                                                                                                             |
+| D28 | **A replacement sheet's sync needs a confirmed preview of exactly what it imports.** Editing the sheet, its mappings, or syncing the old sheet voids the preview. First sheets and re-syncs of an active sheet need no preview. Reworded 2026-10-31.                                                                                 |     |
+| D29 | **Terms with synced scores change sheets only through this flow**, now in Edit term → Replace; pending sheets are left out of Generation and All syncs.                                                                                                                                                                              |
+| D30 | **Remove disconnects a sheet and keeps its scores.** It stops syncing and stays in the term's history. Blocked during a sync or while a new sheet is waiting. A term with synced scores then connects a new sheet through the reviewed flow; a never-synced term connects straight away, including the same sheet. Added 2026-10-31. |
+| D31 | **A term's sheet is managed in Edit term** on the generation page: URL, Replace, Remove, Discard. The Sync Center's Workbooks by term list is read-only. Added 2026-10-31.                                                                                                                                                           |     |
 
 | #   | Assumption                                                                                                                                                                                                        |
 | --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | A1  | "Intake year" = existing **Generation** (`GEN2027`). Terms belong to a generation.                                                                                                                                |
 | A2  | One Google workbook = one term of one generation. `_meta` (`generation_code`, `education_term`) is optional. When present it is used as a safety check. When absent the admin picks generation + term on connect. |
 | A3  | Each criterion column is a mark **out of 100**. The `%` in the header is its weight in the subject total; weights per subject total 100. `TOTAL` / `GRADE` are read only to **cross-check**, never as truth.      |
+
+### Known deviations
+
+The code does not match these rules. `docs/decisions.md` does not exist, so they are recorded here.
+Security rules are in [security.md §13](security.md). Evidence: [doc-review.md](doc-review.md).
+
+| Rule                                                                 | What the code does                                                                                   | File                                                                    | Decision (2026-10-31)                                   |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------- |
+| Student data stays the same until a new sheet's sync completes (D23) | Confirming a tab on a pending sheet changes subject and criterion names at once. Marks do not change | `apps/api/src/sheet-mappings/sheet-mappings.service.ts:267-270,309-315` | Fix the code: names change with the sync. Task T1       |
+| Totals match the rows shown (D22)                                    | At most 20,000 issues are stored per job, and all are counted                                        | `packages/sync/src/engine.ts:34,64,195-196`                             | Rule reworded. Show a note when the cap is hit. Task T2 |
+| A sheet change holds locks only briefly (`architecture.md`, SYNC-12) | One transaction, up to 300 s, holds the global roster lock                                           | `packages/sync/src/engine.ts:36,331-406`                                | Open. Measure the lock time on 101 students. Task T3    |
+| Template: every non-`_` tab can be marked "Not a subject"            | A tab with no `STUDENT ID` header has no mapping row and warns forever                               | `apps/api/src/sheet-mappings/sheet-mappings.service.ts:596-598`         | Open                                                    |
+| Template: `TOTAL` is only read to check weights                      | Also stored in `enrollments.sheet_total`. No API reads it                                            | `packages/sync/src/apply-course.ts:270-277,291`                         | Open                                                    |
+
+Accepted, so the docs were reworded: detect and preview read the workbook inside the API request
+(`architecture.md`), the 100% weight total is also checked in the browser (`architecture.md`), one
+migration deleted old sources (`database-design.md`), and `migrate` has no `init: true`
+(`deployment.md`). D7 and A1 of `requirements.md` are superseded by D16 and D17.
 
 ---
 
@@ -72,23 +117,24 @@ Decisions **D1–D13** were confirmed on 2026-10-30. **A1–A3** are working ass
 ### A.1 What stays, what changes
 
 The existing schema (`packages/database/prisma/schema.prisma`) already models
-generation → term → offering → criteria/scheme → enrollment → score, with sync history. Changes
-are **additive**, in one migration:
+generation → term → offering → criteria/scheme → enrollment → score, with sync history. The changes
+were made in five migrations (`20261030090000` to `20261031090100`). `20261030130000_term_workbooks_only`
+deleted the old strict sources and dropped `layout`, so the table below is not purely additive:
 
-| Change                                                                                                                           | Why                                                                                       |
-| -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| **New** `programs`                                                                                                               | SNA, WEP, and future programs as rows, not code                                           |
-| **New** `offering_programs` (join)                                                                                               | Which programs a term-subject is for. No rows = shared (English, PL)                      |
-| `students.program_id` (nullable FK), `first_name`, `last_name`                                                                   | Program from Term 2. The sheet splits names                                               |
-| **New** `course_aliases`                                                                                                         | `ENG`, `ENGLISH`, `English` → one subject. A new tab name is mapped once, then remembered |
-| `google_sheet_sources.term_id` (nullable FK), `layout` enum (`STRICT_V1` / `TERM_WORKBOOK`), `roster_tab`, `ignored_tabs text[]` | One workbook per term; `ALL` is the roster (D9). The old strict layout keeps working      |
-| **New** `sheet_tab_mappings`                                                                                                     | Tab → offering, header row, ID column, mapping version                                    |
-| **New** `sheet_column_mappings`                                                                                                  | Column → criterion / profile field / reference total / comment / ignore                   |
-| `enrollments.teacher_comment` (text, nullable)                                                                                   | `COMMENTS` column, shown to students once the subject is released (D6)                    |
-| **New** `grade_scales`, `grade_bands`                                                                                            | Letter grades per intake, editable, `confirmed` flag gates student display (D5)           |
-| `enrollments.sheet_total` (decimal, nullable)                                                                                    | Sheet's own `TOTAL`, kept for the cross-check only                                        |
-| `sync_jobs.content_hash` (char 64), `mapping_versions` (jsonb)                                                                   | Skip unchanged tabs; record which mapping a job used                                      |
-| `generations.term_count` (smallint, default 5)                                                                                   | Terms are currently fixed at 5 on creation. Make it data                                  |
+| Change                                                                                              | Why                                                                                                                                                                                                               |
+| --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **New** `programs`                                                                                  | SNA, WEP, and future programs as rows, not code                                                                                                                                                                   |
+| **New** `offering_programs` (join)                                                                  | Which programs a term-subject is for. No rows = shared (English, PL)                                                                                                                                              |
+| `students.program_id` (nullable FK), `first_name`, `last_name`                                      | Program from Term 2. The sheet splits names                                                                                                                                                                       |
+| **New** `course_aliases`                                                                            | `ENG`, `ENGLISH`, `English` → one subject. A new tab name is mapped once, then remembered                                                                                                                         |
+| `google_sheet_sources.term_id` (NOT NULL FK), `roster_tab`, `ignored_tabs text[]`, status `PENDING` | One workbook per term; `ALL` is the roster (D9). `layout` was added, then dropped (D14)                                                                                                                           |
+| **New** `sheet_tab_mappings`                                                                        | Tab → offering, header row, ID column, mapping version                                                                                                                                                            |
+| **New** `sheet_column_mappings`                                                                     | Column → criterion / profile field / reference total / comment / ignore                                                                                                                                           |
+| `enrollments.teacher_comment` (text, nullable)                                                      | `COMMENTS` column, shown to students once the subject is released (D6)                                                                                                                                            |
+| **New** `grade_scales`, `grade_bands`                                                               | Letter grades per intake, editable, `confirmed` flag gates student display (D5)                                                                                                                                   |
+| `enrollments.sheet_total` (decimal, nullable)                                                       | Sheet's own `TOTAL`, kept for the cross-check only                                                                                                                                                                |
+| `sync_jobs.mapping_versions` (jsonb), `term_id`, `term_number`                                      | Record which mapping a job used; one running sync per term; term-number sync. Skipping unchanged tabs is not built: `sync_jobs.content_hash` does not exist, and `sheet_tab_mappings.last_content_hash` is unused |
+| **New** `sheet_previews`                                                                            | Confirmed previews of replacement sheets (D28)                                                                                                                                                                    |
 
 ### A.2 ERD
 
@@ -167,7 +213,7 @@ erDiagram
         uuid tab_mapping_id FK
         int column_index
         text header_label
-        enum role "STUDENT_ID PROFILE CRITERION REFERENCE_TOTAL COMMENT IGNORE"
+        enum role "STUDENT_ID FULL_NAME FIRST_NAME LAST_NAME GENDER CLASS CRITERION REFERENCE_TOTAL COMMENT IGNORE"
         uuid criterion_id FK "role = CRITERION"
     }
     assessment_scores {
@@ -209,17 +255,17 @@ and results stay unchanged. Index `(generation_id, program_id, class_name)`.
 
 **`google_sheet_sources` (changed)**
 
-| Column         | Type   | Notes                                                                  |
-| -------------- | ------ | ---------------------------------------------------------------------- |
-| `term_id`      | uuid   | NULL for `STRICT_V1`; NOT NULL for `TERM_WORKBOOK` (CHECK). FK → terms |
-| `layout`       | enum   | `STRICT_V1` \| `TERM_WORKBOOK`                                         |
-| `roster_tab`   | text   | default `ALL`. Read for student profiles only, never for scores        |
-| `ignored_tabs` | text[] | default `{}`. Tabs starting with `_` are always ignored                |
+| Column         | Type   | Notes                                                           |
+| -------------- | ------ | --------------------------------------------------------------- |
+| `term_id`      | uuid   | NOT NULL. FK → terms                                            |
+| `roster_tab`   | text   | default `ALL`. Read for student profiles only, never for scores |
+| `ignored_tabs` | text[] | default `{}`. Tabs starting with `_` are always ignored         |
 
-Partial unique index: one ACTIVE `TERM_WORKBOOK` source per `term_id`.
+Partial unique indexes: one ACTIVE and one PENDING source per `term_id`.
 
 **`grade_scales`** — `id` PK, `generation_id` UNIQUE FK → generations, `confirmed bool default
-false`, `confirmed_by/at`. Seeded with the placeholder bands when an intake is created.
+false`, `confirmed_by/at`. Planned: seeded with the placeholder bands when an intake is created. Not
+built.
 
 **`grade_bands`**
 
@@ -235,34 +281,34 @@ is audited and takes effect everywhere at once, because it bumps the generation'
 
 **`sheet_tab_mappings`**
 
-| Column             | Type     | Constraints / notes                                                |
-| ------------------ | -------- | ------------------------------------------------------------------ |
-| `id`               | uuid     | PK                                                                 |
-| `source_id`        | uuid     | FK → google_sheet_sources                                          |
-| `tab_name`         | text     | UNIQUE `(source_id, tab_name)`                                     |
-| `sheet_tab_id`     | int      | Google's numeric sheetId: survives tab renames                     |
-| `offering_id`      | uuid     | FK → course_offerings, NULL when `IGNORED`. UNIQUE `(offering_id)` |
-| `header_row`       | int      | 1-based leaf header row (detected, admin may override)             |
-| `status`           | enum     | `DRAFT` \| `CONFIRMED` \| `IGNORED`                                |
-| `version`          | int      | +1 on every confirmed change                                       |
-| `header_signature` | char(64) | SHA-256 of normalized header cells: detects changed columns        |
-| `confirmed_by/at`  | uuid/ts  | audit                                                              |
+| Column             | Type     | Constraints / notes                                                           |
+| ------------------ | -------- | ----------------------------------------------------------------------------- |
+| `id`               | uuid     | PK                                                                            |
+| `source_id`        | uuid     | FK → google_sheet_sources                                                     |
+| `tab_name`         | text     | UNIQUE `(source_id, tab_name)`                                                |
+| `sheet_tab_id`     | int      | Google's numeric sheetId: survives tab renames                                |
+| `offering_id`      | uuid     | FK → course_offerings, NULL when `IGNORED`. UNIQUE `(source_id, offering_id)` |
+| `header_row`       | int      | 1-based leaf header row (detected, admin may override)                        |
+| `status`           | enum     | `DRAFT` \| `CONFIRMED` \| `IGNORED`                                           |
+| `version`          | int      | +1 on every confirmed change                                                  |
+| `header_signature` | char(64) | SHA-256 of normalized header cells: detects changed columns                   |
+| `confirmed_by/at`  | uuid/ts  | audit                                                                         |
 
 **`sheet_column_mappings`**
 
-| Column           | Type | Constraints / notes                                                                                                        |
-| ---------------- | ---- | -------------------------------------------------------------------------------------------------------------------------- |
-| `id`             | uuid | PK                                                                                                                         |
-| `tab_mapping_id` | uuid | FK, ON DELETE CASCADE                                                                                                      |
-| `column_index`   | int  | 0-based. UNIQUE `(tab_mapping_id, column_index)`                                                                           |
-| `header_label`   | text | leaf label as read (`Quiz 1 10%`)                                                                                          |
-| `group_label`    | text | parent group (`MIDTERM (30%)`) when multi-row                                                                              |
-| `role`           | enum | `STUDENT_ID`, `FIRST_NAME`, `LAST_NAME`, `GENDER`, `CLASS`, `PROGRAM`, `CRITERION`, `REFERENCE_TOTAL`, `COMMENT`, `IGNORE` |
-| `criterion_id`   | uuid | FK → assessment_criteria. CHECK `role = 'CRITERION'` ⇔ NOT NULL. UNIQUE `(tab_mapping_id, criterion_id)`                   |
+| Column           | Type | Constraints / notes                                                                                                          |
+| ---------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `id`             | uuid | PK                                                                                                                           |
+| `tab_mapping_id` | uuid | FK, ON DELETE CASCADE                                                                                                        |
+| `column_index`   | int  | 0-based. UNIQUE `(tab_mapping_id, column_index)`                                                                             |
+| `header_label`   | text | leaf label as read (`Quiz 1 10%`)                                                                                            |
+| `group_label`    | text | parent group (`MIDTERM (30%)`) when multi-row                                                                                |
+| `role`           | enum | `STUDENT_ID`, `FULL_NAME`, `FIRST_NAME`, `LAST_NAME`, `GENDER`, `CLASS`, `CRITERION`, `REFERENCE_TOTAL`, `COMMENT`, `IGNORE` |
+| `criterion_id`   | uuid | FK → assessment_criteria. CHECK `role = 'CRITERION'` ⇔ NOT NULL. UNIQUE `(tab_mapping_id, criterion_id)`                     |
 
 Criteria keep using the existing `assessment_criteria` + versioned `grading_schemes`. A confirmed
-mapping **proposes** a scheme with the parsed weights. The existing DRAFT/PUBLISHED flow publishes it.
-Changing weights later = new scheme version, so history is never lost.
+mapping supplies the weights, and the next sync publishes them with no draft step (D17). Changing
+weights later = new scheme version, so history is never lost.
 
 ### A.4 How the academic structure maps
 
@@ -295,7 +341,7 @@ Most of this already exists and is tested (engine integration tests):
 | Full history                  | `assessment_score_revisions` (old/new, job, tab, row); `audit_logs` append-only (trigger)                                        |
 | No concurrent runs            | Partial unique index `sync_jobs_one_active_per_source` + run lease                                                               |
 | Partial failure isolation     | Per-course (per-tab) transaction: a bad tab rolls back alone, the job ends `SUCCEEDED_WITH_ERRORS`                               |
-| Reproducible                  | **New:** `sync_jobs.mapping_versions` + `content_hash` per tab record exactly what was applied                                   |
+| Reproducible                  | `sync_jobs.mapping_versions` records which mappings were applied                                                                 |
 
 ---
 
@@ -324,14 +370,14 @@ flowchart TD
     J --> K[Mapping review screen per tab: subject, programs, criteria + weights, issues]
     K --> L{Admin confirms tab}
     L -- fix --> K
-    L -- confirm --> M[Save tab + column mapping v1, create offering, criteria, scheme DRAFT → publish]
+    L -- confirm --> M[Save tab + column mapping v1, create offering and criteria. The next sync publishes the scheme]
     M --> N[Ready to sync]
 ```
 
 Cross-check examples from the real file: Logic row 1 →
 `90·.10+89·.10+90·.10+97·.10+60·.25+78·.35 = 78.9`, which equals the sheet `Total` ✅. `MsOffice`
-has no weights in its headers, so the admin enters them and the cross-check against `TOTAL` confirms
-them. Mismatch > 0.5 on more than 5% of rows → `WEIGHTS_DISAGREE_WITH_SHEET_TOTAL` warning shown
+has no weights in its headers, so the admin enters them. The cross-check runs only at detection, on
+weights found in the headers, so these must be checked by hand against `TOTAL`. Mismatch > 0.5 on more than 5% of rows → `WEIGHTS_DISAGREE_WITH_SHEET_TOTAL` warning shown
 before confirming.
 
 ### B.2 Admin: sync (every time, idempotent)
@@ -347,7 +393,7 @@ sequenceDiagram
     participant W as Worker
     participant G as Google Sheets API
 
-    Admin->>Web: Validate (dry run) or Sync Term 1
+    Admin->>Web: Sync Term 1
     Web->>API: POST /admin/sync {scope: SOURCE, sourceId}
     API->>DB: INSERT sync_jobs (QUEUED) — partial unique index blocks a 2nd active job
     alt another job active
@@ -364,10 +410,10 @@ sequenceDiagram
         W->>DB: job FAILED + failure_code
     end
     W->>W: header_signature changed? → tab NEEDS_REMAP (skip tab, error)
-    W->>W: content_hash unchanged since last success? → skip tab
+    W->>W: (not built) content_hash unchanged since last success? → skip tab
     W->>DB: roster from ALL: upsert students (PENDING account if new), names, gender, class
     loop each subject tab (own transaction)
-        W->>W: validate rows: ID in roster, duplicates, mark 0..100 / ABS, name ≠ ALL, program mismatch
+        W->>W: validate rows: ID in roster, duplicates, mark 0..100 / ABS, name ≠ ALL
         W->>DB: upsert enrollments + teacher_comment, scores (only changed), revisions
         alt tab-level error
             W->>DB: ROLLBACK this tab only, record sync_errors
@@ -380,13 +426,13 @@ sequenceDiagram
 
 Error levels (existing scopes, extended):
 
-| Scope | Examples                                                                                                    | Effect                         |
-| ----- | ----------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| FILE  | not shared, `_meta` mismatch                                                                                | Nothing applied, job FAILED    |
-| TAB   | **new:** `NEEDS_REMAP` (headers changed), no ID column, `UNMAPPED_TAB` (new tab appeared)                   | Tab skipped, others applied    |
-| ROW   | bad/duplicate student ID, `UNKNOWN_STUDENT` (not in `ALL`)                                                  | Row skipped                    |
-| CELL  | `abc`, `-5`, `120`, `8,5`                                                                                   | Cell skipped, rest of row kept |
-| WARN  | name differs from `ALL` (BCU row 8 `SREYMOM MAO` vs `MAO SREYMOM`), `PROGRAM_MISMATCH`, blank-over-existing | Applied, flagged               |
+| Scope  | Examples                                                                                                                 | Effect                         |
+| ------ | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
+| FILE   | not shared, `_meta` mismatch                                                                                             | Nothing applied, job FAILED    |
+| COURSE | `NEEDS_REMAP` (headers changed), no ID column. `UNMAPPED_TAB` (new tab appeared) is a warning                            | Tab skipped, others applied    |
+| ROW    | bad/duplicate student ID, `UNKNOWN_STUDENT` (not in `ALL`)                                                               | Row skipped                    |
+| CELL   | `abc`, `-5`, `120`, `8,5`                                                                                                | Cell skipped, rest of row kept |
+| WARN   | name differs from `ALL` (BCU row 8 `SREYMOM MAO` vs `MAO SREYMOM`), blank-over-existing. `PROGRAM_MISMATCH` is not built | Applied, flagged               |
 
 ### B.3 Student: login and view scores
 
@@ -419,7 +465,7 @@ sequenceDiagram
         API->>DB: enrollments of THIS student ∩ visibility = VISIBLE, scores, published schemes
         API->>R: set (version-keyed)
     end
-    API-->>Web: terms → subjects → criteria, total, letter (if scale confirmed), teacher comment, status
+    API-->>Web: terms → subjects → criteria, total, status (letter and teacher comment not built)
 ```
 
 ### B.4 Admin: reset password and manage access
@@ -453,43 +499,47 @@ sequenceDiagram
 apps/api/src
 ├─ auth/            login, refresh, logout, change-password, guards (Auth, Roles, Csrf, MustChangePassword)
 ├─ audit/           append-only audit log + GET /admin/audit-logs
-├─ generations/     intakes + terms                         (★ configurable term_count)
-├─ programs/ ★      CRUD programs; bulk assign students to a program
-├─ courses/         subject catalog                         (★ aliases)
-├─ academic/        offerings, visibility/release           (★ offering_programs)
-├─ criteria/, grading-schemes/   criteria + versioned weights
-├─ grade-scales/ ★  letter bands per intake, confirm
-├─ sheets-sources/  connect workbook, preview               (★ term_id, layout, ignored_tabs)
-├─ sheet-mappings/ ★ detect → review → confirm tab/column mappings
+├─ generations/     intakes + terms
+├─ academic/        archived-generation guard
+├─ sheets-sources/  connect, check, replace, remove, discard; workbooks by term
+├─ sheet-mappings/  detect → review → confirm tab/column mappings; preview
 ├─ sync/            create/list/retry jobs (enqueue only)
-├─ students/        list, status, reset password, bulk credentials (★ program filter)
+├─ students/        list, status, reset password, bulk credentials
 ├─ results/         /student/me* (session-scoped) + admin view
 ├─ dashboard/, health/, infra/ (Prisma, Redis), config/
+│  Not built: programs/, grade-scales/. Removed by D15: courses/, criteria/, grading-schemes/
 packages/
-├─ sheets/  ★ src/term-workbook/ header detection, weight parsing, group headers, column classifier
-├─ sync/    ★ apply-term-workbook.ts → reuses apply-course/apply-roster logic
-└─ shared/  grading engine (★ letter from bands), student-id normalization
-apps/worker  BullMQ processor (unchanged except dispatch on source.layout)
+├─ sheets/  src/term-workbook/ header detection, weight parsing, group headers, column classifier
+├─ sync/    engine.ts, apply-course, apply-roster, confirmed (preview gate), preview, parent
+└─ shared/  grading engine, student-id normalization
+apps/worker  BullMQ processor
 ```
 
 ### C.2 Main endpoints (new or changed; everything else exists, see `api-specification.md`)
 
-| Method         | Path                                                | Purpose                                                                  |
-| -------------- | --------------------------------------------------- | ------------------------------------------------------------------------ |
-| GET/POST/PATCH | `/admin/programs`, `/admin/programs/:id`            | Manage SNA/WEP/…                                                         |
-| POST           | `/admin/students/program`                           | `{ studentIds \| className, programId }` bulk assign (audited)           |
-| POST           | `/admin/terms/:id/sources`                          | Connect a **term** workbook `{ url, label }`                             |
-| POST           | `/admin/sources/:id/detect`                         | Read the workbook, return a proposed mapping per tab (writes DRAFT rows) |
-| GET            | `/admin/sources/:id/mappings`                       | All tab mappings with status, issues, cross-check result                 |
-| PUT            | `/admin/sources/:id/mappings/:tabMappingId`         | Edit: subject, programs, column roles, criterion names, weights          |
-| POST           | `/admin/sources/:id/mappings/:tabMappingId/confirm` | Lock mapping → create offering/criteria/scheme, version + 1              |
-| POST           | `/admin/sources/:id/mappings/:tabMappingId/ignore`  | Mark tab ignored                                                         |
-| POST           | `/admin/sources/:id/preview`                        | (exists) dry-run sync using confirmed mappings                           |
-| POST           | `/admin/sync`                                       | (exists) scope SOURCE / GENERATION                                       |
-| POST           | `/admin/terms/:id/release`                          | ★ convenience: set all offerings of a term VISIBLE (audited)             |
-| GET/PUT        | `/admin/generations/:id/grade-scale`                | Read / replace bands (validated: covers 0–100, no overlaps; audited)     |
-| POST           | `/admin/generations/:id/grade-scale/confirm`        | Mark the scale official → letters become visible to students             |
-| GET            | `/student/me/results`                               | (exists) + `letter` (when confirmed) + `teacherComment` per subject      |
+| Method         | Path                                                | Purpose                                                                                    |
+| -------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| GET/POST/PATCH | `/admin/programs`, `/admin/programs/:id`            | Not built. Manage SNA/WEP/…                                                                |
+| POST           | `/admin/students/program`                           | Not built. `{ studentIds \| className, programId }` bulk assign (audited)                  |
+| POST           | `/admin/terms/:id/sources`                          | Connect a **term** workbook `{ url, label }`                                               |
+| POST           | `/admin/sources/:id/detect`                         | Read the workbook, return a proposed mapping per tab (writes DRAFT rows)                   |
+| GET            | `/admin/sources/:id/mappings`                       | All tab mappings with status, issues, cross-check result                                   |
+| POST           | `/admin/sources/:id/mappings/:tabMappingId/confirm` | Sends subject, column roles, names and weights. Creates offering and criteria, version + 1 |
+| POST           | `/admin/sources/:id/mappings/:tabMappingId/ignore`  | Mark tab ignored                                                                           |
+| POST           | `/admin/sources/:id/mappings/:tabMappingId/reopen`  | Back to DRAFT for review                                                                   |
+| GET/POST       | `/admin/sources/:id/preview`                        | Preview of a pending sheet only; imports nothing                                           |
+| POST           | `/admin/sources/:id/preview/:previewId/confirm`     | Required before a pending sheet can sync                                                   |
+| POST           | `/admin/terms/:id/sources/check`                    | Validates a replacement sheet; changes nothing                                             |
+| POST           | `/admin/terms/:id/sources/change`                   | Connects a replacement sheet as PENDING                                                    |
+| POST           | `/admin/sources/:id/discard`                        | Gives up on a pending sheet                                                                |
+| PATCH          | `/admin/sources/:id`                                | `status: DISABLED` removes a sheet; scores stay (D30)                                      |
+| GET            | `/admin/term-workbooks`                             | Each term's active, pending and earlier sheets                                             |
+| GET            | `/admin/sync/targets`                               | Generations and terms for the sync form                                                    |
+| POST           | `/admin/sync`                                       | Scope SOURCE, TERM, GENERATION or ALL                                                      |
+| POST           | `/admin/terms/:id/release`                          | Sets all offerings of a term VISIBLE or HIDDEN (audited)                                   |
+| GET/PUT        | `/admin/generations/:id/grade-scale`                | Not built. Read / replace bands (validated: covers 0–100, no overlaps)                     |
+| POST           | `/admin/generations/:id/grade-scale/confirm`        | Not built. Mark the scale official → letters become visible to students                    |
+| GET            | `/student/me/results`                               | Exists. `letter` and `teacherComment` not built                                            |
 
 ### C.3 Google Sheets authentication
 
@@ -530,23 +580,23 @@ lease/recovery behavior. Do that **after** 1 January, never before.
 
 Status column: ✅ exists and tested · ★ to add.
 
-| Area                             | Design                                                                                                                                                                                                                                          | Status       |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| Password hashing                 | Argon2id (m=19 MiB, t=2, p=1), PHC string; policy 10–128 chars, not containing the ID, not common, not repeated chars                                                                                                                           | ✅           |
-| Session strategy                 | Short-lived JWT access token (15 min) in HttpOnly Secure cookie + opaque refresh token (SHA-256 stored), rotated on use; reuse revokes the whole session; absolute session lifetime                                                             | ✅           |
-| CSRF / CORS                      | Origin/Referer check + per-session CSRF token on mutations; CORS allowlist                                                                                                                                                                      | ✅           |
-| Brute force                      | Per-IP and per-identifier throttles in Redis; account lockout with `Retry-After`; generic error for unknown ID vs wrong password                                                                                                                | ✅           |
-| Role-based access                | `@Roles()` + `RolesGuard`; `/admin/*` → ADMIN, `/student/*` → STUDENT; **route-policy test fails the build if any route lacks a policy**                                                                                                        | ✅           |
-| Students see only their own data | Student endpoints have **no ID parameter**. Identity comes from the session (`/student/me*`); `?studentId` → 400; results query filters `student_id = session.studentId` AND visible; cache key includes studentId; tests for cross-student 404 | ✅           |
-| ★ keep it that way               | Integration tests proving student A never gets B's comment, letter or program, and that hidden subjects expose no comment; keep admin results uncached                                                                                          | ★            |
-| First-login password change      | New accounts PENDING (locked hash) until credentials issued; temp password expires in 14 days; `MustChangePasswordGuard` blocks everything except change-password                                                                               | ✅           |
-| Admin reset                      | Temp password shown once (`no-store`), sessions revoked, audited without secret                                                                                                                                                                 | ✅           |
-| Audit logs                       | Append-only table (UPDATE/DELETE blocked by trigger); actor, action, entity, ip, user agent, request id                                                                                                                                         | ✅           |
-| ★ new audited actions            | `mapping.confirmed`, `mapping.ignored`, `program.created/updated`, `student.program.assigned`, `term.released`, `offering.visibility.changed`, `grade_scale.updated/confirmed`                                                                  | ★            |
-| Transport & headers              | Caddy HTTPS, HSTS, nonce CSP, no secrets in logs (scrubbed), Sentry with data collection off                                                                                                                                                    | ✅           |
-| Google key                       | Docker secret, read-only scope, Viewer share                                                                                                                                                                                                    | ✅           |
-| Credential delivery              | CSV per class over HTTPS, formula-injection safe; tell admins to print and hand out, then delete the file                                                                                                                                       | ✅ / process |
-| Backups                          | Nightly `pg_dump` (`docker/backup/backup.sh`) + **restore drill before go-live** (`scripts/restore-drill.sh`)                                                                                                                                   | ★ run it     |
+| Area                             | Design                                                                                                                                                                                                                                                                                                                                           | Status       |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------ |
+| Password hashing                 | Argon2id (m=19 MiB, t=2, p=1), PHC string; policy 10–128 chars, not containing the ID, not common, not repeated chars                                                                                                                                                                                                                            | ✅           |
+| Session strategy                 | Short-lived JWT access token (15 min) in HttpOnly Secure cookie + opaque refresh token (SHA-256 stored), rotated on use; reuse revokes the whole session; absolute session lifetime                                                                                                                                                              | ✅           |
+| CSRF / CORS                      | Origin/Referer check + per-session CSRF token on mutations; CORS allowlist                                                                                                                                                                                                                                                                       | ✅           |
+| Brute force                      | Per-IP and per-identifier throttles in Redis; account lockout with `Retry-After`; generic error for unknown ID vs wrong password                                                                                                                                                                                                                 | ✅           |
+| Role-based access                | `@Roles()` + `RolesGuard`; `/admin/*` → ADMIN, `/student/*` → STUDENT; **route-policy test fails the build if any route lacks a policy**                                                                                                                                                                                                         | ✅           |
+| Students see only their own data | Student endpoints have **no ID parameter**. Identity comes from the session (`/student/me*`); `?studentId` → 400; results query filters `student_id = session.studentId` AND visible; cache key includes studentId; tests for cross-student 404                                                                                                  | ✅           |
+| ★ keep it that way               | Integration tests proving student A never gets B's comment, letter or program, and that hidden subjects expose no comment; keep admin results uncached                                                                                                                                                                                           | ★            |
+| First-login password change      | New accounts PENDING (locked hash) until credentials issued; temp password expires in 14 days; `MustChangePasswordGuard` blocks everything except change-password                                                                                                                                                                                | ✅           |
+| Admin reset                      | Temp password shown once (`no-store`), sessions revoked, audited without secret                                                                                                                                                                                                                                                                  | ✅           |
+| Audit logs                       | Append-only table (UPDATE/DELETE blocked by trigger); actor, action, entity, ip, user agent, request id                                                                                                                                                                                                                                          | ✅           |
+| Audited actions added            | `mapping.confirmed`, `mapping.ignored`, `mapping.reopened`, `source.tabs.detected`, `term.released`, `term.hidden`, `source.switched`, `source.promoted`, `source.pending.discarded`, `source.disabled`, `source.enabled`, `source.preview.run`, `source.preview.confirmed`. Not built: `program.*`, `student.program.assigned`, `grade_scale.*` | ★            |
+| Transport & headers              | Caddy HTTPS, HSTS, nonce CSP, no secrets in logs (scrubbed), Sentry with data collection off                                                                                                                                                                                                                                                     | ✅           |
+| Google key                       | Docker secret, read-only scope, Viewer share                                                                                                                                                                                                                                                                                                     | ✅           |
+| Credential delivery              | CSV per class over HTTPS, formula-injection safe; tell admins to print and hand out, then delete the file                                                                                                                                                                                                                                        | ✅ / process |
+| Backups                          | Nightly `pg_dump` (`docker/backup/backup.sh`) + **restore drill before go-live** (`scripts/restore-drill.sh`)                                                                                                                                                                                                                                    | ★ run it     |
 
 ---
 
@@ -557,31 +607,59 @@ About 40 working days, solo. Sprint length 2 weeks. Planned load is about 80% so
 
 ### E.1 Sprints
 
-| Sprint                         | Dates                                      | Goal                             | Tasks (estimate in days)                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Milestone / exit criteria                                                                                                   |
-| ------------------------------ | ------------------------------------------ | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| **0 Setup & decisions**        | Fri 30 Oct – Sun 1 Nov                     | Unblock everything               | Decisions D1–D13 recorded ✅; send the school the 4 remaining items in F.2 (0.25); live Google test with the service-account key on a **copy** of the GEN2027 T1 workbook (0.5); anonymized fixture from real headers (0.5); confirm RabbitMQ decision (0.1)                                                                                                                                                                                                                      | Live read of the real workbook works; remaining items sent                                                                  |
-| **1 Model + parser**           | Mon 2 – Fri 13 Nov                         | Read the real workbook correctly | Migration: programs, offering_programs, aliases, source term/layout/roster_tab, tab/column mappings, student names, teacher_comment, grade scales, term_count (2); `term-workbook` parser: `ALL` roster, header detection, group headers + equal split, weight regex, column classifier, cross-check (4); unit tests on fixtures incl. `f` header, swapped names, blanks, BCU partial, MsOffice no weights (2); detect endpoint (1)                                               | **M1:** `POST /detect` on the real file proposes correct criteria + weights for all 5 tabs; cross-check passes on Logic, PL |
-| **2 Mapping + sync**           | Mon 16 – Fri 27 Nov                        | Real data in the database        | Mapping review/confirm API (2) + admin UI screen (3); engine adapter `apply-term-workbook` (roster from `ALL`, enrollments, comments, scores, revisions) reusing existing apply code (2.5); `NEEDS_REMAP` / `content_hash` / `UNMAPPED_TAB` (1); integration tests: first import, idempotent re-run, changed mark, blank-over-value, removed student, renamed header (1.5)                                                                                                        | **M2:** GEN2027 Term 1 fully synced on dev; re-sync = 0 writes; report readable                                             |
-| **3 Programs, UI, ship-ready** | Mon 30 Nov – Fri 11 Dec                    | Feature-complete + deployable    | Programs CRUD + bulk assign + filters (1.5); offering audience in UI, program shown in student profile (1); term release button (0.5); teacher comment on subject detail (0.5); grade scale API + admin editor + letter on student pages (1.5); Phase 10: prod compose on VPS staging, Caddy HTTPS, CI green, backups (2.5); Playwright e2e: admin connect→map→sync→release, student login→forced change→view (2); update docs (`google-sheets-template.md` §term workbook) (0.5) | **M3 (Fri 11 Dec): feature freeze.** Staging URL live with real T1 data                                                     |
-| **4 UAT & go-live**            | Mon 14 – Wed 23 Dec                        | School accepts it                | UAT session 1 with 1–2 admins (Mon 14): connect, map, sync, release (0.5); compare 20 random students × all subjects against the sheet `TOTAL` (1); fix UAT bugs (3); security pass: route-policy, cross-student tests, dependency audit, headers (1); restore drill (0.5); prod deploy + create 5 admin accounts (0.5); UAT session 2 / sign-off (Fri 18) (0.5)                                                                                                                  | **M4 (Mon 21 Dec): go/no-go.** **M5 (Wed 23 Dec): production live**, admins trained                                         |
-| **Buffer**                     | Thu 24 – Thu 31 Dec                        | Absorb slippage                  | Only bug fixes. Prepare credential CSVs per class; a 1-page student guide (login, change password)                                                                                                                                                                                                                                                                                                                                                                                | Code frozen 28 Dec                                                                                                          |
-| **Launch**                     | Fri 1 Jan 2027 (hand-out first school day) | Students log in                  | Issue credentials per class; monitor login errors and Sentry for the first week                                                                                                                                                                                                                                                                                                                                                                                                   |                                                                                                                             |
+| Sprint                                        | Dates                                      | Goal                             | Tasks (estimate in days)                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Milestone / exit criteria                                                                                                   |
+| --------------------------------------------- | ------------------------------------------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| **0 Setup & decisions**                       | Fri 30 Oct – Sun 1 Nov                     | Unblock everything               | Decisions D1–D13 recorded ✅; send the school the 4 remaining items in F.2 (0.25); live Google test with the service-account key on a **copy** of the GEN2027 T1 workbook (0.5); anonymized fixture from real headers ✅ (0.5); confirm RabbitMQ decision (0.1)                                                                                                                                                                                                                            | Live read of the real workbook works; remaining items sent                                                                  |
+| **1 Model + parser** ✅                       | Mon 2 – Fri 13 Nov                         | Read the real workbook correctly | Migration: programs, offering_programs, aliases, source term/layout/roster_tab, tab/column mappings, student names, teacher_comment, grade scales (2); `term-workbook` parser: `ALL` roster, header detection, group headers + equal split, weight regex, column classifier, cross-check (4); unit tests on fixtures incl. `f` header, swapped names, blanks, BCU partial, MsOffice no weights (2); detect endpoint (1)                                                                    | **M1:** `POST /detect` on the real file proposes correct criteria + weights for all 5 tabs; cross-check passes on Logic, PL |
+| **2 Mapping + sync** ✅ except `content_hash` | Mon 16 – Fri 27 Nov                        | Real data in the database        | Mapping review/confirm API (2) + admin UI screen (3); engine adapter `apply-term-workbook` (roster from `ALL`, enrollments, comments, scores, revisions) reusing existing apply code (2.5); `NEEDS_REMAP` / `content_hash` / `UNMAPPED_TAB` (1); integration tests: first import, idempotent re-run, changed mark, blank-over-value, removed student, renamed header (1.5)                                                                                                                 | **M2:** GEN2027 Term 1 fully synced on dev; re-sync = 0 writes; report readable                                             |
+| **3 Programs, UI, ship-ready**                | Mon 30 Nov – Fri 11 Dec                    | Feature-complete + deployable    | Programs CRUD + bulk assign + filters (1.5); offering audience in UI, program shown in student profile (1); term release button ✅ (0.5); teacher comment on subject detail (0.5); grade scale API + admin editor + letter on student pages (1.5); Phase 10: prod compose on VPS staging, Caddy HTTPS, CI green, backups (2.5); Playwright e2e: admin connect→map→sync→release, student login→forced change→view ✅ (2); update docs (`google-sheets-template.md` §term workbook) ✅ (0.5) | **M3 (Fri 11 Dec): feature freeze.** Staging URL live with real T1 data                                                     |
+| **4 UAT & go-live**                           | Mon 14 – Wed 23 Dec                        | School accepts it                | UAT session 1 with 1–2 admins (Mon 14): connect, map, sync, release (0.5); compare 20 random students × all subjects against the sheet `TOTAL` (1); fix UAT bugs (3); security pass: route-policy, cross-student tests, dependency audit, headers (1); restore drill (0.5); prod deploy + create 5 admin accounts (0.5); UAT session 2 / sign-off (Fri 18) (0.5)                                                                                                                           | **M4 (Mon 21 Dec): go/no-go.** **M5 (Wed 23 Dec): production live**, admins trained                                         |
+| **Buffer**                                    | Thu 24 – Thu 31 Dec                        | Absorb slippage                  | Only bug fixes. Prepare credential CSVs per class; a 1-page student guide (login, change password)                                                                                                                                                                                                                                                                                                                                                                                         | Code frozen 28 Dec                                                                                                          |
+| **Launch**                                    | Fri 1 Jan 2027 (hand-out first school day) | Students log in                  | Issue credentials per class; monitor login errors and Sentry for the first week                                                                                                                                                                                                                                                                                                                                                                                                            |                                                                                                                             |
 
 Moving letter grades into the MVP (D5) adds 1.5 days to Sprint 3, which is now fully loaded
 (10 of 10 days). If it slips, the Playwright suite moves to the first two days of Sprint 4; the
 feature freeze on 11 Dec does not move.
+
+In Sprint 3, CI and production files exist, but staging on a VPS has not been done.
+
+### E.4 Tasks from the documentation review (2026-10-31)
+
+| #   | Task                                                                                                                                                                                                                                                               | Done when                                                                             |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| T1  | Apply names from a pending sheet at its sync, not at Confirm tab                                                                                                                                                                                                   | A test shows students see the old subject and criterion names until the sync succeeds |
+| T2  | Show a note on the job page when the 20,000 issue cap is hit                                                                                                                                                                                                       | The page says how many issues are not listed                                          |
+| T3  | Measure a sheet change on 101 students                                                                                                                                                                                                                             | Lock time recorded; split the transaction if other syncs are blocked for too long     |
+| T4  | Before go-live: make revocation fail closed across a Redis outage                                                                                                                                                                                                  | A test revokes during a Redis failure and the token is refused afterwards             |
+| T5  | Before go-live: give the app a database role with INSERT and SELECT only on `audit_logs`                                                                                                                                                                           | Production connects as that role and a test confirms UPDATE is refused                |
+| T6  | Before go-live: keep 30 daily and 12 monthly backups                                                                                                                                                                                                               | `docker/backup/backup.sh` and compose implement it                                    |
+| T7  | Before go-live: add an admin CLI that revokes all sessions                                                                                                                                                                                                         | The command exists and is documented in `operations.md`                               |
+| T8  | Decide each open row in [security.md §13](security.md)                                                                                                                                                                                                             | Each row is fixed, or its rule is changed on purpose                                  |
+| T9  | Add the archived-generation guard to discard, run preview and confirm preview                                                                                                                                                                                      | Each returns 409 `GENERATION_ARCHIVED`, with a test                                   |
+| T10 | Restore tests lost with `academic.integration-spec.ts`: disabling revokes sessions and blocks login, activating PENDING accounts only by issuing credentials, password reset (shown once, revokes), audit-log listing, generation pagination, 404 and 400 handling | Integration tests pass                                                                |
+| T11 | Add `.env.production.example` and its `.gitignore` exception                                                                                                                                                                                                       | `deployment.md` can use `cp` again                                                    |
+| T12 | Make `backup.sh` and `restore-drill.sh` executable in git                                                                                                                                                                                                          | Mode 100755                                                                           |
+| T13 | Pass the 7 missing variables through `docker-compose.prod.yml`, or drop them from production docs                                                                                                                                                                  | Setting them works, or they are not documented for production                         |
+| T14 | Correct "Nothing from this run was applied" on the job page                                                                                                                                                                                                        | A run that failed after the roster step does not say so                               |
+| T15 | Delete the stray root `prisma/` folder and fix the `docs/verify-sprint-1.md` link in `scripts/verify-term-workbook.mjs`                                                                                                                                            | Folder gone, link correct                                                             |
+| T16 | Remove or use unused schema: `last_content_hash`, `visibility_overridden`, `sheet_column_key`                                                                                                                                                                      | Decided and migrated                                                                  |
+
+Built outside the sprints above, all ✅ verified by the tests in `progress.md` (2026-10-31): sync
+targets by Generation + Term (D19, D20), issues roll-up (D21, D22), replacing a sheet with preview
+(D23–D29), Discard, sheet history and going back to an earlier sheet, removing a sheet (D30), sheet
+controls in Edit term (D31), Workbooks by term, Reopen tab, one running sync per term.
 
 ### E.2 Scope
 
 **MVP (must have on 1 Jan)**
 
 - Connect one workbook per term, auto-detect headers, admin confirms the mapping, sync, re-sync safely.
-- Validation report with tab/row/column/value; dry-run preview; per-tab isolation.
+- Validation report with tab/row/column/value; per-tab isolation; preview for replacement sheets.
 - Subjects, aliases and programs as data; shared vs program-specific offerings.
 - Weights from headers, cross-checked against sheet `TOTAL`; versioned scheme publish.
-- Release (visibility) per subject/term.
+- Release (visibility) per term.
 - Letter grades from an editable per-intake scale, shown once the scale is confirmed (D5).
-- Teacher comments on the released subject's detail page (D6).
+- Teacher comments on the released term's subject detail page (D6).
 - Student login with full student ID, forced first password change, view own scores by term.
 - Admin: student list (filter class/program), reset password, bulk credential CSV, disable account, audit log.
 - Production deployment with HTTPS, backups and a tested restore.
@@ -600,7 +678,7 @@ feature freeze on 11 Dec does not move.
 | Level       | What                                                                                                                           |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | Unit        | Parser: header row detection, group spans, every weight label variant seen in the real file, column classification, cell rules |
-| Integration | Engine on a real PostgreSQL: idempotency, revisions, remap detection, partial failure, program mismatch                        |
+| Integration | Engine on a real PostgreSQL: idempotency, revisions, remap detection, partial failure                                          |
 | Security    | Route policy, cross-student access, CSRF, throttles (existing suites + new endpoints)                                          |
 | E2E         | Playwright: the two critical journeys above, run in CI against the compose stack                                               |
 | Data UAT    | **System total vs sheet TOTAL** for every student × subject. Every mismatch explained (weights, blanks-as-zero) before release |
@@ -617,9 +695,9 @@ feature freeze on 11 Dec does not move.
 | R2  | Teachers edit columns mid-term (add `Quiz 4`, rename)                                                                                      | High / Medium       | Confirmed: teachers edit their own tabs (D2). Ask teachers to **protect the header rows** (Google Sheets → Protect range, editors = admins). Signature change blocks only that tab with a clear error; admin re-confirms in 2 minutes; scheme gets a new version, old scores kept |
 | R3  | Blank vs zero (BCU `Total` counts blanks as 0)                                                                                             | High / Medium       | Decided: blank = not entered (D3). Show INCOMPLETE, not a wrong total. Tell teachers the BCU sheet total will differ, and use `ABS` for a real zero                                                                                                                               |
 | R4  | Name inconsistencies across tabs (`SREYMOM MAO` vs `MAO SREYMOM`)                                                                          | Medium / Low        | Student ID is the only key; names come from `ALL` (D9); mismatches = warning list for the school to clean                                                                                                                                                                         |
-| R4b | Placeholder grade bands shown as if official                                                                                               | Medium / High       | Letters hidden from students until an admin confirms the scale (D5); the release checklist includes "grade scale confirmed"                                                                                                                                                       |
-| R5  | Weights not shown in header (MsOffice) or don't total 100                                                                                  | Medium / High       | Admin enters weights; `TOTAL` cross-check proves them; publish blocked unless 100                                                                                                                                                                                                 |
-| R6  | Wrong workbook connected to wrong term                                                                                                     | Low / High          | `_meta` check when present; term shown on every screen; preview before sync; scores hidden until release                                                                                                                                                                          |
+| R4b | Placeholder grade bands shown as if official                                                                                               | Medium / High       | Letters hidden from students until an admin confirms the scale (D5). The release button has no such check yet                                                                                                                                                                     |
+| R5  | Weights not shown in header (MsOffice) or don't total 100                                                                                  | Medium / High       | Admin enters weights and checks them by hand against `TOTAL` (no automatic check for typed weights); confirm is blocked unless 100                                                                                                                                                |
+| R6  | Wrong workbook connected to wrong term                                                                                                     | Low / High          | `_meta` check when present; term shown on every screen; preview before a replacement sheet syncs; scores hidden until release                                                                                                                                                     |
 | R7  | Solo developer, 2 months, holidays                                                                                                         | Medium / High       | Reuse the existing engine (about 70% done); strict MVP; feature freeze 11 Dec; 8-day buffer                                                                                                                                                                                       |
 | R8  | Students' first login on day one overloads support                                                                                         | Medium / Medium     | Credentials per class on paper, 1-page guide, admins can reset in seconds; staged hand-out per class                                                                                                                                                                              |
 | R9  | Program assignment unknown at Term 2 start                                                                                                 | Medium / Medium     | Enrollment comes from tab rows, so sync works without programs; program only adds filters and warnings                                                                                                                                                                            |
@@ -639,6 +717,6 @@ The 14 original questions are answered: see D1–D13 in Section 1. These four de
 ### F.3 Next three actions
 
 1. Send O1–O4 to the school.
-2. Run the live Google read against a **copy** of `TERM1- GEN 2027 Scoring.xlsx` uploaded to Google Sheets.
-3. Start Sprint 1 with the migration (A.3) and the term-workbook parser (`ALL` roster + header
-   detection), using fixtures copied from the real header rows.
+2. Run the full flow on a real Google Sheet, including replacing a sheet.
+3. Start T1 in E.4, then the go-live tasks T4–T7. Sprint 3 still needs programs, comments and letter
+   grades.

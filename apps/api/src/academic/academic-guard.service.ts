@@ -2,11 +2,11 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import type { Prisma } from '@ssrs/database';
 import { PrismaService } from '../infra/prisma.service.js';
 
-type Db = Pick<Prisma.TransactionClient, 'generation' | 'courseOffering'>;
+type Db = Pick<Prisma.TransactionClient, 'generation'>;
 
 /**
  * Shared lookups that enforce ACAD-06: archived generations are read-only for configuration
- * (offerings, criteria, grading schemes, terms).
+ * (terms, workbooks, mappings).
  */
 @Injectable()
 export class AcademicGuardService {
@@ -25,18 +25,6 @@ export class AcademicGuardService {
         message: 'This generation is archived and cannot be modified',
       });
     }
-  }
-
-  /** Loads an offering and asserts its generation is editable. */
-  async editableOffering(offeringId: string, db: Db = this.prisma.client) {
-    const offering = await db.courseOffering.findUnique({
-      where: { id: offeringId },
-      select: { id: true, generationId: true, status: true },
-    });
-    if (!offering)
-      throw new NotFoundException({ code: 'NOT_FOUND', message: 'Course offering not found' });
-    await this.assertGenerationEditable(offering.generationId, db);
-    return offering;
   }
 
   /** Invalidates cached results for a generation (see docs/architecture.md §6). */

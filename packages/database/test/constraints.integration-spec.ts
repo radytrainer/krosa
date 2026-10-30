@@ -110,6 +110,7 @@ async function source() {
   return prisma.googleSheetSource.create({
     data: {
       generationId: fx.generationId,
+      termId: fx.termId,
       spreadsheetId: '1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789',
       label: 'Main',
       createdById: fx.userId,
@@ -372,6 +373,7 @@ describe('sync jobs', () => {
       prisma.googleSheetSource.create({
         data: {
           generationId: fx.generationId,
+          termId: fx.termId,
           spreadsheetId: 'short',
           label: 'x',
           createdById: fx.userId,
@@ -414,5 +416,109 @@ describe('append-only tables', () => {
     await expect(
       prisma.assessmentScoreRevision.update({ where: { id: rev.id }, data: { newMark: 9 } }),
     ).rejects.toThrow(/append-only/);
+  });
+});
+
+async function termSource(termId: string) {
+  return prisma.googleSheetSource.create({
+    data: {
+      generationId: fx.generationId,
+      termId,
+      spreadsheetId: '1TermSourceSpreadsheet0000000000000000',
+      label: 'Term workbook',
+      createdById: fx.userId,
+    },
+  });
+}
+
+describe('term workbooks (delivery plan A.3)', () => {
+  it('allows only one active workbook per term', async () => {
+    await termSource(fx.termId);
+    await expect(
+      prisma.googleSheetSource.create({
+        data: {
+          generationId: fx.generationId,
+          termId: fx.termId,
+          spreadsheetId: '1SecondTermWorkbook000000000000000000',
+          label: 'Second',
+          createdById: fx.userId,
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('rejects a term from another generation', async () => {
+    const other = await prisma.generation.create({
+      data: {
+        code: 'GEN2027',
+        name: 'Generation 2027',
+        startDate: new Date('2026-11-01'),
+        terms: { create: [{ number: 1, name: 'Term 1' }] },
+      },
+      include: { terms: true },
+    });
+    await expect(termSource(other.terms[0]!.id)).rejects.toThrow();
+  });
+
+  it('guards mapping states and column roles', async () => {
+    const workbook = await termSource(fx.termId);
+    const base = { sourceId: workbook.id, headerRow: 1, headerSignature: 'a'.repeat(64) };
+    await expect(
+      prisma.sheetTabMapping.create({ data: { ...base, tabName: 'X', status: 'CONFIRMED' } }),
+    ).rejects.toThrow(/sheet_tab_mappings_confirmed_check/);
+    await expect(
+      prisma.sheetTabMapping.create({
+        data: { ...base, tabName: 'Y', status: 'IGNORED', offeringId: fx.offeringId },
+      }),
+    ).rejects.toThrow(/sheet_tab_mappings_ignored_check/);
+    const tab = await prisma.sheetTabMapping.create({ data: { ...base, tabName: 'Logic' } });
+    await expect(
+      prisma.sheetColumnMapping.create({
+        data: {
+          tabMappingId: tab.id,
+          columnIndex: 0,
+          role: 'COMMENT',
+          criterionId: fx.criterionId,
+        },
+      }),
+    ).rejects.toThrow(/sheet_column_mappings_criterion_role_check/);
+    await expect(
+      prisma.sheetColumnMapping.create({
+        data: { tabMappingId: tab.id, columnIndex: 1, role: 'CRITERION', proposedWeight: '0' },
+      }),
+    ).rejects.toThrow(/sheet_column_mappings_proposed_weight_check/);
+  });
+
+  it('allows a term number only on ALL jobs', async () => {
+    await expect(
+      prisma.syncJob.create({ data: { scope: 'ALL', termNumber: 0, requestedById: fx.userId } }),
+    ).rejects.toThrow(/sync_jobs_term_number_check/);
+    const scoped = {
+      scope: 'GENERATION' as const,
+      generationId: fx.generationId,
+      termNumber: 1,
+      requestedById: fx.userId,
+    };
+    await expect(prisma.syncJob.create({ data: scoped })).rejects.toThrow(
+      /sync_jobs_term_number_check/,
+    );
+    await expect(
+      prisma.syncJob.create({ data: { scope: 'ALL', termNumber: 1, requestedById: fx.userId } }),
+    ).resolves.toBeDefined();
+  });
+
+  it('keeps grade bands within 0–100 and programs to short codes', async () => {
+    const scale = await prisma.gradeScale.create({ data: { generationId: fx.generationId } });
+    await expect(
+      prisma.gradeBand.create({
+        data: { scaleId: scale.id, letter: 'A', minTotal: '101', isPass: true },
+      }),
+    ).rejects.toThrow(/grade_bands_min_total_check/);
+    await expect(prisma.program.create({ data: { code: 'S', name: 'Too short' } })).rejects.toThrow(
+      /programs_code_check/,
+    );
+    await prisma.program.create({
+      data: { code: 'SNA', name: 'System and Network Administration' },
+    });
   });
 });

@@ -6,14 +6,12 @@ import { AuthModule } from './auth/auth.module.js';
 import { buildLoggerParams } from './common/logger.js';
 import type { ApiEnv } from './config/env.js';
 import { EnvModule } from './config/env.module.js';
-import { CoursesModule } from './courses/courses.module.js';
-import { CriteriaModule } from './criteria/criteria.module.js';
 import { DashboardModule } from './dashboard/dashboard.module.js';
 import { GenerationsModule } from './generations/generations.module.js';
-import { GradingSchemesModule } from './grading-schemes/grading-schemes.module.js';
 import { HealthModule } from './health/health.module.js';
 import { InfraModule } from './infra/infra.module.js';
 import { ResultsModule } from './results/results.module.js';
+import { SheetMappingsModule } from './sheet-mappings/sheet-mappings.module.js';
 import { SheetsSourcesModule } from './sheets-sources/sheets-sources.module.js';
 import { SyncModule } from './sync/sync.module.js';
 import { StudentsModule } from './students/students.module.js';
@@ -32,12 +30,10 @@ export class AppModule {
         AcademicModule,
         HealthModule,
         GenerationsModule,
-        CoursesModule,
-        CriteriaModule,
-        GradingSchemesModule,
         StudentsModule,
         ResultsModule,
         SheetsSourcesModule,
+        SheetMappingsModule,
         SyncModule,
         DashboardModule,
       ],

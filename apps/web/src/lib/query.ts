@@ -28,7 +28,8 @@ export function useApi<T>(
   const { keepPrevious, ...rest } = options;
   return useQuery<T>({
     queryKey: apiKey(path ?? ''),
-    queryFn: () => apiFetch<T>(path!),
+    // A null response has an empty body, and react-query treats undefined as a failure.
+    queryFn: async () => ((await apiFetch<T>(path!)) ?? null) as T,
     enabled: path !== null && (rest.enabled ?? true),
     ...(keepPrevious ? { placeholderData: keepPreviousData } : {}),
     ...rest,

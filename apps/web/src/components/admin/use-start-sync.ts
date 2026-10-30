@@ -8,15 +8,17 @@ import { apiKey, json } from '@/lib/query';
 import type { SyncScope } from '@/lib/types';
 
 export interface SyncTarget {
-  scope: SyncScope;
+  scope: SyncScope | 'TERM';
   sourceId?: string;
   generationId?: string;
+  termId?: string;
+  termNumber?: number;
 }
 
 const MESSAGES: Record<string, string> = {
   SOURCE_DISABLED: 'This source is disabled. Enable it before syncing.',
   GENERATION_ARCHIVED: 'This generation is archived. Activate it before syncing.',
-  NO_SOURCES: 'There are no active sheet sources to sync.',
+  NO_SOURCES: 'No confirmed workbooks match this Generation and Term.',
   QUEUE_UNAVAILABLE: 'The job queue is unavailable. Try again in a minute.',
   RATE_LIMITED: 'Too many sync requests. Wait a minute and try again.',
 };

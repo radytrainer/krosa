@@ -11,11 +11,11 @@ import {
 import { formatDateTime, formatDuration, humanize } from '@/lib/format';
 import type { SyncJob } from '@/lib/types';
 
+/** What a job covered, e.g. "Generation 2027, Term 1". */
 export function jobTarget(job: SyncJob): string {
-  if (job.scope === 'SOURCE') return job.source?.label ?? 'Source';
-  if (job.scope === 'GENERATION')
-    return job.generation ? `${job.generation.code} (all sources)` : 'Generation';
-  return 'All generations';
+  if (job.source) return `${job.source.generation.name}, ${job.source.term.name}`;
+  if (job.scope === 'GENERATION' && job.generation) return `${job.generation.name}, all terms`;
+  return job.termNumber ? `All generations, Term ${job.termNumber}` : 'All generations, all terms';
 }
 
 export function SyncJobsTable({

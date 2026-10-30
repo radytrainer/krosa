@@ -19,6 +19,7 @@ import { requestMeta } from '../common/request-meta.js';
 import {
   CreateGenerationDto,
   ListGenerationsQueryDto,
+  ReleaseTermDto,
   UpdateGenerationDto,
   UpdateTermDto,
 } from './generations.dto.js';
@@ -79,6 +80,18 @@ export class GenerationsController {
   @Get('generations/:id/terms')
   terms(@Param('id', ParseUUIDPipe) id: string) {
     return this.generations.listTerms(id);
+  }
+
+  /** Shows (`visible: true`) or hides every subject of the term to students. */
+  @Post('terms/:id/release')
+  @HttpCode(HttpStatus.OK)
+  release(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReleaseTermDto,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    return this.generations.setTermRelease(id, dto.visible, user, requestMeta(req));
   }
 
   @Patch('terms/:id')

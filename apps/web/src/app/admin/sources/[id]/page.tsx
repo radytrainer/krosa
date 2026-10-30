@@ -1,10 +1,11 @@
 'use client';
 
-import { CheckCircle2, ExternalLink, Eye, Pencil, Power, RefreshCw, XCircle } from 'lucide-react';
+import { ExternalLink, Pencil, Power, RefreshCw, TriangleAlert } from 'lucide-react';
 import { useParams } from 'next/navigation';
 import { useState } from 'react';
-import { IssuesTable } from '@/components/admin/issues-table';
 import { SyncJobsTable } from '@/components/admin/sync-jobs-table';
+import { SheetPreviewPanel } from '@/components/admin/sheet-preview';
+import { TermMappings } from '@/components/admin/term-mappings';
 import { useStartSync } from '@/components/admin/use-start-sync';
 import { Confirm } from '@/components/app/confirm';
 import { Field, fieldErrors, onSubmit } from '@/components/app/form';
@@ -24,18 +25,10 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { apiFetch } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
 import { json, qs, useApi, useApiMutation } from '@/lib/query';
-import type { Paginated, Source, SourcePreview, SyncJob } from '@/lib/types';
+import type { Paginated, SheetPreview, Source, SyncJob, TermWorkbooks } from '@/lib/types';
 
 function RenameDialog({ source }: { source: Source }) {
   const [open, setOpen] = useState(false);
@@ -77,89 +70,6 @@ function RenameDialog({ source }: { source: Source }) {
   );
 }
 
-function PreviewResult({ preview }: { preview: SourcePreview }) {
-  const { stats } = preview;
-  return (
-    <div className="space-y-4">
-      {preview.fatal ? (
-        <Alert variant="destructive">
-          <XCircle aria-hidden />
-          <AlertTitle>A sync would fail</AlertTitle>
-          <AlertDescription>
-            Fix the file-level errors below; nothing would be imported.
-          </AlertDescription>
-        </Alert>
-      ) : (
-        <Alert>
-          <CheckCircle2 aria-hidden />
-          <AlertTitle>Ready to sync</AlertTitle>
-          <AlertDescription>
-            {stats.errors
-              ? `${stats.errors} rows or cells would be rejected; everything else would be imported.`
-              : 'No errors found. This was a dry run: nothing was written.'}
-          </AlertDescription>
-        </Alert>
-      )}
-      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {[
-          ['Students', stats.students],
-          ['Courses', `${stats.coursesWithValidScheme}/${stats.courses} with valid scheme`],
-          ['Marks', `${stats.marks} (${stats.blankMarks} blank)`],
-          ['Issues', `${stats.errors} errors · ${stats.warnings} warnings`],
-        ].map(([label, value]) => (
-          <div key={label} className="rounded-lg bg-muted/50 p-3">
-            <dt className="text-xs text-muted-foreground">{label}</dt>
-            <dd className="text-sm font-medium tabular-nums">{value}</dd>
-          </div>
-        ))}
-      </dl>
-      {preview.courses.length ? (
-        <div className="overflow-x-auto rounded-xl ring-1 ring-foreground/10">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Course</TableHead>
-                <TableHead>Term</TableHead>
-                <TableHead className="hidden sm:table-cell">Criteria</TableHead>
-                <TableHead className="hidden sm:table-cell">Rows</TableHead>
-                <TableHead>Scheme</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {preview.courses.map((c) => (
-                <TableRow key={c.courseKey}>
-                  <TableCell>
-                    <span className="font-medium">{c.title}</span>
-                    <span className="block font-mono text-xs text-muted-foreground">
-                      {c.courseKey}
-                    </span>
-                  </TableCell>
-                  <TableCell className="tabular-nums">{c.termNumber}</TableCell>
-                  <TableCell className="hidden tabular-nums sm:table-cell">{c.criteria}</TableCell>
-                  <TableCell className="hidden tabular-nums sm:table-cell">{c.rows}</TableCell>
-                  <TableCell>
-                    <StatusPill tone={c.schemeValid ? 'success' : 'warning'}>
-                      {c.schemeValid ? 'Valid' : 'Needs fixing'}
-                    </StatusPill>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      ) : null}
-      {preview.issues.length ? (
-        <>
-          <IssuesTable issues={preview.issues} />
-          {preview.issuesTruncated ? (
-            <p className="text-xs text-muted-foreground">Only the first 500 issues are shown.</p>
-          ) : null}
-        </>
-      ) : null}
-    </div>
-  );
-}
-
 export default function SourceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [page, setPage] = useState(1);
@@ -171,32 +81,50 @@ export default function SourceDetailPage() {
     },
   );
   const startSync = useStartSync();
-  const preview = useApiMutation(() =>
-    apiFetch<SourcePreview>(`/admin/sources/${id}/preview`, { method: 'POST' }),
+  const preview = useApi<SheetPreview | null>(`/admin/sources/${id}/preview`);
+  const workbooks = useApi<TermWorkbooks[]>('/admin/term-workbooks');
+  const discard = useApiMutation(
+    () => apiFetch(`/admin/sources/${id}/discard`, { method: 'POST' }),
+    {
+      success: 'New sheet discarded. The current sheet stays active.',
+      invalidate: ['/admin/sources', '/admin/term-workbooks', '/admin/generations'],
+    },
   );
   const setStatus = useApiMutation(
     (status: 'ACTIVE' | 'DISABLED') => apiFetch(`/admin/sources/${id}`, json({ status }, 'PATCH')),
     {
       success: 'Source updated.',
-      invalidate: ['/admin/sources', '/admin/generations', '/admin/dashboard'],
+      invalidate: [
+        '/admin/sources',
+        '/admin/term-workbooks',
+        '/admin/generations',
+        '/admin/dashboard',
+      ],
     },
   );
 
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
   if (isPending) return <PageLoading />;
   const active = s.status === 'ACTIVE';
+  const pending = s.status === 'PENDING';
+  const term = workbooks.data?.find((w) => w.term.id === s.term.id);
+  const previewConfirmed = Boolean(preview.data?.confirmedAt);
 
   return (
     <>
       <PageHeader
-        back={{ href: `/admin/generations/${s.generation.id}#sources`, label: s.generation.name }}
+        back={{ href: `/admin/generations/${s.generation.id}#terms`, label: s.generation.name }}
         title={
           <span className="flex flex-wrap items-center gap-2">
             {s.label}
-            <ActivePill active={active} />
+            {pending ? (
+              <StatusPill tone="warning">Pending</StatusPill>
+            ) : (
+              <ActivePill active={active} />
+            )}
           </span>
         }
-        description={s.spreadsheetTitle ?? s.spreadsheetId}
+        description={`${s.generation.name}, ${s.term.name} · ${s.spreadsheetTitle ?? s.spreadsheetId}`}
         actions={
           <>
             <a
@@ -209,7 +137,16 @@ export default function SourceDetailPage() {
               Open sheet<span className="sr-only"> (opens in a new tab)</span>
             </a>
             <RenameDialog source={s} />
-            {active ? (
+            {pending ? (
+              <Confirm
+                trigger={<Button variant="outline">Discard new sheet</Button>}
+                title="Discard this new sheet?"
+                description="It goes back to this term's history. The current sheet stays active and student scores do not change."
+                confirmLabel="Discard"
+                destructive
+                onConfirm={() => discard.mutateAsync(undefined)}
+              />
+            ) : active ? (
               <Confirm
                 trigger={
                   <Button variant="outline">
@@ -230,7 +167,7 @@ export default function SourceDetailPage() {
               </Button>
             )}
             <Button
-              disabled={!active || startSync.isPending}
+              disabled={(pending ? !previewConfirmed : !active) || startSync.isPending}
               onClick={() => startSync.mutate({ scope: 'SOURCE', sourceId: s.id })}
             >
               <RefreshCw aria-hidden />
@@ -241,15 +178,30 @@ export default function SourceDetailPage() {
       />
 
       <div className="space-y-8">
+        {pending ? (
+          <Alert>
+            <TriangleAlert aria-hidden />
+            <AlertTitle>New sheet connected, not synced yet</AlertTitle>
+            <AlertDescription>
+              {term?.active
+                ? `"${term.active.label}" is still feeding student scores. `
+                : 'No sheet is feeding student scores. '}
+              Confirm the tabs below, run and confirm a preview, then sync. Student scores change
+              only when that sync completes.
+            </AlertDescription>
+          </Alert>
+        ) : null}
         <Card size="sm">
           <CardContent>
             <dl className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
               <div>
-                <dt className="text-muted-foreground">Generation</dt>
-                <dd className="font-medium">{s.generation.code}</dd>
+                <dt className="text-muted-foreground">Term</dt>
+                <dd className="font-medium">
+                  {s.generation.code} · {s.term.name}
+                </dd>
               </div>
               <div>
-                <dt className="text-muted-foreground">Offerings owned</dt>
+                <dt className="text-muted-foreground">Subjects synced</dt>
                 <dd className="font-medium tabular-nums">{s.ownedOfferings}</dd>
               </div>
               <div>
@@ -266,32 +218,15 @@ export default function SourceDetailPage() {
           </CardContent>
         </Card>
 
-        <Section
-          title="Preview"
-          description="Reads and validates the whole spreadsheet exactly like a sync, without writing anything."
-          actions={
-            <Button
-              variant="outline"
-              onClick={() => preview.mutate(undefined)}
-              disabled={preview.isPending}
-            >
-              <Eye aria-hidden />
-              {preview.isPending
-                ? 'Reading the spreadsheet…'
-                : preview.data
-                  ? 'Run again'
-                  : 'Run preview'}
-            </Button>
-          }
-        >
-          {preview.isPending ? (
-            <LoadingRows rows={3} label="Reading the spreadsheet" />
-          ) : preview.data ? (
-            <PreviewResult preview={preview.data} />
-          ) : preview.error ? (
-            <ErrorState error={preview.error} />
-          ) : null}
+        <Section title="Subject tabs">
+          <TermMappings sourceId={s.id} readOnly={!active && !pending} />
         </Section>
+
+        {pending ? (
+          <Section title="Preview">
+            <SheetPreviewPanel sourceId={s.id} />
+          </Section>
+        ) : null}
 
         <Section title="Sync history">
           {history.error ? (
@@ -299,7 +234,10 @@ export default function SourceDetailPage() {
           ) : !history.data ? (
             <LoadingRows rows={3} />
           ) : history.data.data.length === 0 ? (
-            <EmptyState title="Never synchronized" description="Run a preview, then “Sync now”." />
+            <EmptyState
+              title="Never synchronized"
+              description="Confirm the subject tabs, then choose “Sync now”."
+            />
           ) : (
             <>
               <SyncJobsTable jobs={history.data.data} showTarget={false} />

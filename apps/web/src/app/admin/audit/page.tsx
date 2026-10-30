@@ -28,10 +28,8 @@ const ACTION_GROUPS = [
   ['term.', 'Terms'],
   ['source.', 'Sheet sources'],
   ['sync.', 'Synchronization'],
-  ['course.', 'Course catalog'],
-  ['offering.', 'Offerings'],
-  ['criterion.', 'Criteria'],
-  ['criteria.', 'Criteria order'],
+  ['mapping.', 'Tab mappings'],
+  ['term.', 'Term release'],
   ['scheme.', 'Grading schemes'],
   ['admin.', 'Administrators'],
 ] as const;

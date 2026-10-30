@@ -11,7 +11,8 @@ import {
 import type { SheetIssue } from '@/lib/types';
 
 /** Where in the sheet an issue is: `Tab · row 12 · column Q1`. */
-export function issueLocation(i: SheetIssue): string {
+export function issueLocation(i: SheetIssue & { source?: { label: string } | null }): string {
+  if (i.source === null) return 'Whole job';
   const parts = [
     i.sheetTab,
     i.rowNumber ? `row ${i.rowNumber}` : null,
@@ -20,7 +21,16 @@ export function issueLocation(i: SheetIssue): string {
   return parts.length ? parts.join(' · ') : 'File';
 }
 
-export function IssuesTable({ issues }: { issues: SheetIssue[] }) {
+export function IssuesTable({
+  issues,
+  showWorkbook = false,
+}: {
+  issues: (SheetIssue & { source?: { label: string } | null })[];
+  /** Adds the workbook to each location, for jobs that cover several workbooks. */
+  showWorkbook?: boolean;
+}) {
+  const location = (i: (typeof issues)[number]) =>
+    showWorkbook && i.source ? `${i.source.label} · ${issueLocation(i)}` : issueLocation(i);
   return (
     <div className="overflow-x-auto rounded-xl ring-1 ring-foreground/10">
       <Table>
@@ -54,10 +64,10 @@ export function IssuesTable({ issues }: { issues: SheetIssue[] }) {
                   {i.criterionKey ? ` · ${i.criterionKey}` : ''}
                   {i.rawValue ? ` · value "${i.rawValue}"` : ''}
                 </p>
-                <p className="mt-0.5 text-xs text-muted-foreground md:hidden">{issueLocation(i)}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground md:hidden">{location(i)}</p>
               </TableCell>
               <TableCell className="hidden text-muted-foreground md:table-cell">
-                {issueLocation(i)}
+                {location(i)}
               </TableCell>
             </TableRow>
           ))}

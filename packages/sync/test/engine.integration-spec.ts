@@ -1,32 +1,41 @@
 import { createPrismaClient, type PrismaClient } from '@ssrs/database';
 import { assertTestDatabaseUrl, truncateAllTables } from '@ssrs/database/testing';
 import {
-  cloneSpreadsheet,
-  FIXTURE_SPREADSHEET_ID,
   InMemorySheetsReader,
-  workbookFixture,
+  TERM_FIXTURE_SPREADSHEET_ID,
+  termWorkbookFixture,
   type FakeSpreadsheet,
 } from '@ssrs/sheets/testing';
 import { failJob, runSourceSync } from '../src/engine.js';
+import { confirmAllTabs } from '../src/testing.js';
 import type { SyncCounts, SyncDeps } from '../src/types.js';
 
 let prisma: PrismaClient;
 let reader: InMemorySheetsReader;
 let adminId: string;
 let generationId: string;
+let termId: string;
 let sourceId: string;
 
-const ID = FIXTURE_SPREADSHEET_ID;
+const ID = TERM_FIXTURE_SPREADSHEET_ID;
 const ONCE = { attempt: 1, maxAttempts: 1 };
+const S1 = 'PNC2027-001';
+const S2 = 'PNC2027-002';
+
+/** Fixture totals: 5 tabs, 36 mark columns, 12 enrollments, 74 filled marks. */
+const CRITERIA = 36;
+const ENROLLMENTS = 12;
+const MARKS = 74;
 
 async function createGeneration(code: string) {
   return prisma.generation.create({
     data: {
       code,
       name: `Generation ${code}`,
-      startDate: new Date('2026-01-05'),
+      startDate: new Date('2026-11-02'),
       terms: { create: [1, 2, 3, 4, 5].map((n) => ({ number: n, name: `Term ${n}` })) },
     },
+    include: { terms: { orderBy: { number: 'asc' } } },
   });
 }
 
@@ -47,7 +56,7 @@ async function sync(deps: Partial<SyncDeps> = {}, options = ONCE) {
 }
 
 function edit(mutate: (tabs: FakeSpreadsheet['tabs']) => void) {
-  const sheet = cloneSpreadsheet(workbookFixture('GEN2026'));
+  const sheet = termWorkbookFixture();
   mutate(sheet.tabs);
   reader.set(ID, sheet);
 }
@@ -75,38 +84,40 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await truncateAllTables(prisma);
-  reader = new InMemorySheetsReader().set(ID, workbookFixture('GEN2026'));
+  reader = new InMemorySheetsReader().set(ID, termWorkbookFixture());
   adminId = (
     await prisma.user.create({ data: { username: 'admin', role: 'ADMIN', passwordHash: 'x' } })
   ).id;
-  generationId = (await createGeneration('GEN2026')).id;
+  const generation = await createGeneration('GEN2027');
+  generationId = generation.id;
+  termId = generation.terms[0]!.id;
   sourceId = (
     await prisma.googleSheetSource.create({
-      data: { generationId, spreadsheetId: ID, label: 'Main', createdById: adminId },
+      data: { generationId, termId, spreadsheetId: ID, label: 'Term 1', createdById: adminId },
     })
   ).id;
+  await confirmAllTabs(prisma, reader, sourceId);
 });
 
 describe('first import', () => {
-  it('creates students, offerings, criteria, published schemes, enrollments and marks', async () => {
+  it('creates students, published schemes, enrollments and marks from confirmed tabs', async () => {
     const { outcome, job, counts } = await sync();
     expect(outcome).toEqual({ kind: 'finished', status: 'SUCCEEDED' });
     expect(job).toMatchObject({
       status: 'SUCCEEDED',
       phase: 'DONE',
       errorCount: 0,
-      warningCount: 0,
-      progressCurrent: 3,
-      progressTotal: 3,
+      warningCount: 1, // BCU row 3 has first and last name swapped
+      progressCurrent: 6,
+      progressTotal: 6,
     });
-    expect(job.finishedAt).not.toBeNull();
     expect(counts).toEqual({
       students: { created: 3, updated: 0, unchanged: 0, rejected: 0 },
-      offerings: { created: 2, updated: 0, unchanged: 0, rejected: 0, failed: 0 },
-      criteria: { created: 10, updated: 0, unchanged: 0 },
-      schemes: { published: 2, drafted: 0, unchanged: 0, skipped: 0 },
-      enrollments: { created: 6, unchanged: 0, missingInSource: 0 },
-      scores: { created: 29, updated: 0, unchanged: 0, rejected: 0, clearedInSource: 0 },
+      offerings: { created: 0, updated: 0, unchanged: 5, rejected: 0, failed: 0 },
+      criteria: { created: 0, updated: 0, unchanged: CRITERIA },
+      schemes: { published: 5, drafted: 0, unchanged: 0, skipped: 0 },
+      enrollments: { created: ENROLLMENTS, unchanged: 0, missingInSource: 0 },
+      scores: { created: MARKS, updated: 0, unchanged: 0, rejected: 0, clearedInSource: 0 },
     });
 
     const users = await prisma.user.findMany({ where: { role: 'STUDENT' } });
@@ -115,39 +126,69 @@ describe('first import', () => {
       expect(u).toMatchObject({ status: 'PENDING', mustChangePassword: true });
       expect(u.passwordHash.startsWith('!locked:')).toBe(true);
     }
+    const student = await prisma.student.findUniqueOrThrow({ where: { studentCode: S1 } });
+    expect(student).toMatchObject({
+      firstName: 'DARA',
+      lastName: 'SOK',
+      fullName: 'DARA SOK',
+      gender: 'MALE',
+      className: 'A',
+    });
 
-    const offerings = await prisma.courseOffering.findMany({ orderBy: { externalKey: 'asc' } });
-    expect(
-      offerings.map((o) => [o.externalKey, o.visibility, o.credits.toString(), o.sourceId]),
-    ).toEqual([
-      ['T1-MATH101', 'VISIBLE', '3', sourceId],
-      ['T2-ENG101', 'HIDDEN', '2', sourceId],
-    ]);
-    const schemes = await prisma.gradingScheme.findMany({ include: { items: true } });
-    expect(schemes.map((s) => [s.status, s.origin, s.version, s.items.length])).toEqual(
-      expect.arrayContaining([
-        ['PUBLISHED', 'SHEET', 1, 6],
-        ['PUBLISHED', 'SHEET', 1, 4],
-      ]),
-    );
+    const scheme = await prisma.gradingScheme.findFirstOrThrow({
+      where: { offering: { externalKey: 'T1-ENG' } },
+      include: { items: { include: { criterion: true } } },
+    });
+    expect(scheme).toMatchObject({ status: 'PUBLISHED', origin: 'SHEET', version: 1 });
+    expect(scheme.items).toHaveLength(16);
+    const rolePlay = scheme.items.find((i) => i.criterion.key === 'ROLE_PLAY');
+    expect(rolePlay!.weight.toString()).toBe('7.5');
+    expect(rolePlay!.maxMark.toString()).toBe('100');
 
-    const absent = await scoreOf('GEN26-0002', 'T1-MATH101', 'Q2');
-    expect(absent).toMatchObject({ status: 'ABSENT', sourceTab: 'T1 Math', sourceRow: 4 });
-    expect(absent!.mark.toString()).toBe('0');
-    expect(await scoreOf('GEN26-0003', 'T2-ENG101', 'FINAL')).toBeNull(); // blank is not zero
-    expect((await scoreOf('GEN26-0002', 'T2-ENG101', 'PROJECT'))!.mark.toString()).toBe('70.25');
-
-    expect(await prisma.assessmentScoreRevision.count()).toBe(29);
+    expect((await scoreOf(S1, 'T1-LOGIC', 'QUIZ_1'))!.mark.toString()).toBe('90');
+    expect(await scoreOf(S1, 'T1-BCU', 'QUIZ_1')).toBeNull(); // blank is not zero
+    expect(await prisma.assessmentScoreRevision.count()).toBe(MARKS);
     expect(await prisma.auditLog.count({ where: { action: 'student.provisioned' } })).toBe(3);
-    expect(await prisma.auditLog.count({ where: { action: 'scheme.published' } })).toBe(2);
     expect(await prisma.auditLog.count({ where: { action: 'sync.completed' } })).toBe(1);
 
     const source = await prisma.googleSheetSource.findUniqueOrThrow({ where: { id: sourceId } });
     expect(source.lastSyncJobId).toBe(job.id);
-    expect(source.lastSyncedAt).not.toBeNull();
+    expect(job.mappingVersions).toEqual(
+      expect.objectContaining(
+        Object.fromEntries((await prisma.sheetTabMapping.findMany()).map((t) => [t.id, t.version])),
+      ),
+    );
     expect(
       (await prisma.generation.findUniqueOrThrow({ where: { id: generationId } })).cacheVersion,
     ).toBe(2);
+  });
+
+  it('keeps every subject hidden until an admin releases the term', async () => {
+    await sync();
+    const offerings = await prisma.courseOffering.findMany();
+    expect(offerings.map((o) => o.visibility)).toEqual(Array(5).fill('HIDDEN'));
+
+    await prisma.courseOffering.updateMany({ data: { visibility: 'VISIBLE' } });
+    await sync();
+    const after = await prisma.courseOffering.findMany();
+    expect(after.map((o) => o.visibility)).toEqual(Array(5).fill('VISIBLE'));
+  });
+
+  it('stores teacher comments and the sheet total on the enrollment', async () => {
+    await sync();
+    const pl = await prisma.enrollment.findFirstOrThrow({
+      where: { student: { studentCode: S1 }, offering: { externalKey: 'T1-PL' } },
+    });
+    expect(pl.teacherComment).toBe('Works well in a team.');
+    const logic = await prisma.enrollment.findFirstOrThrow({
+      where: { student: { studentCode: S1 }, offering: { externalKey: 'T1-LOGIC' } },
+    });
+    expect(logic.sheetTotal!.toString()).toBe('78.9');
+
+    edit((tabs) => (tabs['PL']![1]![10] = 'Much improved.'));
+    await sync();
+    const updated = await prisma.enrollment.findUniqueOrThrow({ where: { id: pl.id } });
+    expect(updated.teacherComment).toBe('Much improved.');
   });
 });
 
@@ -158,66 +199,67 @@ describe('repeat synchronization', () => {
     expect(job.status).toBe('SUCCEEDED');
     expect(counts).toEqual({
       students: { created: 0, updated: 0, unchanged: 3, rejected: 0 },
-      offerings: { created: 0, updated: 0, unchanged: 2, rejected: 0, failed: 0 },
-      criteria: { created: 0, updated: 0, unchanged: 10 },
-      schemes: { published: 0, drafted: 0, unchanged: 2, skipped: 0 },
-      enrollments: { created: 0, unchanged: 6, missingInSource: 0 },
-      scores: { created: 0, updated: 0, unchanged: 29, rejected: 0, clearedInSource: 0 },
+      offerings: { created: 0, updated: 0, unchanged: 5, rejected: 0, failed: 0 },
+      criteria: { created: 0, updated: 0, unchanged: CRITERIA },
+      schemes: { published: 0, drafted: 0, unchanged: 5, skipped: 0 },
+      enrollments: { created: 0, unchanged: ENROLLMENTS, missingInSource: 0 },
+      scores: { created: 0, updated: 0, unchanged: MARKS, rejected: 0, clearedInSource: 0 },
     });
     expect(await prisma.student.count()).toBe(3);
-    expect(await prisma.assessmentScore.count()).toBe(29);
-    expect(await prisma.assessmentScoreRevision.count()).toBe(29);
-    expect(await prisma.gradingScheme.count()).toBe(2);
+    expect(await prisma.assessmentScore.count()).toBe(MARKS);
+    expect(await prisma.assessmentScoreRevision.count()).toBe(MARKS);
+    expect(await prisma.gradingScheme.count()).toBe(5);
   });
 
   it('updates changed marks and records each change in the revision history', async () => {
     await sync();
     edit((tabs) => {
-      tabs['T1 Math']![2]![2] = 9.5; // GEN26-0001 Q1: 8 → 9.5
-      tabs['T1 Math']![3]![3] = 6; // GEN26-0002 Q2: ABS → 6
+      tabs['Logic']![1]![5] = 95; // S1 Quiz 1: 90 → 95
+      tabs['Logic']![2]![6] = 'ABS'; // S2 Quiz 2: 70 → absent
     });
     const { counts } = await sync();
-    expect(counts.scores).toMatchObject({ updated: 2, unchanged: 27 });
+    expect(counts.scores).toMatchObject({ updated: 2, unchanged: MARKS - 2 });
 
-    const q1 = await scoreOf('GEN26-0001', 'T1-MATH101', 'Q1');
-    expect(q1!.mark.toString()).toBe('9.5');
+    const quiz = await scoreOf(S1, 'T1-LOGIC', 'QUIZ_1');
+    expect(quiz!.mark.toString()).toBe('95');
     const history = await prisma.assessmentScoreRevision.findMany({
-      where: { scoreId: q1!.id },
+      where: { scoreId: quiz!.id },
       orderBy: { createdAt: 'asc' },
     });
     expect(history.map((h) => [h.oldMark?.toString() ?? null, h.newMark.toString()])).toEqual([
-      [null, '8'],
-      ['8', '9.5'],
+      [null, '90'],
+      ['90', '95'],
     ]);
-    const q2 = await scoreOf('GEN26-0002', 'T1-MATH101', 'Q2');
-    expect(q2).toMatchObject({ status: 'RECORDED' });
+    const absent = await scoreOf(S2, 'T1-LOGIC', 'QUIZ_2');
+    expect(absent).toMatchObject({ status: 'ABSENT' });
+    expect(absent!.mark.toString()).toBe('0');
   });
 
   it('keeps a recorded mark when its cell is cleared, with a warning', async () => {
     await sync();
-    edit((tabs) => (tabs['T1 Math']![2]![4] = null)); // GEN26-0001 MID cleared
+    edit((tabs) => (tabs['Logic']![1]![9] = null)); // S1 MIDTERM cleared
     const { job, counts } = await sync();
     expect(job.status).toBe('SUCCEEDED');
     expect(counts.scores.clearedInSource).toBe(1);
-    expect((await scoreOf('GEN26-0001', 'T1-MATH101', 'MID'))!.mark.toString()).toBe('41.5');
+    expect((await scoreOf(S1, 'T1-LOGIC', 'MIDTERM'))!.mark.toString()).toBe('60');
     expect(job.errors).toContainEqual(
       expect.objectContaining({
         code: 'MARK_CLEARED_IN_SOURCE',
         severity: 'WARNING',
-        rowNumber: 3,
-        criterionKey: 'MID',
+        rowNumber: 2,
+        criterionKey: 'MIDTERM',
       }),
     );
   });
 
-  it('never touches existing accounts but updates profile data', async () => {
+  it('never touches existing accounts but updates profile data from the roster', async () => {
     await sync();
-    const user = await prisma.user.findUniqueOrThrow({ where: { username: 'GEN26-0001' } });
+    const user = await prisma.user.findUniqueOrThrow({ where: { username: S1 } });
     await prisma.user.update({
       where: { id: user.id },
       data: { status: 'ACTIVE', passwordHash: '$argon2id$real', mustChangePassword: false },
     });
-    edit((tabs) => (tabs['Students']![1]![1] = 'Example Student A Renamed'));
+    edit((tabs) => (tabs['ALL']![3]![2] = 'SOKHA'));
 
     const { counts } = await sync();
     expect(counts.students).toMatchObject({ updated: 1, unchanged: 2, created: 0 });
@@ -227,154 +269,163 @@ describe('repeat synchronization', () => {
       passwordHash: '$argon2id$real',
       mustChangePassword: false,
     });
-    expect((await prisma.student.findUniqueOrThrow({ where: { userId: user.id } })).fullName).toBe(
-      'Example Student A Renamed',
-    );
+    expect(await prisma.student.findUniqueOrThrow({ where: { userId: user.id } })).toMatchObject({
+      lastName: 'SOKHA',
+      fullName: 'DARA SOKHA',
+    });
   });
 
-  it('flags students who disappear from a course tab without deleting anything', async () => {
+  it('flags students who disappear from a tab without deleting anything', async () => {
     await sync();
-    edit((tabs) => tabs['T2 English']!.splice(3, 1)); // drop GEN26-0002
+    edit((tabs) => tabs['PL']!.splice(2, 1)); // drop S2
     const { job, counts } = await sync();
     expect(counts.enrollments.missingInSource).toBe(1);
     const enrollment = await prisma.enrollment.findFirstOrThrow({
-      where: { student: { studentCode: 'GEN26-0002' }, offering: { externalKey: 'T2-ENG101' } },
+      where: { student: { studentCode: S2 }, offering: { externalKey: 'T1-PL' } },
     });
     expect(enrollment.presentInSource).toBe(false);
-    expect(await scoreOf('GEN26-0002', 'T2-ENG101', 'PROJECT')).not.toBeNull();
+    expect(await scoreOf(S2, 'T1-PL', 'QUIZ')).not.toBeNull();
     expect(job.errors).toContainEqual(
-      expect.objectContaining({ code: 'ENROLLMENT_MISSING_IN_SOURCE', studentCode: 'GEN26-0002' }),
+      expect.objectContaining({ code: 'ENROLLMENT_MISSING_IN_SOURCE', studentCode: S2 }),
     );
-  });
-
-  it('applies name/order changes to criteria and creates new criteria', async () => {
-    await sync();
-    edit((tabs) => {
-      tabs['Criteria']![1]![2] = 'Pop Quiz 1';
-      tabs['Criteria']![1]![5] = 3; // Q1 weight 5 → 3
-      tabs['Criteria']!.splice(3, 0, ['T1-MATH101', 'Q3', 'Quiz 3', 'QUIZ', 10, 2, 3, '']);
-      tabs['T1 Math']![0]!.push('Q3');
-      tabs['T1 Math']![2]!.push(7);
-    });
-    const { counts } = await sync();
-    // Q1 renamed; the others keep their explicit `order` values, so only Q1 counts as updated.
-    expect(counts.criteria).toMatchObject({ created: 1, updated: 1, unchanged: 9 });
-    const q1 = await prisma.assessmentCriterion.findFirstOrThrow({
-      where: { key: 'Q1', offering: { externalKey: 'T1-MATH101' } },
-    });
-    expect(q1.name).toBe('Pop Quiz 1');
-    expect(counts.schemes.drafted).toBe(1);
   });
 });
 
-describe('grading schemes (hybrid authority)', () => {
-  it('turns sheet weight changes into a draft and leaves the published scheme alone', async () => {
-    await sync();
-    edit((tabs) => {
-      tabs['Criteria']![1]![5] = 10; // Q1 5 → 10
-      tabs['Criteria']![3]![5] = 25; // MID 30 → 25
-    });
-    const first = await sync();
-    expect(first.counts.schemes).toMatchObject({ drafted: 1, unchanged: 1 });
-    expect(first.job.errors).toContainEqual(
-      expect.objectContaining({ code: 'SCHEME_DRAFT_PENDING', courseKey: 'T1-MATH101' }),
+describe('tab mappings', () => {
+  it('skips a tab whose headers changed and still applies the others', async () => {
+    edit((tabs) => (tabs['Logic']![0]![5] = 'Quiz one 10%'));
+    const { job, counts } = await sync();
+    expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
+    expect(counts.offerings.rejected).toBe(1);
+    expect(job.errors).toContainEqual(
+      expect.objectContaining({ code: 'NEEDS_REMAP', sheetTab: 'Logic', severity: 'ERROR' }),
     );
+    expect(await scoreOf(S1, 'T1-LOGIC', 'QUIZ_1')).toBeNull();
+    expect(await scoreOf(S1, 'T1-PL', 'QUIZ')).not.toBeNull();
+  });
 
+  it('finds a renamed tab through its Google sheet id', async () => {
+    const sheet = termWorkbookFixture();
+    const tabs = Object.entries(sheet.tabs).map(
+      ([title, grid]) => [title === 'Logic' ? 'Logic Thinking' : title, grid] as const,
+    );
+    reader.set(ID, { ...sheet, tabs: Object.fromEntries(tabs) });
+    const { job } = await sync();
+    expect(job.status).toBe('SUCCEEDED');
+    expect((await scoreOf(S1, 'T1-LOGIC', 'QUIZ_1'))!.sourceTab).toBe('Logic Thinking');
+    const offering = await prisma.courseOffering.findFirstOrThrow({
+      where: { externalKey: 'T1-LOGIC' },
+    });
+    expect(offering.sheetTab).toBe('Logic Thinking');
+  });
+
+  it('reports a confirmed tab that left the workbook and keeps its data', async () => {
+    await sync();
+    edit((tabs) => delete tabs['MsOffice']);
+    const { job } = await sync();
+    expect(job.errors).toContainEqual(
+      expect.objectContaining({ code: 'WORKSHEET_NOT_FOUND', sheetTab: 'MsOffice' }),
+    );
+    expect(await scoreOf(S1, 'T1-MSOFFICE', 'MS_WORD')).not.toBeNull();
+  });
+
+  it('warns about new tabs nobody confirmed, but not about ignored ones', async () => {
+    edit((tabs) => {
+      tabs['Design'] = [['STUDENT ID', 'Project 100%']];
+      tabs['Notes'] = [['free text']];
+    });
+    const tab = await prisma.sheetTabMapping.create({
+      data: {
+        sourceId,
+        tabName: 'Notes',
+        headerRow: 1,
+        headerSignature: 'a'.repeat(64),
+        status: 'IGNORED',
+      },
+    });
+    const { job } = await sync();
+    expect(job.status).toBe('SUCCEEDED');
+    const unmapped = job.errors.filter((e) => e.code === 'UNMAPPED_TAB').map((e) => e.sheetTab);
+    expect(unmapped).toEqual(['Design']);
+    expect(tab.status).toBe('IGNORED');
+  });
+
+  it('fails with nothing applied when no tab is confirmed', async () => {
+    await prisma.sheetColumnMapping.deleteMany();
+    await prisma.sheetTabMapping.deleteMany();
+    const { job } = await sync();
+    expect(job).toMatchObject({ status: 'FAILED', failureCode: 'TEMPLATE_INVALID' });
+    const errors = job.errors.filter((e) => e.severity === 'ERROR');
+    expect(errors.map((e) => e.code)).toEqual(['NO_CONFIRMED_TABS']);
+    expect(await prisma.student.count()).toBe(0);
+  });
+
+  it('publishes re-confirmed weights as a new version and keeps the marks', async () => {
+    await sync();
+    const column = await prisma.sheetColumnMapping.findFirstOrThrow({
+      where: { tabMapping: { tabName: 'PL' }, proposedName: 'Quiz' },
+    });
+    const other = await prisma.sheetColumnMapping.findFirstOrThrow({
+      where: { tabMapping: { tabName: 'PL' }, proposedName: 'Homework' },
+    });
+    await prisma.sheetColumnMapping.update({
+      where: { id: column.id },
+      data: { proposedWeight: '25' },
+    });
+    await prisma.sheetColumnMapping.update({
+      where: { id: other.id },
+      data: { proposedWeight: '5' },
+    });
+
+    const { counts } = await sync();
+    expect(counts.schemes).toMatchObject({ published: 1, unchanged: 4 });
+    expect(counts.scores.unchanged).toBe(MARKS);
     const schemes = await prisma.gradingScheme.findMany({
-      where: { offering: { externalKey: 'T1-MATH101' } },
+      where: { offering: { externalKey: 'T1-PL' } },
       orderBy: { version: 'asc' },
       include: { items: { include: { criterion: true } } },
     });
-    expect(schemes.map((s) => [s.version, s.status, s.origin])).toEqual([
-      [1, 'PUBLISHED', 'SHEET'],
-      [2, 'DRAFT', 'SHEET'],
+    expect(schemes.map((s) => [s.version, s.status])).toEqual([
+      [1, 'ARCHIVED'],
+      [2, 'PUBLISHED'],
     ]);
-    expect(schemes[0]!.items.find((i) => i.criterion.key === 'Q1')!.weight.toString()).toBe('5');
+    const quiz = schemes[1]!.items.find((i) => i.criterion.key === 'QUIZ');
+    expect(quiz!.weight.toString()).toBe('25');
 
     const again = await sync();
-    expect(again.counts.schemes).toMatchObject({ drafted: 0, unchanged: 2 });
-    expect(
-      await prisma.gradingScheme.count({ where: { offering: { externalKey: 'T1-MATH101' } } }),
-    ).toBe(2);
+    expect(again.counts.schemes).toMatchObject({ published: 0, unchanged: 5 });
   });
 
-  it('never overwrites an admin draft', async () => {
+  it('warns when a mapped column is removed from the mapping and keeps its marks', async () => {
     await sync();
-    const offering = await prisma.courseOffering.findFirstOrThrow({
-      where: { externalKey: 'T1-MATH101' },
+    await prisma.sheetColumnMapping.updateMany({
+      where: { tabMapping: { tabName: 'MsOffice' }, proposedName: 'PARTICIPATIONS' },
+      data: { role: 'IGNORE', criterionId: null, proposedWeight: null },
     });
-    const q1 = await prisma.assessmentCriterion.findFirstOrThrow({
-      where: { offeringId: offering.id, key: 'Q1' },
+    await prisma.sheetColumnMapping.updateMany({
+      where: { tabMapping: { tabName: 'MsOffice' }, proposedName: 'MS WORD' },
+      data: { proposedWeight: '40' },
     });
-    const adminDraft = await prisma.gradingScheme.create({
-      data: {
-        offeringId: offering.id,
-        version: 2,
-        origin: 'ADMIN',
-        createdById: adminId,
-        items: { create: [{ criterionId: q1.id, maxMark: 10, weight: 100 }] },
-      },
-    });
-    edit((tabs) => {
-      tabs['Criteria']![1]![5] = 10; // Q1 5 → 10
-      tabs['Criteria']![3]![5] = 25; // MID 30 → 25 (total stays 100)
-    });
-    const { job, counts } = await sync();
-    expect(counts.schemes.skipped).toBe(1);
-    expect(job.errors).toContainEqual(expect.objectContaining({ code: 'SCHEME_DRAFT_CONFLICT' }));
-    const draft = await prisma.gradingScheme.findUniqueOrThrow({
-      where: { id: adminDraft.id },
-      include: { items: true },
-    });
-    expect(draft.items).toHaveLength(1);
-  });
-
-  it('rejects marks above the published max until the raised max is published', async () => {
-    await sync();
-    edit((tabs) => {
-      tabs['Criteria']![1]![4] = 20; // Q1 max 10 → 20 (sheet)
-      tabs['T1 Math']![2]![2] = 15; // GEN26-0001 Q1 = 15
-    });
-    const { job, counts } = await sync();
-    expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
-    expect(counts.scores.rejected).toBe(1);
-    expect(counts.schemes.drafted).toBe(1);
+    const { job } = await sync();
     expect(job.errors).toContainEqual(
       expect.objectContaining({
-        code: 'MARK_EXCEEDS_PUBLISHED_MAX',
-        studentCode: 'GEN26-0001',
-        criterionKey: 'Q1',
-        rawValue: '15',
+        code: 'CRITERION_REMOVED_IN_SOURCE',
+        criterionKey: 'PARTICIPATIONS',
       }),
     );
-    expect((await scoreOf('GEN26-0001', 'T1-MATH101', 'Q1'))!.mark.toString()).toBe('8');
-  });
-
-  it('imports marks but no scheme when weights do not total 100', async () => {
-    edit((tabs) => (tabs['Criteria']![7]![5] = 31)); // English total 101
-    const { job, counts } = await sync();
-    expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
-    expect(counts.schemes).toMatchObject({ published: 1, skipped: 1 });
-    expect(
-      await prisma.gradingScheme.count({ where: { offering: { externalKey: 'T2-ENG101' } } }),
-    ).toBe(0);
-    expect(
-      await prisma.assessmentScore.count({
-        where: { criterion: { offering: { externalKey: 'T2-ENG101' } } },
-      }),
-    ).toBe(11);
+    expect(await scoreOf(S1, 'T1-MSOFFICE', 'PARTICIPATIONS')).not.toBeNull();
   });
 });
 
 describe('rejections and partial failures', () => {
   it('never moves a student between generations', async () => {
-    const other = await createGeneration('GEN2027');
+    const other = await createGeneration('GEN2030');
     const user = await prisma.user.create({
-      data: { username: 'GEN26-0002', role: 'STUDENT', passwordHash: 'x' },
+      data: { username: S2, role: 'STUDENT', passwordHash: 'x' },
     });
     await prisma.student.create({
       data: {
-        studentCode: 'GEN26-0002',
+        studentCode: S2,
         userId: user.id,
         generationId: other.id,
         fullName: 'Other Generation',
@@ -383,71 +434,37 @@ describe('rejections and partial failures', () => {
     const { job, counts } = await sync();
     expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
     expect(counts.students).toMatchObject({ created: 2, rejected: 1 });
-    expect(counts.enrollments.created).toBe(4);
-    const student = await prisma.student.findUniqueOrThrow({
-      where: { studentCode: 'GEN26-0002' },
-    });
+    const student = await prisma.student.findUniqueOrThrow({ where: { studentCode: S2 } });
     expect(student).toMatchObject({ generationId: other.id, fullName: 'Other Generation' });
     expect(job.errors).toContainEqual(
-      expect.objectContaining({ code: 'STUDENT_IN_OTHER_GENERATION', studentCode: 'GEN26-0002' }),
+      expect.objectContaining({ code: 'STUDENT_IN_OTHER_GENERATION', studentCode: S2 }),
     );
   });
 
-  it('rejects a course owned by something else and still applies the others', async () => {
-    const term = await prisma.term.findFirstOrThrow({ where: { generationId, number: 1 } });
-    const course = await prisma.course.create({ data: { code: 'MATH101', name: 'Mathematics I' } });
-    await prisma.courseOffering.create({
-      data: {
-        termId: term.id,
-        generationId,
-        courseId: course.id,
-        externalKey: 'T1-MATH101',
-        title: 'Manual',
-      },
-    });
-    const { job, counts } = await sync();
-    expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
-    expect(counts.offerings).toMatchObject({ created: 1, rejected: 1 });
-    expect(job.errors).toContainEqual(
-      expect.objectContaining({ code: 'OFFERING_OWNED_ELSEWHERE', courseKey: 'T1-MATH101' }),
-    );
-    expect(
-      await prisma.assessmentCriterion.count({
-        where: { offering: { externalKey: 'T1-MATH101' } },
-      }),
-    ).toBe(0);
-    expect(
-      await prisma.assessmentScore.count({
-        where: { criterion: { offering: { externalKey: 'T2-ENG101' } } },
-      }),
-    ).toBe(11);
-  });
-
-  it('rolls back a course whose transaction fails, keeping the other courses', async () => {
+  it('rolls back a tab whose transaction fails, keeping the other tabs', async () => {
     const { job, counts } = await sync({
       hooks: {
         beforeCourseCommit: (courseKey) => {
-          if (courseKey === 'T2-ENG101') throw new Error('simulated failure');
+          if (courseKey === 'T1-PL') throw new Error('simulated failure');
         },
       },
     });
     expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
     expect(counts.offerings.failed).toBe(1);
     expect(job.errors).toContainEqual(
-      expect.objectContaining({ code: 'APPLY_FAILED', courseKey: 'T2-ENG101' }),
+      expect.objectContaining({ code: 'APPLY_FAILED', courseKey: 'T1-PL' }),
     );
+    expect(await scoreOf(S1, 'T1-PL', 'QUIZ')).toBeNull();
     expect(
-      await prisma.courseOffering.findFirst({ where: { externalKey: 'T2-ENG101' } }),
-    ).toBeNull();
-    expect(await prisma.assessmentCriterion.count({ where: { key: 'PROJECT' } })).toBe(0);
-    expect(await prisma.courseOffering.count({ where: { externalKey: 'T1-MATH101' } })).toBe(1);
-    expect(await prisma.assessmentScore.count()).toBe(18);
+      await prisma.gradingScheme.count({ where: { offering: { externalKey: 'T1-PL' } } }),
+    ).toBe(0);
+    expect(await prisma.assessmentScore.count()).toBe(MARKS - 12);
   });
 
   it('reports row and cell rejections from the parser in the counts', async () => {
     edit((tabs) => {
-      tabs['T1 Math']![2]![2] = 11; // invalid mark
-      tabs['Students']!.push(['bad id!', 'Nope', 'F', 'A']);
+      tabs['Logic']![1]![5] = 120; // invalid mark
+      tabs['ALL']!.push(['bad id!', 'NOPE', 'NOPE', 'F', 'A']);
     });
     const { job, counts } = await sync();
     expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
@@ -455,17 +472,34 @@ describe('rejections and partial failures', () => {
     expect(counts.students.rejected).toBe(1);
     expect(job.errorCount).toBe(2);
   });
+
+  it('rejects a student who is in a subject tab but not in the roster', async () => {
+    edit((tabs) => tabs['Logic']!.push(['PNC2027-099', 'NEW', 'ONE', 'F', 'A', 50]));
+    const { job } = await sync();
+    expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
+    expect(job.errors).toContainEqual(
+      expect.objectContaining({ code: 'UNKNOWN_STUDENT', studentCode: 'PNC2027-099' }),
+    );
+    expect(await prisma.student.count()).toBe(3);
+  });
 });
 
 describe('failures before anything is written', () => {
-  it('fails on file-level template errors and stores the report', async () => {
-    reader.set(ID, workbookFixture('GEN2099'));
+  it('fails on file-level errors and stores the report', async () => {
+    edit((tabs) => (tabs['_meta']![3]![1] = 2));
     const { outcome, job } = await sync();
     expect(outcome).toEqual({ kind: 'finished', status: 'FAILED' });
     expect(job).toMatchObject({ status: 'FAILED', failureCode: 'TEMPLATE_INVALID' });
-    expect(job.errors.map((e) => e.code)).toEqual(['GENERATION_MISMATCH']);
+    expect(job.errors.map((e) => e.code)).toEqual(['TERM_MISMATCH']);
     expect(await prisma.student.count()).toBe(0);
     expect(await prisma.auditLog.count({ where: { action: 'sync.failed' } })).toBe(1);
+  });
+
+  it('fails when the roster tab is gone', async () => {
+    edit((tabs) => delete tabs['ALL']);
+    const { job } = await sync();
+    expect(job.failureCode).toBe('TEMPLATE_INVALID');
+    expect(job.errors.map((e) => e.code)).toContain('ROSTER_TAB_MISSING');
   });
 
   it('fails when the spreadsheet is no longer shared', async () => {
@@ -485,7 +519,7 @@ describe('failures before anything is written', () => {
       finishedAt: null,
     });
 
-    reader.set(ID, workbookFixture('GEN2026'));
+    reader.set(ID, termWorkbookFixture());
     const second = await runSourceSync({ prisma, reader }, job.id, { attempt: 2, maxAttempts: 3 });
     expect(second).toEqual({ kind: 'finished', status: 'SUCCEEDED' });
 
@@ -510,7 +544,7 @@ describe('failures before anything is written', () => {
     const { job } = await sync();
     const again = await runSourceSync({ prisma, reader }, job.id, ONCE);
     expect(again).toEqual({ kind: 'finished', status: 'SUCCEEDED' });
-    expect(await prisma.assessmentScoreRevision.count()).toBe(29);
+    expect(await prisma.assessmentScoreRevision.count()).toBe(MARKS);
   });
 });
 
@@ -527,7 +561,7 @@ describe('run lease', () => {
     expect(
       await prisma.auditLog.count({ where: { entityId: job.id, action: 'sync.completed' } }),
     ).toBe(1);
-    expect(await prisma.assessmentScoreRevision.count()).toBe(29);
+    expect(await prisma.assessmentScoreRevision.count()).toBe(MARKS);
   });
 
   it('does not touch a job whose lease is held by a live run', async () => {
@@ -568,7 +602,7 @@ describe('run lease', () => {
     expect(
       (await prisma.syncJob.findUniqueOrThrow({ where: { id: job.id } })).leaseToken,
     ).toBeNull();
-    reader.set(ID, workbookFixture('GEN2026'));
+    reader.set(ID, termWorkbookFixture());
     const second = await runSourceSync({ prisma, reader }, job.id, { attempt: 2, maxAttempts: 3 });
     expect(second).toEqual({ kind: 'finished', status: 'SUCCEEDED' });
   });
@@ -580,10 +614,17 @@ describe('multi-source parent jobs', () => {
       data: { scope: 'GENERATION', generationId, requestedById: adminId },
     });
     const first = await newJob(parent.id);
-    // A second source of the same generation whose file is not shared.
+    // A workbook for term 2 whose file is not shared.
     const otherId = '1OtherSpreadsheetId0000000000000000000000';
+    const term2 = await prisma.term.findFirstOrThrow({ where: { generationId, number: 2 } });
     const other = await prisma.googleSheetSource.create({
-      data: { generationId, spreadsheetId: otherId, label: 'Other', createdById: adminId },
+      data: {
+        generationId,
+        termId: term2.id,
+        spreadsheetId: otherId,
+        label: 'Term 2',
+        createdById: adminId,
+      },
     });
     reader.fail(otherId, 'SHEET_NOT_SHARED');
     const second = await prisma.syncJob.create({
@@ -601,7 +642,7 @@ describe('multi-source parent jobs', () => {
     const done = await prisma.syncJob.findUniqueOrThrow({ where: { id: parent.id } });
     expect(done).toMatchObject({ status: 'SUCCEEDED_WITH_ERRORS', progressCurrent: 2 });
     expect(done.finishedAt).not.toBeNull();
-    expect((done.counts as unknown as SyncCounts).scores.created).toBe(29);
+    expect((done.counts as unknown as SyncCounts).scores.created).toBe(MARKS);
   });
 
   it('fails the parent when every child fails, including jobs failed without running', async () => {

@@ -35,10 +35,10 @@ describe('createSheetsReaderFromEnv', () => {
 
 describe('createSheetsReader', () => {
   it('serves the fixture workbook in test mode', async () => {
-    const { FIXTURE_SPREADSHEET_ID } = await import('./testing/index.js');
+    const { TERM_FIXTURE_SPREADSHEET_ID } = await import('./testing/index.js');
     const reader = await createSheetsReader({ SHEETS_TEST_MODE: 'fixtures' });
-    const meta = await reader.getMetadata(FIXTURE_SPREADSHEET_ID);
-    expect(meta.title).toContain('GEN2026');
+    const meta = await reader.getMetadata(TERM_FIXTURE_SPREADSHEET_ID);
+    expect(meta.title).toContain('GEN 2027');
   });
 
   it('refuses test mode in production', async () => {

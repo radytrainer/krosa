@@ -1,11 +1,14 @@
 # Student Score Record System
 
-A web application for schools. Administrators import students, courses and marks from Google
+Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+
+A web application for schools. Administrators import students, subjects and marks from Google
 Sheets; students sign in to see their own results across five terms, with every mark, weight and
 contribution explained.
 
-> **Status:** Phases 0–9 complete (features, security and performance hardening). Phase 10
-> (end-to-end test suite and production deployment) is next. See [docs/progress.md](docs/progress.md).
+> **Status:** Phases 0–9, term workbooks and sheet change are built and tested. Phase 10 files
+> (Docker images, CI, browser test) exist, but no production deployment has been done. Plan:
+> [docs/delivery-plan-2027.md](docs/delivery-plan-2027.md). Log: [docs/progress.md](docs/progress.md).
 
 ## Contents
 
@@ -25,9 +28,12 @@ contribution explained.
 
 ### Administrators
 
-- Generations (cohorts) with five terms each, and the Google Sheets that feed them
-- Dry-run preview of a spreadsheet, then synchronization with live progress and row-level problems
-- Course offerings with assessment criteria and versioned grading schemes (weights must total 100%)
+- Generations (cohorts) with five terms each, and one Google Sheet per term
+- Connect a sheet, detect its tabs, confirm each subject and its weights (must total 100%), then sync
+  with live progress and row-level problems
+- Release or hide a term's scores for students
+- Replace or remove a term's sheet. A replacement is reviewed and previewed, and marks change only
+  when its sync succeeds
 - Students: search and filter, enable/disable accounts, issue temporary passwords one by one or in bulk (CSV)
 - Dashboard, sync history, and an append-only audit log
 
@@ -139,12 +145,11 @@ A walkthrough that covers the main flows. Each step says what you should see.
 
 Sign in as `admin`.
 
-1. **Dashboard**: 3 students, "1 awaiting credentials", 5 course offerings, "1 without a published scheme".
+1. **Dashboard**: 3 students, "1 awaiting credentials", 5 subjects, and how many are released.
 2. **Students → Malis Keo → Issue password**: a temporary password is shown once. Copy it.
-3. **Course offerings → Art & Design**: in _Grading scheme_, enter max marks and weights. The total
-   indicator turns green only at exactly 100%, and only then can you **Publish**.
-4. **Course offerings → Physics I**: switch on **Visible to students**. Sokha will now see it.
-5. **Audit log**: the password issue and the scheme publication are listed.
+3. **Generations → the generation → Release scores** on Term 1. Sokha now sees every subject of
+   that term, including Physics I.
+4. **Audit log**: the password issue and `term.released` are listed.
 
 ### Student, first sign-in
 
@@ -192,7 +197,13 @@ pnpm lint
 pnpm format:check
 pnpm test               # unit tests, no database needed
 pnpm test:integration   # needs `pnpm infra:up`; wipes the *_test database and Redis DB 15
+pnpm build
+pnpm test:e2e           # browser scenario; needs `pnpm infra:up` and the TEST_* URLs
 ```
+
+`pnpm test:e2e` uses Chromium. To use an installed browser, set `E2E_CHANNEL`, for example to
+`msedge`. On a Windows checkout with `core.autocrlf=true`, `pnpm format:check` reports files because
+of line endings. Do not run `pnpm format` there: use `prettier --end-of-line auto` on changed files.
 
 Load test of the results endpoints (needs prepared data and a raised `RATE_LIMIT_PER_MINUTE`; see
 the header of [`scripts/load-test.mjs`](scripts/load-test.mjs)):
@@ -206,15 +217,15 @@ node scripts/load-test.mjs --base http://localhost:4100 --password <student pw> 
 All settings live in `.env` (template: [`.env.example`](.env.example)). The ones you are most likely
 to change:
 
-| Variable                         | Purpose                                                                                                            |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `DATABASE_URL`, `REDIS_URL`      | Connections for the API and worker                                                                                 |
-| `WEB_ORIGIN`                     | Public address of the web app; used for CSRF checks and secure cookies                                             |
-| `JWT_ACCESS_SECRET`              | Signs sign-in tokens; at least 32 random characters                                                                |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Path to the Google service-account key. Without it, adding spreadsheets and syncing report "Google not configured" |
-| `TEMP_PASSWORD_TTL_DAYS`         | How long issued temporary passwords stay valid (default 14)                                                        |
-| `RATE_LIMIT_PER_MINUTE`          | Requests per minute per IP address (default 300)                                                                   |
-| `SENTRY_DSN`                     | Optional error reporting; off when unset                                                                           |
+| Variable                         | Purpose                                                                                               |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`, `REDIS_URL`      | Connections for the API and worker                                                                    |
+| `WEB_ORIGIN`                     | Public address of the web app; used for CSRF checks and secure cookies                                |
+| `JWT_ACCESS_SECRET`              | Signs sign-in tokens; at least 32 random characters                                                   |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to the Google service-account key. Without it, the portal says "Google access is not configured" |
+| `TEMP_PASSWORD_TTL_DAYS`         | How long issued temporary passwords stay valid (default 14)                                           |
+| `RATE_LIMIT_PER_MINUTE`          | Requests per minute per IP address (default 300)                                                      |
+| `SENTRY_DSN`                     | Optional error reporting; off when unset                                                              |
 
 How to prepare a spreadsheet: [docs/google-sheets-template.md](docs/google-sheets-template.md).
 
@@ -227,7 +238,7 @@ How to prepare a spreadsheet: [docs/google-sheets-template.md](docs/google-sheet
 | `EADDRINUSE` on 3000 or 4000                                                         | An old dev server is still running. Stop it (Ctrl+C in its terminal, or end the `node` process in Task Manager), then run `pnpm dev` again |
 | Errors about a missing column or table                                               | Run `pnpm db:deploy` after pulling changes                                                                                                 |
 | "Too many sign-in attempts"                                                          | Sign-in is limited to 10 tries a minute per address and 5 per account; wait a minute                                                       |
-| "Google not configured" when adding a sheet                                          | Set `GOOGLE_APPLICATION_CREDENTIALS` and share the sheet with the service account (Viewer)                                                 |
+| "Google access is not configured" when adding a sheet                                | Set `GOOGLE_APPLICATION_CREDENTIALS` and share the sheet with the service account (Viewer)                                                 |
 
 Health endpoints: `GET /api/v1/health` (the API is up) and `GET /api/v1/health/ready` (PostgreSQL
 and Redis reachable; 503 if not).
@@ -240,20 +251,28 @@ and Redis reachable; 503 if not).
 | `apps/api`          | NestJS REST API under `/api/v1`, plus the `admin:create` and `demo:seed` CLIs |
 | `apps/worker`       | Background worker that runs spreadsheet syncs                                 |
 | `packages/database` | Prisma schema, migrations and client                                          |
-| `packages/sheets`   | Google Sheets reader and template parser (with test fakes)                    |
+| `packages/sheets`   | Google Sheets reader and term-workbook parser (with test fakes)               |
 | `packages/sync`     | The synchronization engine used by the worker                                 |
 | `packages/shared`   | Shared domain logic: grading engine, student IDs, environment validation      |
 | `packages/config`   | Shared TypeScript configuration                                               |
-| `scripts/`          | Load test                                                                     |
+| `scripts/`          | Load test, restore drill, workbook verifier, `.xlsx` converter                |
+| `e2e/`              | Playwright browser scenario                                                   |
+| `docker/`           | Backup job, Caddy and PostgreSQL configuration                                |
+| `Dockerfile`        | Production images; `docker-compose.prod.yml` is the production stack          |
 | `docs/`             | Design documents (below)                                                      |
 
 ## Documentation
 
 - [Requirements and decisions](docs/requirements.md)
+- [Delivery plan and current decisions](docs/delivery-plan-2027.md)
 - [Architecture](docs/architecture.md)
 - [Database design](docs/database-design.md)
 - [Google Sheets template](docs/google-sheets-template.md)
 - [API specification](docs/api-specification.md)
 - [Security](docs/security.md)
 - [Implementation plan](docs/implementation-plan.md)
+- [Deployment](docs/deployment.md)
+- [Operations](docs/operations.md)
+- [Verifying term workbooks](docs/verifying-term-workbooks.md)
 - [Progress and verification log](docs/progress.md)
+- [Documentation review](docs/doc-review.md)

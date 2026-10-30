@@ -73,7 +73,7 @@ const label = (r: Route) => `${r.method} ${r.path}`;
 
 describe('route access policies', () => {
   it('finds the application routes', () => {
-    expect(routes.length).toBeGreaterThan(50);
+    expect(routes.length).toBeGreaterThan(40);
     expect(routes.map(label)).toContain('GET /student/me/results');
   });
 

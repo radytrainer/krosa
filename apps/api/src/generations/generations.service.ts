@@ -42,8 +42,14 @@ export interface GenerationView {
   updatedAt: string;
 }
 
+export interface TermDetailView extends TermView {
+  /** Subjects synced into this term, and how many of them students can see. */
+  subjects: number;
+  visibleSubjects: number;
+}
+
 export interface GenerationDetailView extends GenerationView {
-  terms: TermView[];
+  terms: TermDetailView[];
   counts: { students: number; offerings: number; sources: number };
 }
 
@@ -114,7 +120,10 @@ export class GenerationsService {
     const generation = await this.prisma.client.generation.findUnique({
       where: { id },
       include: {
-        terms: { orderBy: { number: 'asc' } },
+        terms: {
+          orderBy: { number: 'asc' },
+          include: { offerings: { select: { visibility: true } } },
+        },
         _count: { select: { students: true, offerings: true, sources: true } },
       },
     });
@@ -122,9 +131,52 @@ export class GenerationsService {
       throw new NotFoundException({ code: 'NOT_FOUND', message: 'Generation not found' });
     return {
       ...toView(generation),
-      terms: generation.terms.map(toTermView),
+      terms: generation.terms.map((t) => ({
+        ...toTermView(t),
+        subjects: t.offerings.length,
+        visibleSubjects: t.offerings.filter((o) => o.visibility === 'VISIBLE').length,
+      })),
       counts: generation._count,
     };
+  }
+
+  /** Shows or hides every subject of a term to students, in one step. */
+  async setTermRelease(
+    termId: string,
+    visible: boolean,
+    actor: AuthUser,
+    meta: RequestMeta,
+  ): Promise<{ termId: string; visible: boolean; subjects: number }> {
+    const term = await this.prisma.client.term.findUnique({ where: { id: termId } });
+    if (!term) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Term not found' });
+    await this.guard.assertGenerationEditable(term.generationId);
+
+    const subjects = await this.prisma.client.$transaction(async (tx) => {
+      const updated = await tx.courseOffering.updateMany({
+        where: { termId },
+        data: { visibility: visible ? 'VISIBLE' : 'HIDDEN', visibilityOverridden: true },
+      });
+      if (updated.count === 0) {
+        throw new UnprocessableEntityException({
+          code: 'NOTHING_TO_RELEASE',
+          message: 'This term has no synced subjects yet.',
+        });
+      }
+      await this.guard.bumpCacheVersion(term.generationId, tx);
+      await this.audit.record(
+        {
+          action: visible ? 'term.released' : 'term.hidden',
+          actorUserId: actor.userId,
+          entityType: 'term',
+          entityId: termId,
+          metadata: { termNumber: term.number, subjects: updated.count },
+          context: meta,
+        },
+        tx,
+      );
+      return updated.count;
+    });
+    return { termId, visible, subjects };
   }
 
   /** Creates the generation and its five terms atomically. */

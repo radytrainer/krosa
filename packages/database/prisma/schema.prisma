@@ -60,15 +60,19 @@ model User {
   createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt          DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  student            Student?
-  sessions           AuthSession[]
-  auditLogs          AuditLog[]
-  sourcesCreated     GoogleSheetSource[]
-  syncJobsRequested  SyncJob[]
-  schemesCreated     GradingScheme[]             @relation("SchemeCreatedBy")
-  schemesPublished   GradingScheme[]             @relation("SchemePublishedBy")
-  scoresUpdated      AssessmentScore[]
-  scoreRevisions     AssessmentScoreRevision[]
+  student              Student?
+  sessions             AuthSession[]
+  auditLogs            AuditLog[]
+  sourcesCreated       GoogleSheetSource[]
+  syncJobsRequested    SyncJob[]
+  schemesCreated       GradingScheme[]           @relation("SchemeCreatedBy")
+  schemesPublished     GradingScheme[]           @relation("SchemePublishedBy")
+  scoresUpdated        AssessmentScore[]
+  scoreRevisions       AssessmentScoreRevision[]
+  tabMappingsConfirmed SheetTabMapping[]
+  previewsRun          SheetPreview[]            @relation("PreviewRunBy")
+  previewsConfirmed    SheetPreview[]            @relation("PreviewConfirmedBy")
+  gradeScalesConfirmed GradeScale[]
 
   @@index([role, status])
   @@map("users")
@@ -131,11 +135,12 @@ model Generation {
   createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  terms     Term[]
-  offerings CourseOffering[]
-  sources   GoogleSheetSource[]
-  students  Student[]
-  syncJobs  SyncJob[]
+  terms      Term[]
+  offerings  CourseOffering[]
+  sources    GoogleSheetSource[]
+  students   Student[]
+  syncJobs   SyncJob[]
+  gradeScale GradeScale?
 
   @@map("generations")
 }
@@ -150,8 +155,11 @@ model Term {
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  generation Generation       @relation(fields: [generationId], references: [id])
+  generation Generation          @relation(fields: [generationId], references: [id])
   offerings  CourseOffering[]
+  /// Term workbooks: one spreadsheet per term.
+  sources    GoogleSheetSource[]
+  syncJobs   SyncJob[]
 
   @@unique([generationId, number])
   /// Target of the composite FK that keeps course_offerings.generation_id consistent.
@@ -169,8 +177,50 @@ model Course {
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   offerings CourseOffering[]
+  aliases   CourseAlias[]
 
   @@map("courses")
+}
+
+/// Alternative names of a catalog course, used to match term-workbook tab titles (ENG, ENGLISH).
+model CourseAlias {
+  /// Normalized: trimmed, inner whitespace collapsed; compared case-insensitively.
+  alias     String   @id @db.Citext
+  courseId  String   @map("course_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@index([courseId])
+  @@map("course_aliases")
+}
+
+/// Study program (SNA, WEP, …). Students join one from Term 2.
+model Program {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  code      String   @unique @db.Citext
+  name      String
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  students  Student[]
+  offerings OfferingProgram[]
+
+  @@map("programs")
+}
+
+/// Programs an offering is meant for. No rows = shared by every program (English, PL).
+model OfferingProgram {
+  offeringId String @map("offering_id") @db.Uuid
+  programId  String @map("program_id") @db.Uuid
+
+  offering CourseOffering @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  program  Program        @relation(fields: [programId], references: [id])
+
+  @@id([offeringId, programId])
+  @@index([programId])
+  @@map("offering_programs")
 }
 
 enum ResultsVisibility {
@@ -203,13 +253,15 @@ model CourseOffering {
   createdAt            DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt            DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  term        Term               @relation(fields: [termId, generationId], references: [id, generationId])
-  generation  Generation         @relation(fields: [generationId], references: [id])
-  course      Course             @relation(fields: [courseId], references: [id])
-  source      GoogleSheetSource? @relation(fields: [sourceId], references: [id])
+  term        Term                  @relation(fields: [termId, generationId], references: [id, generationId])
+  generation  Generation            @relation(fields: [generationId], references: [id])
+  course      Course                @relation(fields: [courseId], references: [id])
+  source      GoogleSheetSource?    @relation(fields: [sourceId], references: [id])
   criteria    AssessmentCriterion[]
   schemes     GradingScheme[]
   enrollments Enrollment[]
+  programs    OfferingProgram[]
+  tabMappings SheetTabMapping[]
 
   @@unique([termId, courseId])
   @@unique([generationId, externalKey])
@@ -223,7 +275,11 @@ model CourseOffering {
 // ---------------------------------------------------------------------------------------------
 
 enum SourceStatus {
+  /// Feeds the term's scores.
   ACTIVE
+  /// Connected to replace the active sheet; becomes ACTIVE only when its sync completes.
+  PENDING
+  /// Not in use. Also the history of sheets a term has used.
   DISABLED
 }
 
@@ -235,20 +291,136 @@ model GoogleSheetSource {
   label            String
   spreadsheetTitle String?      @map("spreadsheet_title")
   status           SourceStatus @default(ACTIVE)
+  /// One workbook per term, one tab per subject.
+  termId           String       @map("term_id") @db.Uuid
+  /// Tab holding the master roster (profiles only, never scores).
+  rosterTab        String       @default("ALL") @map("roster_tab")
+  /// Extra tabs to skip. Tabs starting with "_" are always skipped.
+  ignoredTabs      String[]     @default([]) @map("ignored_tabs")
   lastSyncedAt     DateTime?    @map("last_synced_at") @db.Timestamptz(3)
   lastSyncJobId    String?      @map("last_sync_job_id") @db.Uuid
   createdById      String       @map("created_by") @db.Uuid
   createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  generation Generation       @relation(fields: [generationId], references: [id])
-  createdBy  User             @relation(fields: [createdById], references: [id])
-  offerings  CourseOffering[]
-  students   Student[]
-  syncJobs   SyncJob[]
+  generation  Generation        @relation(fields: [generationId], references: [id])
+  term        Term              @relation(fields: [termId, generationId], references: [id, generationId], onDelete: Restrict)
+  createdBy   User              @relation(fields: [createdById], references: [id])
+  offerings   CourseOffering[]
+  students    Student[]
+  syncJobs    SyncJob[]
+  tabMappings SheetTabMapping[]
+  previews    SheetPreview[]
 
+  @@unique([termId], map: "google_sheet_sources_one_active_per_term", where: raw("status = 'ACTIVE'"))
+  @@unique([termId], map: "google_sheet_sources_one_pending_per_term", where: raw("status = 'PENDING'"))
   @@index([generationId])
   @@map("google_sheet_sources")
+}
+
+enum TabMappingStatus {
+  /// Proposed by detection; not used by sync until confirmed.
+  DRAFT
+  CONFIRMED
+  IGNORED
+}
+
+/// How one subject tab of a term workbook maps to an offering.
+model SheetTabMapping {
+  id              String           @id @default(uuid(7)) @db.Uuid
+  sourceId        String           @map("source_id") @db.Uuid
+  tabName         String           @map("tab_name")
+  /// Google's numeric sheetId: survives tab renames.
+  sheetTabId      Int?             @map("sheet_tab_id")
+  /// NULL while DRAFT or when IGNORED.
+  offeringId      String?          @map("offering_id") @db.Uuid
+  /// 1-based row holding the leaf column labels.
+  headerRow       Int              @map("header_row")
+  status          TabMappingStatus @default(DRAFT)
+  /// Incremented on every confirmation; recorded by sync jobs.
+  version         Int              @default(0)
+  /// SHA-256 hex of the normalized header rows; a change means the tab must be re-mapped.
+  headerSignature String           @map("header_signature") @db.Char(64)
+  /// SHA-256 hex of the tab values last applied successfully; unchanged tabs are skipped.
+  lastContentHash String?          @map("last_content_hash") @db.Char(64)
+  confirmedById   String?          @map("confirmed_by") @db.Uuid
+  confirmedAt     DateTime?        @map("confirmed_at") @db.Timestamptz(3)
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  source      GoogleSheetSource    @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  offering    CourseOffering?      @relation(fields: [offeringId], references: [id], onDelete: Restrict)
+  confirmedBy User?                @relation(fields: [confirmedById], references: [id])
+  columns     SheetColumnMapping[]
+
+  @@unique([sourceId, tabName])
+  /// A subject may be mapped once per sheet; an active and a pending sheet can share it.
+  @@unique([sourceId, offeringId])
+  @@index([offeringId])
+  @@map("sheet_tab_mappings")
+}
+
+/// An impact preview of a pending sheet. Only the newest one that is not invalidated can
+/// authorize a sync, and only for the exact sheet content and mappings it was run on.
+model SheetPreview {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  sourceId        String    @map("source_id") @db.Uuid
+  /// SHA-256 hex of the tabs a sync would read.
+  fingerprint     String    @db.Char(64)
+  /// { tabMappingId: version } the preview ran with.
+  mappingVersions Json      @map("mapping_versions")
+  /// Counts, tab problems and missing students shown to the admin.
+  summary         Json
+  runById         String    @map("run_by") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  confirmedById   String?   @map("confirmed_by") @db.Uuid
+  confirmedAt     DateTime? @map("confirmed_at") @db.Timestamptz(3)
+  invalidatedAt   DateTime? @map("invalidated_at") @db.Timestamptz(3)
+
+  source      GoogleSheetSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  runBy       User              @relation("PreviewRunBy", fields: [runById], references: [id])
+  confirmedBy User?             @relation("PreviewConfirmedBy", fields: [confirmedById], references: [id])
+
+  @@index([sourceId, createdAt(sort: Desc)])
+  @@map("sheet_previews")
+}
+
+enum ColumnRole {
+  STUDENT_ID
+  FIRST_NAME
+  LAST_NAME
+  FULL_NAME
+  GENDER
+  CLASS
+  CRITERION
+  /// The sheet's own total: read for the weight cross-check only.
+  REFERENCE_TOTAL
+  COMMENT
+  IGNORE
+}
+
+model SheetColumnMapping {
+  id             String     @id @default(uuid(7)) @db.Uuid
+  tabMappingId   String     @map("tab_mapping_id") @db.Uuid
+  /// 0-based column index (A = 0).
+  columnIndex    Int        @map("column_index")
+  headerLabel    String?    @map("header_label")
+  /// Nearest group label above the header row (e.g. "MIDTERM (30%)").
+  groupLabel     String?    @map("group_label")
+  role           ColumnRole
+  /// role = CRITERION only (CHECK in migration). Set when the mapping is confirmed.
+  criterionId    String?    @map("criterion_id") @db.Uuid
+  /// Proposed criterion name and weight (DRAFT); the published scheme is authoritative.
+  proposedName   String?    @map("proposed_name")
+  proposedWeight Decimal?   @map("proposed_weight") @db.Decimal(6, 3)
+
+  tabMapping SheetTabMapping      @relation(fields: [tabMappingId], references: [id], onDelete: Cascade)
+  criterion  AssessmentCriterion? @relation(fields: [criterionId], references: [id], onDelete: Restrict)
+
+  @@unique([tabMappingId, columnIndex])
+  @@unique([tabMappingId, criterionId])
+  @@index([criterionId])
+  @@map("sheet_column_mappings")
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -269,8 +441,13 @@ model Student {
   userId            String   @unique @map("user_id") @db.Uuid
   generationId      String   @map("generation_id") @db.Uuid
   fullName          String   @map("full_name")
+  /// Term workbooks split names; NULL for students imported from the v1 template.
+  firstName         String?  @map("first_name")
+  lastName          String?  @map("last_name")
   gender            Gender   @default(UNSPECIFIED)
   className         String?  @map("class_name")
+  /// Assigned by an admin, usually from Term 2. NULL = no program yet.
+  programId         String?  @map("program_id") @db.Uuid
   /// Roster source that last updated the profile.
   sourceId          String?  @map("source_id") @db.Uuid
   lastSeenSyncJobId String?  @map("last_seen_sync_job_id") @db.Uuid
@@ -280,9 +457,11 @@ model Student {
   user        User               @relation(fields: [userId], references: [id])
   generation  Generation         @relation(fields: [generationId], references: [id])
   source      GoogleSheetSource? @relation(fields: [sourceId], references: [id])
+  program     Program?           @relation(fields: [programId], references: [id])
   enrollments Enrollment[]
 
   @@index([generationId, className])
+  @@index([generationId, programId, className])
   @@index([fullName(ops: raw("gin_trgm_ops"))], map: "students_full_name_trgm_idx", type: Gin)
   @@map("students")
 }
@@ -299,6 +478,10 @@ model Enrollment {
   status            EnrollmentStatus @default(ENROLLED)
   /// False when the student's row disappeared from the source sheet (never auto-deleted).
   presentInSource   Boolean          @default(true) @map("present_in_source")
+  /// Teacher's COMMENTS cell; shown to the student once the offering is visible.
+  teacherComment    String?          @map("teacher_comment")
+  /// The sheet's own TOTAL cell, kept only to cross-check weights.
+  sheetTotal        Decimal?         @map("sheet_total") @db.Decimal(8, 3)
   lastSeenSyncJobId String?          @map("last_seen_sync_job_id") @db.Uuid
   createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -344,9 +527,10 @@ model AssessmentCriterion {
   createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  offering    CourseOffering      @relation(fields: [offeringId], references: [id])
-  schemeItems GradingSchemeItem[]
-  scores      AssessmentScore[]
+  offering       CourseOffering       @relation(fields: [offeringId], references: [id])
+  schemeItems    GradingSchemeItem[]
+  scores         AssessmentScore[]
+  columnMappings SheetColumnMapping[]
 
   @@unique([offeringId, key])
   @@unique([offeringId, sheetColumnKey])
@@ -409,6 +593,38 @@ model GradingSchemeItem {
   @@unique([schemeId, criterionId])
   @@index([criterionId])
   @@map("grading_scheme_items")
+}
+
+/// Letter grades for one generation. Students see letters only once `confirmed`.
+model GradeScale {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  generationId  String    @unique @map("generation_id") @db.Uuid
+  confirmed     Boolean   @default(false)
+  confirmedById String?   @map("confirmed_by") @db.Uuid
+  confirmedAt   DateTime? @map("confirmed_at") @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  generation  Generation  @relation(fields: [generationId], references: [id])
+  confirmedBy User?       @relation(fields: [confirmedById], references: [id])
+  bands       GradeBand[]
+
+  @@map("grade_scales")
+}
+
+/// A total ≥ min_total (and below the next band) earns `letter`.
+model GradeBand {
+  id       String  @id @default(uuid(7)) @db.Uuid
+  scaleId  String  @map("scale_id") @db.Uuid
+  letter   String
+  minTotal Decimal @map("min_total") @db.Decimal(5, 2)
+  isPass   Boolean @map("is_pass")
+
+  scale GradeScale @relation(fields: [scaleId], references: [id], onDelete: Cascade)
+
+  @@unique([scaleId, letter])
+  @@unique([scaleId, minTotal])
+  @@map("grade_bands")
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -495,6 +711,8 @@ model SyncJob {
   parentId        String?    @map("parent_id") @db.Uuid
   scope           SyncScope
   sourceId        String?    @map("source_id") @db.Uuid
+  /// Scope SOURCE: the term of its source, for the one-running-sync-per-term rule.
+  termId          String?    @map("term_id") @db.Uuid
   generationId    String?    @map("generation_id") @db.Uuid
   status          SyncStatus @default(QUEUED)
   phase           String?
@@ -507,6 +725,10 @@ model SyncJob {
   failureCode     String?    @map("failure_code")
   failureMessage  String?    @map("failure_message")
   retryOfId       String?    @map("retry_of_id") @db.Uuid
+  /// Scope ALL only: restricts the run to this term number in every active generation.
+  termNumber      Int?       @map("term_number") @db.SmallInt
+  /// { tabMappingId: version } of the mappings this job applied.
+  mappingVersions Json?      @map("mapping_versions")
   /// Run lease: the worker currently executing the job. A second delivery of the same job
   /// cannot claim it until the lease is released or expires (crashed worker).
   leaseToken      String?    @map("lease_token") @db.Uuid
@@ -521,11 +743,13 @@ model SyncJob {
   retryOf     SyncJob?           @relation("SyncJobRetries", fields: [retryOfId], references: [id])
   retries     SyncJob[]          @relation("SyncJobRetries")
   source      GoogleSheetSource? @relation(fields: [sourceId], references: [id])
+  term        Term?              @relation(fields: [termId], references: [id])
   generation  Generation?        @relation(fields: [generationId], references: [id])
   requestedBy User               @relation(fields: [requestedById], references: [id])
   errors      SyncError[]
 
   @@unique([sourceId], map: "sync_jobs_one_active_per_source", where: raw("scope = 'SOURCE' AND finished_at IS NULL"))
+  @@unique([termId], map: "sync_jobs_one_active_per_term", where: raw("scope = 'SOURCE' AND finished_at IS NULL"))
   @@index([sourceId, queuedAt(sort: Desc)])
   @@index([parentId])
   @@index([status])

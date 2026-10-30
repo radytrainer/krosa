@@ -1,9 +1,14 @@
 # Requirements — Student Score Record System
 
+Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+
 Status legend used in `docs/progress.md`: ✅ done · 🟡 in progress · ⬜ pending · ⛔ blocked.
 
 This document restates the master prompt as numbered, testable requirements, records the
 assumptions made where the prompt was ambiguous, and lists data-integrity risks with mitigations.
+
+**[delivery-plan-2027.md](delivery-plan-2027.md) overrides this document.** Where its decisions D1–D29
+differ, they win. Rows changed by a decision say so.
 
 ---
 
@@ -34,24 +39,24 @@ REST API backed by PostgreSQL (never from Google Sheets at request time).
 
 ### 2.2 Generations & academic structure (ACAD)
 
-| ID      | Requirement                                                                                                                               |
-| ------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| ACAD-01 | CRUD for generations (code, name, start date, optional end date, ACTIVE/ARCHIVED).                                                        |
-| ACAD-02 | Creating a generation creates exactly five terms (1–5) in the same transaction.                                                           |
-| ACAD-03 | Course catalog (code + default name) plus course offerings (a course in one term of one generation). Course names are not assumed unique. |
-| ACAD-04 | Each offering has its own criteria and grading schemes.                                                                                   |
-| ACAD-05 | Students belong to exactly one generation; enrollments link students to offerings.                                                        |
-| ACAD-06 | Archived generations are read-only (no sync, no config edits); their students keep read access unless disabled.                           |
+| ID      | Requirement                                                                                                                                  |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| ACAD-01 | Create, read, update and archive generations (code, name, start date, optional end date, ACTIVE/ARCHIVED). No delete.                        |
+| ACAD-02 | Creating a generation creates exactly five terms (1–5) in the same transaction.                                                              |
+| ACAD-03 | Course catalog and offerings (a course in one term of one generation) are tables only, filled when a tab is confirmed. No admin pages (D15). |
+| ACAD-04 | Each offering has its own criteria and grading schemes.                                                                                      |
+| ACAD-05 | Students belong to exactly one generation; enrollments link students to offerings.                                                           |
+| ACAD-06 | Archived generations are read-only (no sync, no config edits); their students keep read access unless disabled.                              |
 
 ### 2.3 Assessment criteria (CRIT)
 
-| ID      | Requirement                                                                                                                                                                                                                                          |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CRIT-01 | Criteria are rows, never columns. No `quiz1`/`midterm` columns anywhere.                                                                                                                                                                             |
-| CRIT-02 | Each criterion: UUID, offering, stable `key` (unique per offering), display name, category, display order, active flag, description, optional sheet column key, timestamps.                                                                          |
-| CRIT-03 | Max mark and weight are versioned on grading-scheme items (see GRADE).                                                                                                                                                                               |
-| CRIT-04 | Admin can add, rename, reorder, disable criteria; renaming never changes `key` or touches scores.                                                                                                                                                    |
-| CRIT-05 | Disabled criteria keep their stored scores; they are excluded from new schemes but remain in historical schemes. A criterion in the PUBLISHED scheme cannot be disabled until a scheme without it is published. Disabling removes it from the draft. |
+| ID      | Requirement                                                                                                                                                                 |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CRIT-01 | Criteria are rows, never columns. No `quiz1`/`midterm` columns anywhere.                                                                                                    |
+| CRIT-02 | Each criterion: UUID, offering, stable `key` (unique per offering), display name, category, display order, active flag, description, optional sheet column key, timestamps. |
+| CRIT-03 | Max mark and weight are versioned on grading-scheme items (see GRADE).                                                                                                      |
+| CRIT-04 | Admin sets criteria on the tab review screen (D15, D17); renaming never changes `key` or touches scores.                                                                    |
+| CRIT-05 | A criterion removed from a sheet keeps its stored scores and stays in historical schemes (`CRITERION_REMOVED_IN_SOURCE`). There is no admin disable (D15).                  |
 
 ### 2.4 Grading (GRADE)
 
@@ -70,32 +75,32 @@ REST API backed by PostgreSQL (never from Google Sheets at request time).
 
 ### 2.5 Google Sheets (GS)
 
-| ID    | Requirement                                                                                                                                                              |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| GS-01 | Admin registers one or more Google Sheets URLs per generation.                                                                                                           |
-| GS-02 | URL validated: `https://docs.google.com/spreadsheets/d/<id>…` only; spreadsheet ID extracted.                                                                            |
-| GS-03 | Registration verifies the service account can read the file and that its `_meta` tab declares the matching generation code. Otherwise rejected with an actionable error. |
-| GS-04 | Server-side service-account access, read-only scope. Credentials never reach the browser.                                                                                |
-| GS-05 | Standard template (see `google-sheets-template.md`) with explicit machine keys for terms, courses, criteria and columns.                                                 |
-| GS-06 | Parser tolerant of whitespace, blank rows, reordered columns; malformed data rejected with row/column-level errors; no guessed mappings.                                 |
-| GS-07 | Batched reads, retry with exponential backoff on 429/5xx, quota-aware rate limiting.                                                                                     |
+| ID    | Requirement                                                                                                                                                                     |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GS-01 | Admin connects one Google Sheet per term. One ACTIVE and one PENDING per term.                                                                                                  |
+| GS-02 | URL validated: `https://docs.google.com/spreadsheets/d/<id>…` only; spreadsheet ID extracted.                                                                                   |
+| GS-03 | Connecting verifies the service account can read the file and that an optional `_meta` tab, when present, names this generation and term. Otherwise rejected.                   |
+| GS-04 | Server-side service-account access, read-only scope. Credentials never reach the browser.                                                                                       |
+| GS-05 | Term workbooks (see `google-sheets-template.md`): tabs are detected and an admin confirms each one. The strict template was removed (D14).                                      |
+| GS-06 | Parser tolerant of whitespace and blank rows. Reordered columns change the header signature, so the tab needs review (`NEEDS_REMAP`). Malformed data gets row or column errors. |
+| GS-07 | Batched reads, retry with exponential backoff on 429/5xx, a job rate limit of 50 per minute.                                                                                    |
 
 ### 2.6 Synchronization (SYNC)
 
-| ID      | Requirement                                                                                                                                            |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| SYNC-01 | Sync one source, one generation, or all sources.                                                                                                       |
-| SYNC-02 | Jobs run in a separate worker via BullMQ; the API only enqueues.                                                                                       |
-| SYNC-03 | Progress, counts (created / updated / unchanged / skipped / rejected) and row-level errors persisted and visible.                                      |
-| SYNC-04 | Idempotent: re-running with unchanged data changes nothing. Unique constraints back up application checks.                                             |
-| SYNC-05 | No overlapping jobs per source (partial unique index + advisory lock + BullMQ job ID dedupe).                                                          |
-| SYNC-06 | Per-source outcome: multi-source syncs are a parent job with independent child jobs. Parent status aggregates honestly (SUCCEEDED / PARTIAL / FAILED). |
-| SYNC-07 | Validate-then-apply: parse and validate everything first; structural errors abort the source with zero writes.                                         |
-| SYNC-08 | Never delete on disappearance; missing rows are reported, enrollments are marked not-seen.                                                             |
-| SYNC-09 | Score changes are written to a revision history with sync job, sheet, tab and row reference.                                                           |
-| SYNC-10 | Failed jobs can be retried safely; jobs orphaned by a worker crash are detected and marked failed/retryable.                                           |
-| SYNC-11 | Caches for affected generations are invalidated after commit.                                                                                          |
-| SYNC-12 | Students can keep reading during sync (short per-offering transactions, MVCC).                                                                         |
+| ID      | Requirement                                                                                                                                                          |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SYNC-01 | Sync one source, one generation, or all sources.                                                                                                                     |
+| SYNC-02 | Jobs run in a separate worker via BullMQ; the API only enqueues.                                                                                                     |
+| SYNC-03 | Progress, counts (created / updated / unchanged / skipped / rejected) and row-level errors persisted and visible.                                                    |
+| SYNC-04 | Idempotent: re-running with unchanged data changes nothing. Unique constraints back up application checks.                                                           |
+| SYNC-05 | No overlapping jobs per source or term (partial unique indexes + run lease + BullMQ job ID dedupe). Roster and offering steps take advisory locks.                   |
+| SYNC-06 | Per-source outcome: multi-source syncs are a parent job with independent child jobs. Parent status aggregates honestly (SUCCEEDED / SUCCEEDED_WITH_ERRORS / FAILED). |
+| SYNC-07 | Validate-then-apply: parse and validate everything first; structural errors abort the source with zero writes.                                                       |
+| SYNC-08 | Never delete on disappearance; missing rows are reported, enrollments are marked not-seen.                                                                           |
+| SYNC-09 | Score changes are written to a revision history with sync job, sheet, tab and row reference.                                                                         |
+| SYNC-10 | Failed jobs can be retried safely; jobs orphaned by a worker crash are detected and marked failed/retryable.                                                         |
+| SYNC-11 | Caches for affected generations are invalidated after commit.                                                                                                        |
+| SYNC-12 | Students can keep reading during sync (per-offering transactions, MVCC). A sheet change is one long transaction: known deviation in the delivery plan.               |
 
 ### 2.7 Student provisioning (PROV)
 
@@ -118,18 +123,18 @@ REST API backed by PostgreSQL (never from Google Sheets at request time).
 
 ### 2.9 Admin portal (ADM)
 
-Pages: dashboard, generations (list/create/edit/details), sheet sources, courses & terms, criteria,
-grading schemes, students (list/detail/academic record/status/reset/issue credentials), sync center,
-sync job details, audit logs, account settings.
+Pages: dashboard, generations (list/create/edit/details, with term edit and term release), sheet
+sources (tab review and preview), students (list/detail/academic record/status/reset/issue
+credentials), sync center, sync job details, audit logs, account settings.
 
 ### 2.10 Audit & monitoring (OBS)
 
-| ID     | Requirement                                                                                                                                                   |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OBS-01 | Audit log for logins, password resets/issuance, account creation/status changes, generation/course/criteria/scheme/source changes, sync start/finish/failure. |
-| OBS-02 | Structured JSON logs with request ID and sync job ID; secrets redacted.                                                                                       |
-| OBS-03 | `/api/v1/health` (liveness) and readiness covering PostgreSQL and Redis.                                                                                      |
-| OBS-04 | Sentry (optional via `SENTRY_DSN`) with sensitive-data scrubbing.                                                                                             |
+| ID     | Requirement                                                                                                                                                             |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OBS-01 | Audit log for logins, password resets/issuance, account creation/status changes, generation/term/source/mapping changes, scheme publication, sync start/finish/failure. |
+| OBS-02 | Structured JSON logs with request ID and sync job ID; secrets redacted.                                                                                                 |
+| OBS-03 | `/api/v1/health` (liveness) and readiness covering PostgreSQL and Redis.                                                                                                |
+| OBS-04 | Sentry (optional via `SENTRY_DSN`) with sensitive-data scrubbing.                                                                                                       |
 
 ## 3. Non-functional requirements
 
@@ -142,33 +147,33 @@ sync job details, audit logs, account settings.
 
 ## 4. Assumptions and decisions (safe defaults)
 
-| #   | Ambiguity                                             | Decision                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| --- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| A1  | Who owns criteria/weights, the sheet or the admin UI? | **Hybrid**: the sheet's `Criteria` tab proposes structure. On first import of an offering with valid weights, version 1 is auto-published. Later scoring changes from the sheet (weight/max mark) create a **DRAFT** scheme that an admin must publish. Admin UI edits also create drafts. Cosmetic fields (name, order, description) from the sheet are applied directly. **Adopted as default (no change requested, 2026-10-26).** |
-| A2  | Course model                                          | Global catalog `courses` (by code) + `course_offerings` (term × course). Criteria and schemes attach to offerings.                                                                                                                                                                                                                                                                                                                   |
-| A3  | Where do student profile fields come from?            | The spreadsheet `Students` roster tab only. Name/gender/class columns in course tabs are optional and only checked for mismatch warnings.                                                                                                                                                                                                                                                                                            |
-| A4  | Number of terms                                       | Exactly 5 per generation, created automatically. Not user-extendable in v1.                                                                                                                                                                                                                                                                                                                                                          |
-| A5  | Student in two generations                            | Not allowed. Roster row for a student ID owned by another generation is rejected.                                                                                                                                                                                                                                                                                                                                                    |
-| A6  | Results visibility                                    | Per offering `HIDDEN`/`VISIBLE`, set by the `Courses` tab `visible` column (default HIDDEN) and overridable by admin.                                                                                                                                                                                                                                                                                                                |
-| A7  | Excused/exempt marks                                  | Not supported in v1 (would require weight renormalization rules). `EX` is rejected as invalid. **Adopted as default (2026-10-26).**                                                                                                                                                                                                                                                                                                  |
-| A8  | Term summary                                          | Credit-weighted mean of COMPLETE course final scores; shown as final only when every visible course in the term is COMPLETE. `credits` default 1.                                                                                                                                                                                                                                                                                    |
-| A9  | Letter grades / GPA                                   | Out of scope for v1.                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| A10 | Initial password delivery                             | Admin-assisted issuance (PROV-03). No email/SMS delivery in v1.                                                                                                                                                                                                                                                                                                                                                                      |
-| A11 | Two sources defining the same offering                | First source to create an offering owns it; other sources' definitions of it are rejected as conflicts.                                                                                                                                                                                                                                                                                                                              |
-| A12 | Mark history                                          | Current value in `assessment_scores`; every change appended to `assessment_score_revisions`.                                                                                                                                                                                                                                                                                                                                         |
-| A13 | Deployment topology                                   | Single origin behind a reverse proxy: `/` → Next.js, `/api` → NestJS. Simplifies cookies and CSRF.                                                                                                                                                                                                                                                                                                                                   |
+| #   | Ambiguity                                             | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| --- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1  | Who owns criteria/weights, the sheet or the admin UI? | **Superseded by D17:** the admin confirms weights on the tab review screen and the next sync publishes them. Original decision, kept for history: **Hybrid**: the sheet's `Criteria` tab proposes structure. On first import of an offering with valid weights, version 1 is auto-published. Later scoring changes from the sheet (weight/max mark) create a **DRAFT** scheme that an admin must publish. Admin UI edits also create drafts. Cosmetic fields (name, order, description) from the sheet are applied directly. **Adopted as default (no change requested, 2026-10-26).** |
+| A2  | Course model                                          | Global catalog `courses` (by code) + `course_offerings` (term × course). Criteria and schemes attach to offerings.                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| A3  | Where do student profile fields come from?            | The term workbook's `ALL` roster tab (D9). Originally the `Students` tab. Name/gender/class columns in course tabs are optional and only checked for mismatch warnings.                                                                                                                                                                                                                                                                                                                                                                                                                |
+| A4  | Number of terms                                       | Exactly 5 per generation, created automatically. Not user-extendable in v1.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| A5  | Student in two generations                            | Not allowed. Roster row for a student ID owned by another generation is rejected.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| A6  | Results visibility                                    | Per term: an admin releases or hides the term (D16). Subjects start HIDDEN. Originally per offering from a `visible` column.                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| A7  | Excused/exempt marks                                  | Not supported in v1 (would require weight renormalization rules). `EX` is rejected as invalid. **Adopted as default (2026-10-26).**                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| A8  | Term summary                                          | Credit-weighted mean of COMPLETE course final scores; shown as final only when every visible course in the term is COMPLETE. `credits` default 1.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| A9  | Letter grades / GPA                                   | Planned by D5, not built. Originally out of scope.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| A10 | Initial password delivery                             | Admin-assisted issuance (PROV-03). No email/SMS delivery in v1.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| A11 | Two sources defining the same offering                | The offering moves to the source that confirmed its tab. Originally first source owns it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| A12 | Mark history                                          | Current value in `assessment_scores`; every change appended to `assessment_score_revisions`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| A13 | Deployment topology                                   | Single origin behind a reverse proxy: `/` → Next.js, `/api` → NestJS. Simplifies cookies and CSRF.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## 5. Data-integrity risks and mitigations
 
 | Risk                                                      | Mitigation                                                                                                                                                             |
 | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Wrong spreadsheet attached to a generation                | `_meta.generation_code` must equal the generation's code at registration and at every sync.                                                                            |
-| Renamed column header remaps marks to the wrong criterion | Columns are identified by machine key in row 1, never by label. Unknown keys → course rejected.                                                                        |
+| Wrong spreadsheet attached to a generation                | `_meta`, when present, must name this generation and term at connect and at every sync (D26).                                                                          |
+| Renamed column header remaps marks to the wrong criterion | A header signature is stored at confirmation. A changed header skips the tab with `NEEDS_REMAP` until it is reviewed.                                                  |
 | Student ID formatting differences (`st001 `, `ST001`)     | Normalization: trim (incl. NBSP and zero-width characters), uppercase; inner whitespace is rejected, never collapsed; validated by regex `^[A-Z0-9][A-Z0-9_-]{0,31}$`. |
 | Numbers stored as text / locale decimals (`8,5`)          | UNFORMATTED_VALUE reads; strings parsed strictly; comma decimals rejected with an explicit error.                                                                      |
 | Blank treated as zero                                     | Blank = no score row (or NULL value); `ABS` = explicit absent zero.                                                                                                    |
-| Weight change silently alters published results           | Sheet-proposed scoring changes become drafts requiring admin publish (A1).                                                                                             |
-| Duplicate students/scores from concurrent jobs            | Unique constraints + per-source advisory lock + one active job per source.                                                                                             |
+| Weight change silently alters published results           | Weights change only through the tab review screen; the next sync publishes a new version (D17). Replacement sheets also need a confirmed preview (D28).                |
+| Duplicate students/scores from concurrent jobs            | Unique constraints, roster and offering advisory locks, one active job per source and term.                                                                            |
 | Partial import presented as success                       | Per-source status includes `SUCCEEDED_WITH_ERRORS`; parent aggregates honestly.                                                                                        |
 | Rows removed from sheet delete history                    | No deletes on sync; `lastSeenSyncJobId` tracks presence.                                                                                                               |
 | Duplicate student row within one tab                      | Whole duplicate set rejected for that tab (no "last row wins").                                                                                                        |

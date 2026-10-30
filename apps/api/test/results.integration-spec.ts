@@ -348,17 +348,16 @@ describe('Student results (integration)', () => {
       expect((await bob.get(ME).expect(200)).body.studentCode).toBe('GEN26-0002');
     });
 
-    it('stops serving stale results after an admin visibility change', async () => {
+    it('stops serving stale results after a term is released or hidden', async () => {
       await alice.get(`${ME}/results`).expect(200);
-      await admin
-        .patch(`/api/v1/admin/offerings/${s.art.id}`, { visibility: 'VISIBLE' })
-        .expect(200);
+      const term = await ctx.prisma.term.findFirstOrThrow({
+        where: { generationId: s.generation.id, number: 1 },
+      });
+      await admin.post(`/api/v1/admin/terms/${term.id}/release`, { visible: true }).expect(200);
       const res = await alice.get(`${ME}/courses/${s.art.id}`).expect(200);
       expect(res.body).toMatchObject({ status: 'COMPLETE', finalScore: '90.00' });
 
-      await admin
-        .patch(`/api/v1/admin/offerings/${s.math.id}`, { visibility: 'HIDDEN' })
-        .expect(200);
+      await admin.post(`/api/v1/admin/terms/${term.id}/release`, { visible: false }).expect(200);
       await alice.get(`${ME}/courses/${s.math.id}`).expect(404);
     });
 

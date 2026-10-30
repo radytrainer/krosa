@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsOptional, IsString, Length, Matches } from 'class-validator';
+import { IsBoolean, IsEnum, IsOptional, IsString, Length, Matches } from 'class-validator';
 import { PaginationQueryDto } from '../common/pagination.js';
 import { IsDateOnly, Trim } from '../common/validation.js';
 
@@ -81,4 +81,10 @@ export class UpdateTermDto {
   @IsOptional()
   @IsDateOnly()
   endDate?: string | null;
+}
+
+export class ReleaseTermDto {
+  @ApiProperty({ description: 'true shows the term to students, false hides it again' })
+  @IsBoolean()
+  visible!: boolean;
 }

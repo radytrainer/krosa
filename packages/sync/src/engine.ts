@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient, SyncStatus } from '@ssrs/database';
 import {
-  readWorkbook,
+  readTermWorkbook,
   SheetsAccessError,
   type TemplateIssue,
-  type WorkbookReadResult,
+  type TermWorkbookRead,
 } from '@ssrs/sheets';
 import { applyCourse } from './apply-course.js';
 import { applyRoster } from './apply-roster.js';
+import { confirmedTabs, mappingVersions, previewGate, TAB_MAPPINGS_INCLUDE } from './confirmed.js';
 import { refreshParentJob } from './parent.js';
 import {
   addCounts,
@@ -31,15 +32,24 @@ const ERROR_BATCH = 1_000;
 export const LEASE_MS = 120_000;
 const LEASE_RENEW_MS = LEASE_MS / 3;
 const MAX_STORED_ISSUES = 20_000;
+/** A sheet change saves everything in one transaction, so it gets room for a whole workbook. */
+const SHEET_CHANGE_TX = { maxWait: 30_000, timeout: 300_000 } as const;
+
+/** Rolls back a sheet change: students keep the old scores and the sheet stays pending. */
+class SheetChangeRejected extends Error {}
 
 /** Counts parser rejections into the job report (students, courses and cells). */
-function countParseRejections(issues: readonly TemplateIssue[], counts: SyncCounts): void {
+function countParseRejections(
+  issues: readonly TemplateIssue[],
+  rosterTab: string | null,
+  counts: SyncCounts,
+): void {
   const rejectedCourses = new Set<string>();
   for (const issue of issues) {
     if (issue.severity !== 'ERROR') continue;
-    if (issue.scope === 'ROW' && issue.sheetTab === 'Students') counts.students.rejected++;
+    if (issue.scope === 'ROW' && issue.sheetTab === rosterTab) counts.students.rejected++;
     if (issue.scope === 'CELL' && issue.code === 'INVALID_MARK') counts.scores.rejected++;
-    if (issue.scope === 'COURSE' && issue.code !== 'WEIGHTS_NOT_100') {
+    if (issue.scope === 'COURSE') {
       rejectedCourses.add(issue.courseKey?.toUpperCase() ?? `${issue.sheetTab}:${issue.rowNumber}`);
     }
   }
@@ -150,7 +160,15 @@ async function execute(
 
   const job = await prisma.syncJob.findUnique({
     where: { id: syncJobId },
-    include: { source: { include: { generation: { include: { terms: true } } } } },
+    include: {
+      source: {
+        include: {
+          generation: true,
+          term: true,
+          tabMappings: { include: TAB_MAPPINGS_INCLUDE },
+        },
+      },
+    },
   });
   if (!job) throw new Error(`Sync job ${syncJobId} not found`);
   if (TERMINAL.includes(job.status)) return { kind: 'finished', status: job.status as 'SUCCEEDED' };
@@ -238,9 +256,28 @@ async function execute(
     sourceId: source.id,
     attempt: options.attempt,
   });
-  let workbook: WorkbookReadResult;
+  const confirmed = confirmedTabs(source.tabMappings);
+  await prisma.syncJob.update({
+    where: { id: job.id },
+    data: { mappingVersions: mappingVersions(source.tabMappings) },
+  });
+
+  let workbook: TermWorkbookRead;
   try {
-    workbook = await readWorkbook(reader, source.spreadsheetId, generation.code);
+    workbook = await readTermWorkbook(
+      reader,
+      source.spreadsheetId,
+      {
+        generationCode: generation.code,
+        termNumber: source.term.number,
+        rosterTab: source.rosterTab,
+        ignoredTabs: [
+          ...source.ignoredTabs,
+          ...source.tabMappings.filter((t) => t.status === 'IGNORED').map((t) => t.tabName),
+        ],
+      },
+      confirmed,
+    );
   } catch (err) {
     if (err instanceof SheetsAccessError) {
       if (err.retryable && options.attempt < options.maxAttempts) {
@@ -258,7 +295,7 @@ async function execute(
 
   const counts = emptyCounts();
   const issues: SyncIssue[] = [...workbook.issues];
-  countParseRejections(workbook.issues, counts);
+  countParseRejections(workbook.issues, workbook.rosterTab, counts);
   if (workbook.spreadsheetTitle && workbook.spreadsheetTitle !== source.spreadsheetTitle) {
     await prisma.googleSheetSource.update({
       where: { id: source.id },
@@ -279,12 +316,123 @@ async function execute(
     data: { phase: 'APPLY', progressCurrent: 0, progressTotal: workbook.courses.length + 1 },
   });
 
+  if (source.status === 'PENDING') {
+    const gate = await previewGate(prisma, source.id, workbook.fingerprint);
+    if (gate) {
+      return finish('FAILED', { failureCode: gate.code, failureMessage: gate.message, issues });
+    }
+    const refused = {
+      failureCode: 'SHEET_CHANGE_REJECTED',
+      failureMessage:
+        'The new sheet has errors, so nothing was imported. The current sheet stays active.',
+    };
+    if (issues.some((i) => i.severity === 'ERROR')) return finish('FAILED', { ...refused, issues });
+    try {
+      await prisma.$transaction(async (tx) => {
+        const roster = await applyRoster(
+          prisma,
+          {
+            syncJobId: job.id,
+            sourceId: source.id,
+            generationId: generation.id,
+            rosterTab: workbook.rosterTab ?? source.rosterTab,
+          },
+          workbook.roster,
+          now(),
+          tx,
+        );
+        issues.push(...roster.issues);
+        addCounts(counts, { students: roster.counts });
+        for (const course of workbook.courses) {
+          const result = await applyCourse(
+            prisma,
+            {
+              syncJobId: job.id,
+              sourceId: source.id,
+              generationId: generation.id,
+              studentIdByCode: roster.studentIdByCode,
+              now: now(),
+              hooks: deps.hooks,
+            },
+            course,
+            tx,
+          );
+          issues.push(...result.issues);
+          addCounts(counts, result.counts);
+        }
+        if (issues.some((i) => i.severity === 'ERROR')) {
+          throw new SheetChangeRejected(refused.failureMessage);
+        }
+        const previous = await tx.googleSheetSource.findFirst({
+          where: { termId: source.termId, status: 'ACTIVE' },
+          select: { id: true, spreadsheetId: true },
+        });
+        if (previous) {
+          await tx.googleSheetSource.update({
+            where: { id: previous.id },
+            data: { status: 'DISABLED' },
+          });
+        }
+        await tx.googleSheetSource.update({
+          where: { id: source.id },
+          data: { status: 'ACTIVE', lastSyncedAt: now(), lastSyncJobId: job.id },
+        });
+        await tx.sheetPreview.updateMany({
+          where: { sourceId: source.id, invalidatedAt: null },
+          data: { invalidatedAt: now() },
+        });
+        await tx.generation.update({
+          where: { id: generation.id },
+          data: { cacheVersion: { increment: 1 } },
+        });
+        await tx.syncJob.update({
+          where: { id: job.id },
+          data: { progressCurrent: workbook.courses.length + 1 },
+        });
+        await tx.auditLog.create({
+          data: {
+            actorType: 'SYSTEM',
+            action: 'source.promoted',
+            entityType: 'source',
+            entityId: source.id,
+            metadata: {
+              syncJobId: job.id,
+              termId: source.termId,
+              oldSpreadsheetId: previous?.spreadsheetId ?? null,
+              newSpreadsheetId: source.spreadsheetId,
+            },
+          },
+        });
+      }, SHEET_CHANGE_TX);
+    } catch (err) {
+      if (!(err instanceof SheetChangeRejected)) {
+        logger.error('Sheet change failed', {
+          syncJobId: job.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        issues.push({
+          severity: 'ERROR',
+          scope: 'FILE',
+          code: 'APPLY_FAILED',
+          message: 'Saving the new sheet failed and was rolled back.',
+        });
+      }
+      return finish('FAILED', { ...refused, issues });
+    }
+    return finish('SUCCEEDED', { counts, issues });
+  }
+
   let studentIdByCode: Map<string, string>;
   try {
     const roster = await applyRoster(
       prisma,
-      { syncJobId: job.id, sourceId: source.id, generationId: generation.id },
-      workbook.students,
+      {
+        syncJobId: job.id,
+        sourceId: source.id,
+        generationId: generation.id,
+        rosterTab: workbook.rosterTab ?? source.rosterTab,
+      },
+      workbook.roster,
       now(),
     );
     studentIdByCode = roster.studentIdByCode;
@@ -307,7 +455,6 @@ async function execute(
   }
   await prisma.syncJob.update({ where: { id: job.id }, data: { progressCurrent: 1 } });
 
-  const termIdByNumber = new Map(generation.terms.map((t) => [t.number, t.id]));
   let applied = 0;
   for (const [index, course] of workbook.courses.entries()) {
     try {
@@ -317,7 +464,6 @@ async function execute(
           syncJobId: job.id,
           sourceId: source.id,
           generationId: generation.id,
-          termIdByNumber,
           studentIdByCode,
           now: now(),
           hooks: deps.hooks,
@@ -334,7 +480,7 @@ async function execute(
         scope: 'COURSE',
         code: 'APPLY_FAILED',
         message:
-          'Saving this course failed and was rolled back. Other courses were not affected; retry the sync.',
+          'Saving this subject failed and was rolled back. Other subjects were not affected; retry the sync.',
         courseKey: course.courseKey,
         sheetTab: course.worksheet,
       });
@@ -348,6 +494,11 @@ async function execute(
   }
 
   await prisma.$transaction([
+    // The scores a pending sheet was previewed against may have changed: it must be previewed again.
+    prisma.sheetPreview.updateMany({
+      where: { source: { termId: source.termId, status: 'PENDING' }, invalidatedAt: null },
+      data: { invalidatedAt: now() },
+    }),
     // Cached student results embed the generation's cache version (docs/architecture.md §6).
     prisma.generation.update({
       where: { id: generation.id },
@@ -366,7 +517,7 @@ async function execute(
     counts,
     issues,
     ...(everythingFailed
-      ? { failureCode: 'APPLY_FAILED', failureMessage: 'No course could be saved.' }
+      ? { failureCode: 'APPLY_FAILED', failureMessage: 'No subject could be saved.' }
       : {}),
   });
 }

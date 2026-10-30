@@ -38,6 +38,12 @@ export class SyncController {
     return this.sync.list(query);
   }
 
+  /** Generation and Term options for the sync form. */
+  @Get('sync/targets')
+  targets() {
+    return this.sync.targets();
+  }
+
   @Get('sync/:jobId')
   get(@Param('jobId', ParseUUIDPipe) jobId: string) {
     return this.sync.get(jobId);

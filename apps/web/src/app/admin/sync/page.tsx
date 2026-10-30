@@ -5,6 +5,7 @@ import { Suspense, useState } from 'react';
 import { SyncJobsTable } from '@/components/admin/sync-jobs-table';
 import { useStartSync } from '@/components/admin/use-start-sync';
 import { useUrlState } from '@/components/admin/use-url-state';
+import { WorkbooksByTerm } from '@/components/admin/workbooks-by-term';
 import { Field, NativeSelect } from '@/components/app/form';
 import { PageHeader, Section } from '@/components/app/page-header';
 import { Pagination } from '@/components/app/pagination';
@@ -14,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { humanize } from '@/lib/format';
 import { qs, useApi } from '@/lib/query';
-import type { Generation, Paginated, SyncJob, SyncStatus } from '@/lib/types';
+import type { Generation, Paginated, SyncJob, SyncStatus, SyncTargetOption } from '@/lib/types';
 
 const STATUSES: SyncStatus[] = [
   'QUEUED',
@@ -25,40 +26,77 @@ const STATUSES: SyncStatus[] = [
   'CANCELLED',
 ];
 
-function StartSyncCard({ generations }: { generations: Generation[] }) {
-  const active = generations.filter((g) => g.status === 'ACTIVE');
-  const [target, setTarget] = useState('ALL');
+const ALL = 'ALL';
+
+function StartSyncCard() {
+  const targets = useApi<SyncTargetOption[]>('/admin/sync/targets');
+  const [generationId, setGenerationId] = useState(ALL);
+  const [term, setTerm] = useState(ALL);
   const startSync = useStartSync();
+  const generations = targets.data ?? [];
+  const selected = generations.find((g) => g.id === generationId);
+  // With every generation selected, a term means that term number in each of them.
+  const termOptions = selected
+    ? selected.terms.map((t) => ({ value: t.id, label: t.name }))
+    : [...new Set(generations.flatMap((g) => g.terms.map((t) => t.number)))]
+        .toSorted((a, b) => a - b)
+        .map((n) => ({ value: String(n), label: `Term ${n}` }));
+
+  const start = () => {
+    if (selected) {
+      startSync.mutate(
+        term === ALL
+          ? { scope: 'GENERATION', generationId: selected.id }
+          : { scope: 'TERM', generationId: selected.id, termId: term },
+      );
+    } else {
+      startSync.mutate(
+        term === ALL ? { scope: 'ALL' } : { scope: 'ALL', termNumber: Number(term) },
+      );
+    }
+  };
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>Start a synchronization</CardTitle>
         <CardDescription>
-          Reads every active spreadsheet of the target and imports students, courses and marks. To
-          sync a single spreadsheet, open its source page.
+          Reads the confirmed tabs of each matching workbook and imports students and marks.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-end">
-        <Field label="Target" className="sm:w-72">
+        <Field label="Generation" required className="sm:w-64">
           {(p) => (
-            <NativeSelect {...p} value={target} onChange={(e) => setTarget(e.target.value)}>
-              <option value="ALL">All active generations</option>
-              {active.map((g) => (
+            <NativeSelect
+              {...p}
+              value={generationId}
+              onChange={(e) => {
+                setGenerationId(e.target.value);
+                setTerm(ALL);
+              }}
+            >
+              <option value={ALL}>All active generations</option>
+              {generations.map((g) => (
                 <option key={g.id} value={g.id}>
-                  {g.code} · {g.name}
+                  {g.name}
                 </option>
               ))}
             </NativeSelect>
           )}
         </Field>
-        <Button
-          disabled={startSync.isPending}
-          onClick={() =>
-            startSync.mutate(
-              target === 'ALL' ? { scope: 'ALL' } : { scope: 'GENERATION', generationId: target },
-            )
-          }
-        >
+        <Field label="Term" required className="sm:w-48">
+          {(p) => (
+            <NativeSelect {...p} value={term} onChange={(e) => setTerm(e.target.value)}>
+              <option value={ALL}>All terms</option>
+              {termOptions.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </NativeSelect>
+          )}
+        </Field>
+        <Button disabled={startSync.isPending || !targets.data} onClick={start}>
           <RefreshCw aria-hidden className={startSync.isPending ? 'animate-spin' : undefined} />
           Start sync
         </Button>
@@ -88,7 +126,13 @@ function SyncCenter() {
         description="Imports from Google Sheets: start a run, follow progress and inspect problems."
       />
       <div className="space-y-8">
-        <StartSyncCard generations={generations.data?.data ?? []} />
+        <StartSyncCard />
+        <Section
+          title="Workbooks by term"
+          description="The sheet feeding each term's scores. To replace or remove it, edit the term on its generation page. Students are affected only after a new sheet is reviewed and synced."
+        >
+          <WorkbooksByTerm />
+        </Section>
         <Section title="Jobs">
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[12rem_10rem_12rem_auto]">
             <NativeSelect

@@ -3,10 +3,11 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import type { PrismaClient, SyncStatus } from '@ssrs/database';
 import { truncateAllTables } from '@ssrs/database/testing';
 import {
-  FIXTURE_SPREADSHEET_ID,
   InMemorySheetsReader,
-  workbookFixture,
+  TERM_FIXTURE_SPREADSHEET_ID,
+  termWorkbookFixture,
 } from '@ssrs/sheets/testing';
+import { confirmAllTabs } from '@ssrs/sync/testing';
 import { QUEUE_PREFIX, SYNC_QUEUE, SYNC_SOURCE_JOB, syncJobQueueOptions } from '@ssrs/shared';
 import { loadRootEnv } from '@ssrs/shared/node';
 import { Queue } from 'bullmq';
@@ -53,9 +54,19 @@ describe('Sync worker (integration)', () => {
     prisma = worker.get(PrismaService).client;
   }
 
-  async function createSource(spreadsheetId: string) {
+  /** One workbook per term, so each source takes the next free term. */
+  async function createSource(spreadsheetId: string, termNumber = 1) {
+    const term = await prisma.term.findFirstOrThrow({
+      where: { generationId, number: termNumber },
+    });
     return prisma.googleSheetSource.create({
-      data: { generationId, spreadsheetId, label: spreadsheetId.slice(0, 8), createdById: adminId },
+      data: {
+        generationId,
+        termId: term.id,
+        spreadsheetId,
+        label: spreadsheetId.slice(0, 8),
+        createdById: adminId,
+      },
     });
   }
 
@@ -77,7 +88,7 @@ describe('Sync worker (integration)', () => {
     generationId = (
       await prisma.generation.create({
         data: {
-          code: 'GEN2026',
+          code: 'GEN2027',
           name: 'Generation 2026',
           startDate: new Date('2026-01-05'),
           terms: { create: [1, 2, 3, 4, 5].map((n) => ({ number: n, name: `Term ${n}` })) },
@@ -93,7 +104,7 @@ describe('Sync worker (integration)', () => {
 
   beforeEach(async () => {
     await redis.flushdb();
-    reader = new InMemorySheetsReader().set(FIXTURE_SPREADSHEET_ID, workbookFixture('GEN2026'));
+    reader = new InMemorySheetsReader().set(TERM_FIXTURE_SPREADSHEET_ID, termWorkbookFixture());
   });
 
   afterEach(async () => {
@@ -109,7 +120,8 @@ describe('Sync worker (integration)', () => {
   it('processes a queued job end to end through BullMQ', async () => {
     await startWorker();
     await seed();
-    const source = await createSource(FIXTURE_SPREADSHEET_ID);
+    const source = await createSource(TERM_FIXTURE_SPREADSHEET_ID);
+    await confirmAllTabs(prisma, reader, source.id);
     const job = await prisma.syncJob.create({
       data: { scope: 'SOURCE', sourceId: source.id, requestedById: adminId },
     });
@@ -119,7 +131,7 @@ describe('Sync worker (integration)', () => {
 
     expect(done.status).toBe('SUCCEEDED');
     expect(await prisma.student.count()).toBe(3);
-    expect(await prisma.assessmentScore.count()).toBe(29);
+    expect(await prisma.assessmentScore.count()).toBe(74);
     const queued = await queue.getJob(job.id);
     expect(await queued?.getState()).toBe('completed');
   });
@@ -128,8 +140,9 @@ describe('Sync worker (integration)', () => {
     // Seed with a throwaway context, then start the worker so recovery sees the orphans.
     await startWorker();
     await seed();
-    const lostSource = await createSource('1LostSpreadsheetId00000000000000000000000');
-    const queuedSource = await createSource(FIXTURE_SPREADSHEET_ID);
+    const lostSource = await createSource('1LostSpreadsheetId00000000000000000000000', 2);
+    const queuedSource = await createSource(TERM_FIXTURE_SPREADSHEET_ID);
+    await confirmAllTabs(prisma, reader, queuedSource.id);
     const lost = await prisma.syncJob.create({
       data: {
         scope: 'SOURCE',
@@ -157,7 +170,7 @@ describe('Sync worker (integration)', () => {
     const old = await prisma.syncJob.create({
       data: {
         scope: 'SOURCE',
-        sourceId: (await createSource('1OldOrphanSpreadsheet000000000000000000')).id,
+        sourceId: (await createSource('1OldOrphanSpreadsheet000000000000000000', 1)).id,
         requestedById: adminId,
         status: 'RUNNING',
         startedAt: new Date(),
@@ -168,7 +181,7 @@ describe('Sync worker (integration)', () => {
     const young = await prisma.syncJob.create({
       data: {
         scope: 'SOURCE',
-        sourceId: (await createSource('1YoungJobSpreadsheet0000000000000000000')).id,
+        sourceId: (await createSource('1YoungJobSpreadsheet0000000000000000000', 2)).id,
         requestedById: adminId,
       },
     });

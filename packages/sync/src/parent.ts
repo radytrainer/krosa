@@ -45,6 +45,11 @@ export async function refreshParentJob(
       return;
     }
 
+    // Rows stored on the parent itself (a skipped busy workbook) belong in its totals too.
+    const ownErrors = await tx.syncError.count({ where: { jobId: parentId, severity: 'ERROR' } });
+    const ownWarnings = await tx.syncError.count({
+      where: { jobId: parentId, severity: 'WARNING' },
+    });
     const counts = emptyCounts();
     for (const child of children) addCounts(counts, child.counts as unknown as Partial<SyncCounts>);
     const allSucceeded = children.every((c) => c.status === 'SUCCEEDED');
@@ -59,8 +64,8 @@ export async function refreshParentJob(
         progressCurrent: children.length,
         progressTotal: children.length,
         counts: counts as unknown as Prisma.InputJsonValue,
-        errorCount: children.reduce((n, c) => n + c.errorCount, 0),
-        warningCount: children.reduce((n, c) => n + c.warningCount, 0),
+        errorCount: children.reduce((n, c) => n + c.errorCount, ownErrors),
+        warningCount: children.reduce((n, c) => n + c.warningCount, ownWarnings),
         ...(allFailed
           ? {
               failureCode: 'ALL_SOURCES_FAILED',
