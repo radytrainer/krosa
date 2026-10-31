@@ -1,0 +1,12 @@
+courses 4 statements 10
+SELECT "public"."students"."id", "public"."students"."student_code", "public"."students"."
+SELECT "public"."generations"."id", "public"."generations"."code", "public"."generations".
+SELECT "public"."terms"."id", "public"."terms"."number", "public"."terms"."name", "public"
+SELECT "public"."enrollments"."id", "public"."enrollments"."student_id", "public"."enrollm
+SELECT "public"."course_offerings"."id", "public"."course_offerings"."term_id", "public"."
+SELECT "public"."courses"."id", "public"."courses"."code" FROM "public"."courses" WHERE "p
+SELECT "public"."grading_schemes"."id", "public"."grading_schemes"."version", "public"."gr
+SELECT "public"."grading_scheme_items"."id", "public"."grading_scheme_items"."criterion_id
+SELECT "public"."assessment_criteria"."id", "public"."assessment_criteria"."key", "public"
+SELECT "public"."assessment_scores"."id", "public"."assessment_scores"."enrollment_id", "p
+cached call statements 2

@@ -1,0 +1,34 @@
+[D-16] after kill RUNNING APPLY tabs at v2: [ 2, 1, 1, 1, 1 ]
+[D-16] recovered in 131270 ms, status SUCCEEDED null
+ ✓ test/qa/faults.integration-spec.ts > QA D: queue faults > D-16 worker killed mid-job and replaced: job completes, all marks right, no extra history 150985ms
+ ✓ test/qa/faults.integration-spec.ts > QA D: queue faults > D-17 the same job delivered twice while the first run is live: one run, right result 891ms
+[D-17b] queue state completed job RUNNING
+ × test/qa/faults.integration-spec.ts > QA D: queue faults > D-17b a redelivery while a dead run holds the lease does not strand the term 2954ms
+ ✓ test/qa/faults.integration-spec.ts > QA D: queue faults > D-18 a transient Google failure is retried, then succeeds 1206ms
+ ✓ test/qa/faults.integration-spec.ts > QA D: queue faults > D-21 GOOGLE_UNAVAILABLE until the limit: FAILED, intact, attempts 3 1360ms
+ ✓ test/qa/faults.integration-spec.ts > QA D: queue faults > D-21 RATE_LIMITED until the limit: FAILED, intact, attempts 3 1336ms
+ ✓ test/qa/faults.integration-spec.ts > QA D: queue faults > D-18b SHEET_NOT_SHARED is not retried 1031ms
+ ✓ test/qa/faults.integration-spec.ts > QA D: queue faults > D-18b SHEET_NOT_FOUND is not retried 957ms
+ ✓ test/qa/faults.integration-spec.ts > QA D: queue faults > D-18b GOOGLE_AUTH_FAILED is not retried 908ms
+ ✓ test/qa/faults.integration-spec.ts > QA D: queue faults > D-21b an unexpected error retries 3 times, then FAILED; job kept in the failed set 1427ms
+ ✓ test/qa/faults.integration-spec.ts > QA D: queue faults > D-19 a database error in one tab rolls back that tab only 1049ms
+[D-20] right after restart RUNNING APPLY 2
+[D-20] +30s queue=completed attempts=2 job=RUNNING/APPLY lease=2026-10-31T01:39:41.233Z
+[D-20] +60s queue=completed attempts=2 job=RUNNING/APPLY lease=2026-10-31T01:39:41.233Z
+[D-20] +90s queue=completed attempts=2 job=RUNNING/APPLY lease=2026-10-31T01:39:41.233Z
+[D-20] +120s queue=completed attempts=2 job=RUNNING/APPLY lease=2026-10-31T01:39:41.233Z
+[D-20] +150s queue=completed attempts=2 job=RUNNING/APPLY lease=2026-10-31T01:39:41.233Z
+[D-20] +180s queue=completed attempts=2 job=RUNNING/APPLY lease=2026-10-31T01:39:41.233Z
+[D-20] +210s queue=completed attempts=2 job=RUNNING/APPLY lease=2026-10-31T01:39:41.233Z
+[D-20] +243s queue=completed attempts=2 job=RUNNING/APPLY lease=2026-10-31T01:39:41.233Z
+[D-20] +270s queue=completed attempts=2 job=RUNNING/APPLY lease=2026-10-31T01:39:41.233Z
+[D-20] finished FAILED WORKER_LOST after 294445 ms
+[D-20] tabs at v2: [ 2, 1, 1, 1, 1 ]
+ × test/qa/faults.integration-spec.ts > QA D: queue faults > D-20 PostgreSQL restarts mid-job: no lost marks, and the term is not left blocked 310230ms
+[D-20b] finished SUCCEEDED null after 135551 ms
+ ✓ test/qa/faults.integration-spec.ts > QA D: queue faults > D-20b Redis restarts mid-job: the job still finishes correctly 203688ms
+ ✓ test/qa/faults.integration-spec.ts > QA D: queue faults > D-16b orphans: QUEUED with no queue entry is re-queued; RUNNING with none is failed 3551ms
+AssertionError: expected true to be false // Object.is equality
+AssertionError: time the term stayed blocked: expected 294445 to be less than 120000
+ Test Files  1 failed (1)
+      Tests  2 failed | 12 passed (14)

@@ -1,0 +1,8 @@
+[A-34] calls ["401 /api/v1/auth/me"] url http://localhost:3200/login?next=%2Fadmin%2Fstudents
+  x  1 [edge] › qa\session.spec.ts:29:1 › A-34 one tab: a reload after the access cookie expires keeps the session (20.3s)
+[A-34b] calls ["204 /api/v1/auth/refresh"] url http://localhost:3200/admin/audit
+  ok 2 [edge] › qa\session.spec.ts:46:1 › A-34b one tab: an API call in an open page after expiry refreshes silently (9.7s)
+[A-33] calls ["204 /api/v1/auth/refresh"]
+  ok 3 [edge] › qa\session.spec.ts:71:1 › A-33 two tabs in a page that is open: simultaneous refresh keeps the session (8.9s)
+  1 failed
+  2 passed (1.4m)

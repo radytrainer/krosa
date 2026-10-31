@@ -1,0 +1,11 @@
+build exit=0 secs=90
+migrate exit=0 secs=10
+admin exit=0 secs=3
+seed exit=0 secs=6
+lint exit=0 secs=38
+typecheck exit=0 secs=80
+format exit=1 secs=13
+unit exit=0 secs=41
+integration exit=0 secs=309
+e2e exit=0 secs=73
+ALLDONE

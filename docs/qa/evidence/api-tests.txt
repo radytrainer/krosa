@@ -1,0 +1,219 @@
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > C: results against the workbook > C-09 Logic, MsOffice and PL match the sheet totals and hand-worked values 3603ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > C: results against the workbook > C-10 ENG: 16 columns total 100 and a mixed row matches a hand calculation 2089ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > C: results against the workbook > C-12 / C-05 / C-06 BCU partial rows: INCOMPLETE, no total, no row for blank cells 2129ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > C: results against the workbook > C-11 a 5% group over three columns confirms, totals 100 and scores correctly 2378ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > C: results against the workbook > C-13 confirm is refused for weights that do not total 100, and for bad weights 1774ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > C: results against the workbook > C-14 changed weights publish a new version, recalculate, and keep the old one 2721ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-02 re-importing the same data changes nothing 2244ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-03 one changed mark updates one score and writes one history row 2282ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-04 a row missing from a later sync keeps its scores and raises a warning 2510ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-04b a student removed from ALL keeps account, scores and login 2148ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-05 recorded: an erased mark stays, with a warning, and the total stays visible 2266ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-06 rejected rows name tab and row > unknown student, duplicate, text, above 100, below 0 1736ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-06 rejected rows name tab and row > rows of ENG are numbered from the real sheet row 1759ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-06 rejected rows name tab and row > a rejected cell keeps the old mark; other cells of the row still apply 2050ms
+ × test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-09 a duplicate row keeps the old marks and rejects both copies, also across case 2009ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-10 header row 3, a header named f, trailing spaces 1368ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-11 _meta and ALL are not read as subjects; unmapped tabs are reported 1699ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-12 changed sheet structure > renamed header: NEEDS_REMAP, tab skipped, marks untouched, others applied 1625ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-12 changed sheet structure > two columns swapped: NEEDS_REMAP, tab skipped, marks untouched, others applied 1629ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-12 changed sheet structure > column inserted in the middle: NEEDS_REMAP, tab skipped, marks untouched, others applied 1689ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-12 changed sheet structure > column deleted: NEEDS_REMAP, tab skipped, marks untouched, others applied 1690ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-12 changed sheet structure > tabs reordered: nothing changes 1736ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-12 changed sheet structure > a roster gone from the workbook fails the job and changes nothing 1682ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-13 hostile strings in names are stored as text and do not break the sync 1807ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-15 one sync at a time > second request while one is queued: 409 on SOURCE and TERM, and through retry 1961ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-15 one sync at a time > six requests at once create one job 2209ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-15 one sync at a time > recorded: retries are not counted against the sync request limit 3096ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-23 retry of a job that can no longer run > disabled source and archived generation are refused 1570ms
+ ✓ test/qa/sync.integration-spec.ts > QA D: Google Sheets sync > D-18b new subject after release: recorded whether students see it 2148ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-01 unknown user and wrong password give the same status, body and headers 1138ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-03 disabled: correct password refused, wrong password generic, session refused 758ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-04 PENDING accounts and locked hashes cannot sign in 432ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-05 per-IP limit: 429 with Retry-After on the 11th attempt 1141ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-07 case and whitespace variants share the per-username budget 653ms
+ × test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-10 recorded: ACCOUNT_LOCKED exists only for real accounts (account discovery) 1257ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-11 recorded: five wrong guesses by anyone lock the real student out 742ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-09 lockout resets after a successful sign-in 765ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-12 refresh issues new tokens and the old refresh token stops working 449ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-13 replaying an old refresh token revokes the whole chain 457ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-14 two simultaneous refreshes never leave two valid chains 486ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-15 logout revokes access and refresh at once 529ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-16 logout with only the refresh cookie works 479ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > forced password change > A-17 every student and admin route is refused until the password is changed 566ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > forced password change > A-18 neither refresh nor a new sign-in clears the flag 699ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > forced password change > A-18b changing the password in one session lets that session through 722ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > forced password change > A-19 an expired temporary password cannot sign in 533ms
+ × test/qa/auth.integration-spec.ts > QA A: authentication and sessions > forced password change > A-19b an expired temporary password cannot be exchanged from an old session 714ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > admin reset > A-20 ends the session at once: access token, refresh token, old password 789ms
+ × test/qa/auth.integration-spec.ts > QA A: authentication and sessions > admin reset > A-21 reset during a Redis failure: the token is refused once Redis is back 601ms
+ × test/qa/auth.integration-spec.ts > QA A: authentication and sessions > admin reset > A-22 disable during a Redis failure: the token is refused once Redis is back 494ms
+ × test/qa/auth.integration-spec.ts > QA A: authentication and sessions > admin reset > A-22b a Redis restart that loses the denylist does not resurrect a revoked session 560ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > cookies > A-23 local attributes 435ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > cookies > A-24 production refuses http origins, insecure cookies and fixture mode 278ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-27 tampered access tokens > rejects alg none, a wrong key, wrong issuer and audience, and a changed role 578ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-27 tampered access tokens > rejects an expired token with ACCESS_TOKEN_EXPIRED 302ms
+ × test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-28 a session removed from the database no longer authenticates 472ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-29 CSRF: other session token and missing token are refused 655ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-30 change password revokes other sessions and enforces the limit 1144ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-31 refresh past the absolute lifetime fails 434ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: authentication and sessions > A-32 disabled then enabled: old sessions stay dead 594ms
+[A-02] median known 85.5 ms, unknown 81.0 ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: timing and Secure cookies > A-02 unknown user and wrong password take about the same time 5916ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: timing and Secure cookies > A-23b with COOKIE_SECURE on, all three cookies are Secure 402ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: limits that need a trusted proxy > A-06 per-username limit holds across different client IPs 889ms
+ ✓ test/qa/auth.integration-spec.ts > QA A: no trusted proxy > A-08 a spoofed X-Forwarded-For cannot dodge the IP limit 1225ms
+ ✓ test/qa/secrets.integration-spec.ts > QA A-25: no hash or token in any response > every GET route, as admin and as student 1214ms
+ ✓ test/qa/secrets.integration-spec.ts > QA A-25: no hash or token in any response > login, refresh and change-password bodies carry no token or hash 275ms
+[E-09] job SUCCEEDED_WITH_ERRORS: errorCount 20500, listed 20000
+ × test/qa/secrets.integration-spec.ts > QA E-09: the 20,000 issue cap > the job total matches what can be listed, or the page says so 11900ms
+ ✓ test/qa/secrets.integration-spec.ts > QA G-10: CORS settings > CORS_ORIGINS=* is refused at startup 5ms
+ ✓ test/qa/secrets.integration-spec.ts > QA G-10: CORS settings > CORS_ORIGINS=http://a.example,* is refused at startup 2ms
+ ✓ test/qa/secrets.integration-spec.ts > QA G-10: CORS settings > CORS_ORIGINS=http://a.example/path is refused at startup 1ms
+ ✓ test/qa/secrets.integration-spec.ts > QA G-10: CORS settings > CORS_ORIGINS=not-a-url is refused at startup 1ms
+ ✓ test/qa/secrets.integration-spec.ts > QA G-13: Swagger > is not served when disabled 20ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > route coverage > sanity: the live route list matches the documented 53 routes 7ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > route coverage > B-01 a student token is refused on every admin route 399ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > route coverage > B-02 no token, garbage token: 401 on every non-public route 707ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > route coverage > B-03 an admin token is refused on the student routes 40ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > student A cannot reach student B > B-04 foreign, hidden, unknown offerings all give an identical 404 390ms
+ × test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > student A cannot reach student B > B-05 identity parameters are refused or ignored everywhere 305ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > student A cannot reach student B > B-06 parameter pollution on term 36ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > student A cannot reach student B > B-07 malformed offering ids 53ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > student A cannot reach student B > B-08 term filter bounds 126ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > student A cannot reach student B > B-09 cached responses never cross students 98ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > student A cannot reach student B > B-13 a student of another generation sees nothing of this one 1439ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > student A cannot reach student B > B-15 path tricks do not bypass guards 68ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > student A cannot reach student B > B-16 unusual methods on protected routes 40ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > student A cannot reach student B > B-19 mass assignment: forbidden fields on each write route 60ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > hidden terms and the cache > B-10 / B-12 hide takes effect at once on all four views, cached or not 180ms
+ ✓ test/qa/isolation.integration-spec.ts > QA B: authorization and data isolation > hidden terms and the cache > B-11 a sync change reaches a student with a cached view at once 314ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > targets > E-01 / E-02 targets list each generation with its own terms; a mismatch is 422 906ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > targets > E-02b a term with no workbook, and missing required ids, give clear errors 411ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > targets > E-03 all generations + term 2 covers exactly the term 2 sources 2331ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > targets > E-04 old jobs with no term or term number still list and open 983ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > issues roll-up > E-05 / E-06 / E-07 job page: all issues once; source page: only its own; totals add up 2532ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > issues roll-up > E-08 pagination: no duplicates or gaps at any page size, past the end is empty 3093ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > issues roll-up > E-08b filters: severity, code, tab and source 2600ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > issues roll-up > E-08c a busy source shows as a job-level warning and is counted 2445ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > changing a term sheet > E-10 / D-01 every step before the sync leaves score data byte-identical 2747ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > changing a term sheet > E-11 what the student sees stays identical before the sync, for unchanged names 2466ms
+ × test/qa/sync-center.integration-spec.ts > QA E: Sync Center > changing a term sheet > E-11b a renamed subject on the new sheet stays invisible until the sync (T1) 2045ms
+ × test/qa/sync-center.integration-spec.ts > QA E: Sync Center > changing a term sheet > E-22 discarding a new sheet undoes what its Confirm tab changed 2026ms
+ × test/qa/sync-center.integration-spec.ts > QA E: Sync Center > changing a term sheet > E-22b the workaround: a sync of the old sheet restores names and ownership 2420ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > changing a term sheet > E-12 sync without a preview is refused, as is an unconfirmed preview 2626ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > changing a term sheet > E-13 a preview cannot be confirmed through another source 2508ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > changing a term sheet > E-15 a failure partway leaves every table and the active sheet unchanged 2680ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > changing a term sheet > E-19 retry of a failed sheet change after its preview was voided is refused 2618ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > changing a term sheet > E-17b the old sheet cannot sync while the new sheet syncs, and vice versa 3413ms
+ ✓ test/qa/sync-center.integration-spec.ts > QA E: Sync Center > changing a term sheet > E-18 each step is audited with no secrets 2534ms
+ × test/qa/sync-center.integration-spec.ts > QA E: Sync Center > changing a term sheet > E-20 discard, preview and confirm are blocked on an archived generation (T9) 2429ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-01 every write route survives malformed bodies 4007ms
+ × test/qa/robustness.integration-spec.ts > QA G: robustness > G-02 very long strings 60ms
+ × test/qa/robustness.integration-spec.ts > QA G: robustness > G-03 SQL injection strings change nothing and leak nothing 1985ms
+ × test/qa/robustness.integration-spec.ts > QA G: robustness > G-04 NUL bytes (PostgreSQL text cannot hold them) > GET students q 24ms
+ × test/qa/robustness.integration-spec.ts > QA G: robustness > G-04 NUL bytes (PostgreSQL text cannot hold them) > GET students className 21ms
+ × test/qa/robustness.integration-spec.ts > QA G: robustness > G-04 NUL bytes (PostgreSQL text cannot hold them) > GET generations q 47ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-04 NUL bytes (PostgreSQL text cannot hold them) > GET audit action 19ms
+ × test/qa/robustness.integration-spec.ts > QA G: robustness > G-04 NUL bytes (PostgreSQL text cannot hold them) > GET audit entityType 48ms
+ × test/qa/robustness.integration-spec.ts > QA G: robustness > G-04 NUL bytes (PostgreSQL text cannot hold them) > login identifier and password 153ms
+ × test/qa/robustness.integration-spec.ts > QA G: robustness > G-04 NUL bytes (PostgreSQL text cannot hold them) > generation name, code, term name, sheet label 113ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-05b stored script strings come back as plain JSON text 75ms
+ × test/qa/robustness.integration-spec.ts > QA G: robustness > G-06 an oversized payload gets 413 in the standard format 78ms
+ × test/qa/robustness.integration-spec.ts > QA G: robustness > G-07 malformed JSON, wrong content type, bad charset 78ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-07b malformed percent-encoding in a path 20ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > pageSize=0 68ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > pageSize=-1 130ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > pageSize=101 103ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > pageSize=abc 70ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > pageSize=1.5 66ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > page=0 65ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > page=-1 67ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > page=abc 72ms
+ × test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > page=1e308 140ms
+ × test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > page=99999999999999999999 126ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > page=9007199254740991 314ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > page=2147483648 138ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-11 pagination limits > accepts the maximum 148ms
+ ✓ test/qa/robustness.integration-spec.ts > QA G: robustness > G-12 filters with invalid values 96ms
+[G-16] first import: 19320 ms
+[G-16] re-sync, nothing changed: 2991 ms
+[G-16] re-sync, every mark changed: 95129 ms
+[G-16] detect and confirm 5 tabs: 683 ms
+[G-16] preview and confirm: 657 ms
+[G-16] sheet change (one transaction, every mark changed): 28251 ms
+[G-15] student results, cached {"p50":117,"p99":349,"rps":164}
+[G-15] admin results, never cached {"p50":229,"p99":300,"rps":86}
+[G-15] student list, 100 rows {"p50":121,"p99":144,"rps":82}
+ ✓ test/qa/perf.integration-spec.ts > QA G-15 / G-16 performance at 300 x 5 > sync timings, sheet change, and read latency 160067ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-01 sync creates each account once, PENDING and locked; a second run creates none 2323ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-01b a later sync leaves an active account, password and session alone 1917ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-02 a temporary password is shown once, no-store, and not retrievable 1435ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-04 bulk issue leaves active students alone by default 1544ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-04b onlyPending:false never touches a disabled student 1673ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-05 CSV: BOM, formula-safe, no-store, attachment 1627ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-05b selection limits 1266ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-06 student view: components and status; total only when complete 1604ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-10 disable and enable are audited; disabling needs no login change 1476ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-10b PENDING cannot be activated without credentials; reset of a disabled account is refused 1553ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-11 a student who leaves and returns: same enrollment, marks kept, flag follows 1577ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-12 audit rows cannot be changed or deleted 1309ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-12b the audit log filters work and failed logins are recorded 1522ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-13 generations > create: five terms, duplicate codes refused in any case, date order checked 1427ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-13 generations > an archived generation is read-only and its students keep reading 1651ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-14 restored from the deleted suite (T10) > unknown ids give 404, malformed ids give 400, on each detail route 1466ms
+ ✓ test/qa/flows.integration-spec.ts > QA F: student and admin flows > F-14 restored from the deleted suite (T10) > lists are paginated and filtered 1551ms
+AssertionError: expected { status: 401, …(1) } to deeply equal { status: 429, code: 'ACCOUNT_LOCKED' }
+AssertionError: expected 204 to be greater than or equal to 400
+Error: expected 401 "Unauthorized", got 200 "OK"
+Error: expected 401 "Unauthorized", got 200 "OK"
+Error: expected 401 "Unauthorized", got 200 "OK"
+Error: expected 401 "Unauthorized", got 200 "OK"
+AssertionError: spec: unknown query parameters give 400: expected [ '?studentId -> 200', …(14) ] to deeply equal []
+AssertionError: a 100 KB login body: expected 500 to be 400 // Object.is equality
+AssertionError: generation: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred"}}: expected 500 to be less than 500
+AssertionError: class=\: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"5f633fe3-6fe1-4420-9d80-5089cc2a: expected 500 to be less than 500
+AssertionError: students q: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"fdb8897f-1212-40a1-af3f-9650a640: expected 500 to be less than 500
+AssertionError: students className: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"83b01f2c-1bdc-479e-a484-4b7fbe68: expected 500 to be less than 500
+AssertionError: generations q: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"bd64d680-4ed1-40bf-acb0-060c1a21: expected 500 to be less than 500
+AssertionError: audit entityType: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"29b729e8-e94e-4193-a325-f045aca5: expected 500 to be less than 500
+AssertionError: identifier: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"b0e274e0-c8bb-493b-ab0d-a5bcb819: expected 500 to be less than 500
+AssertionError: gen name: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"f3da39ab-2686-456e-a0d9-1c737996: expected 500 to be less than 500
+AssertionError: term: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"3c862453-0672-4c0f-b7c2-9864821b: expected 500 to be less than 500
+AssertionError: label: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"7b512e33-fec8-4082-952a-7a3a2734: expected 500 to be less than 500
+AssertionError: expected 500 to be 413 // Object.is equality
+AssertionError: application/json; charset=nonsense {}: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred"}}: expected 500 to be less than 500
+AssertionError: /generations?page=1e308: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"4f037e1e-fa2a-40ce-8fd2-08073bc1: expected 500 to be less than 500
+AssertionError: /generations?page=1e308: expected 500 to be 400 // Object.is equality
+AssertionError: /students?page=1e308: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"228c6af0-5d01-4092-862b-69d7b336: expected 500 to be less than 500
+AssertionError: /students?page=1e308: expected 500 to be 400 // Object.is equality
+AssertionError: /sync?page=1e308: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"480d9fd4-54db-49c2-8652-3b5f7ba2: expected 500 to be less than 500
+AssertionError: /sync?page=1e308: expected 500 to be 400 // Object.is equality
+AssertionError: /audit-logs?page=1e308: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"c7a66dcb-f7bb-4f0a-8363-48c833b1: expected 500 to be less than 500
+AssertionError: /audit-logs?page=1e308: expected 500 to be 400 // Object.is equality
+AssertionError: /sources/01a1919d-95ab-7349-9591-24edb36d7862/sync-history?page=1e308: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"3920883a-9176-4647-a0c8-669cc290: expected 500 to be less than 500
+AssertionError: /sources/01a1919d-95ab-7349-9591-24edb36d7862/sync-history?page=1e308: expected 500 to be 400 // Object.is equality
+AssertionError: /sync/01a1919d-98fb-7791-8d95-3d4a5b723f24/errors?page=1e308: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"8bee565a-d3b6-4aff-b369-f4b4ff70: expected 500 to be less than 500
+AssertionError: /sync/01a1919d-98fb-7791-8d95-3d4a5b723f24/errors?page=1e308: expected 500 to be 400 // Object.is equality
+AssertionError: /generations?page=99999999999999999999: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"7538ca42-cf8e-4d17-9c17-777def48: expected 500 to be less than 500
+AssertionError: /generations?page=99999999999999999999: expected 500 to be 400 // Object.is equality
+AssertionError: /students?page=99999999999999999999: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"43e6cc6c-63b7-4cd9-927a-59195e6f: expected 500 to be less than 500
+AssertionError: /students?page=99999999999999999999: expected 500 to be 400 // Object.is equality
+AssertionError: /sync?page=99999999999999999999: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"2100e1ab-fd01-46b2-877e-47c11420: expected 500 to be less than 500
+AssertionError: /sync?page=99999999999999999999: expected 500 to be 400 // Object.is equality
+AssertionError: /audit-logs?page=99999999999999999999: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"c995f5e3-7402-4db8-9024-1c727668: expected 500 to be less than 500
+AssertionError: /audit-logs?page=99999999999999999999: expected 500 to be 400 // Object.is equality
+AssertionError: /sources/01a1919d-95ab-7349-9591-24edb36d7862/sync-history?page=99999999999999999999: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"76a2fda0-dfbd-4c30-93df-4bc3ba70: expected 500 to be less than 500
+AssertionError: /sources/01a1919d-95ab-7349-9591-24edb36d7862/sync-history?page=99999999999999999999: expected 500 to be 400 // Object.is equality
+AssertionError: /sync/01a1919d-98fb-7791-8d95-3d4a5b723f24/errors?page=99999999999999999999: {"error":{"code":"INTERNAL_ERROR","message":"An unexpected error occurred","requestId":"0ceedc36-b659-4af6-8697-f3dcf164: expected 500 to be less than 500
+AssertionError: /sync/01a1919d-98fb-7791-8d95-3d4a5b723f24/errors?page=99999999999999999999: expected 500 to be 400 // Object.is equality
+AssertionError: expected 20501 to be 20000 // Object.is equality
+AssertionError: expected '{"student":{"id":"01a1919d-05ad-7632-…' to be '{"student":{"id":"01a1919d-05ad-7632-…' // Object.is equality
+AssertionError: offering still points at the discarded sheet: expected '01a1919d-108d-7129-9214-b0b3021e06cc' to be '01a1919d-0b3a-77e8-a288-ae65a869cdfa' // Object.is equality
+AssertionError: student sees the discarded name: expected '{"student":{"id":"01a1919d-0d98-703f-…' not to contain 'Renamed quiz'
+AssertionError: expected '{"student":{"id":"01a1919d-0d98-703f-…' to be '{"student":{"id":"01a1919d-0d98-703f-…' // Object.is equality
+AssertionError: expected [ { title: 'BCU', …(3) }, …(4) ] to deeply equal [ { title: 'BCU', …(3) }, …(4) ]
+AssertionError: expected { confirm: 200, preview: 201, …(1) } to deeply equal { preview: 409, confirm: 409, …(1) }
+AssertionError: expected [ { …(13) } ] to deeply equal []
+ Test Files  6 failed | 2 passed (8)
+      Tests  25 failed | 129 passed (154)

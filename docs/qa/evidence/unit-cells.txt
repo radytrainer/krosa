@@ -1,0 +1,71 @@
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "ABS" is absent 2ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "abs" is absent 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > " Abs " is absent 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > 85 is the mark 85 1ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > 0 is the mark 0 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > 100 is the mark 100 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > 99.999 is the mark 99.999 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > " 85 " is the mark 85 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "85.5" is the mark 85.5 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > 0 is the mark 0 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "" is blank, never 0 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "   " is blank, never 0 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > " " is blank, never 0 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > null is blank, never 0 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > undefined is blank, never 0 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > 100.0001 is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > 100.001 is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > -0.001 is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > -5 is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > 120 is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "120" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "-5" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "abc" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "85%" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "8,5" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "1e2" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "1E2" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "0x10" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "+85" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > ".5" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "5." is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "Infinity" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "NaN" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "#REF!" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "#N/A" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "#DIV/0!" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > true is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > false is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "TRUE" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "EX" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "AB" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "A B S" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "ABS." is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "85 90" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "٨٥" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "８５" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "2026-10-31" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > 85.1234 is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > 1e+21 is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > 1e-7 is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > null is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > null is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > "85​" is rejected 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-07 odd cell values > a formula result with float noise is rejected rather than rounded (recorded behavior) 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "PNC2027-001" normalizes to PNC2027-001 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "pnc2027-001" normalizes to PNC2027-001 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "  PNC2027-001  " normalizes to PNC2027-001 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > " PNC2027-001 " normalizes to PNC2027-001 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "​PNC2027-001" normalizes to PNC2027-001 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "PNC2027-001﻿" normalizes to PNC2027-001 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "PNC 2027-001" is refused 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "PNC2027 001" is refused 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "PNC2027/001" is refused 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "-PNC" is refused 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" is refused 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "PNC'; DROP TABLE users;--" is refused 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "<script>" is refused 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > "ＰＮＣ２０２７" is refused 0ms
+ ✓ src/template/qa-cells.spec.ts > QA D-08 student IDs > blank is empty, not an error 0ms
+ Test Files  1 passed (1)
+      Tests  69 passed (69)
