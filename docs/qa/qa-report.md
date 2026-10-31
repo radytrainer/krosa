@@ -499,11 +499,15 @@ Also not built: creating or editing students, and a dead-letter queue.
 
 ## 6. Re-running the tests
 
-The test files are **not in the commit that adds this report**. They sit in `apps/api/test/qa/`,
-`apps/worker/test/qa/`, `e2e/qa/`, `packages/shared/src/grading/qa-grading.spec.ts` and
-`packages/sheets/src/template/qa-cells.spec.ts`. `pnpm test:integration` picks them up automatically and
-fails while the defects are open, so committing them turns CI red until the fixes land. Saved results
-are in [evidence/](evidence/README.md).
+The test files are committed in `apps/api/test/qa/`, `apps/worker/test/qa/`, `e2e/qa/`,
+`packages/shared/src/grading/qa-grading.spec.ts` and `packages/sheets/src/template/qa-cells.spec.ts`.
+
+**`pnpm test:integration` picks them up automatically and fails while the defects are open, so CI's
+integration job is red until the fixes land.** That is expected: each failure belongs to a defect in
+section 2. Unit tests, lint and typecheck are not affected. `pnpm test:e2e` is not affected either,
+because it runs only `e2e/tests`. The worker suite's D-20 tests need Docker containers with the names
+below, so they also fail in CI, whatever the fixes, until those names are made configurable. Saved
+results are in [evidence/](evidence/README.md).
 
 Run from a checkout whose `TEST_*` settings point at a test database, after `pnpm build`:
 
