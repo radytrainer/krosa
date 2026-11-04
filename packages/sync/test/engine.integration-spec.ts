@@ -1,4 +1,4 @@
-import { createPrismaClient, type PrismaClient } from '@ssrs/database';
+import { applyTermDefaults, createPrismaClient, type PrismaClient } from '@ssrs/database';
 import { assertTestDatabaseUrl, truncateAllTables } from '@ssrs/database/testing';
 import {
   InMemorySheetsReader,
@@ -27,8 +27,9 @@ const CRITERIA = 36;
 const ENROLLMENTS = 12;
 const MARKS = 74;
 
+/** A generation with its five terms and their default programs and classes, as the API makes it. */
 async function createGeneration(code: string) {
-  return prisma.generation.create({
+  const generation = await prisma.generation.create({
     data: {
       code,
       name: `Generation ${code}`,
@@ -37,6 +38,8 @@ async function createGeneration(code: string) {
     },
     include: { terms: { orderBy: { number: 'asc' } } },
   });
+  await applyTermDefaults(prisma, generation.id);
+  return generation;
 }
 
 async function newJob(parentId?: string) {
@@ -107,16 +110,24 @@ describe('first import', () => {
       status: 'SUCCEEDED',
       phase: 'DONE',
       errorCount: 0,
-      warningCount: 1, // BCU row 3 has first and last name swapped
+      // BCU's swapped first and last name is the same name now (no warning). PNC2027-003 takes
+      // every subject (one program) but is missing from ENG, BCU and MsOffice.
+      warningCount: 3,
       progressCurrent: 6,
       progressTotal: 6,
     });
+    expect(job.errors.map((e) => `${e.code} ${e.sheetTab} ${e.studentCode}`).toSorted()).toEqual([
+      'STUDENT_MISSING_FROM_TAB BCU PNC2027-003',
+      'STUDENT_MISSING_FROM_TAB ENG PNC2027-003',
+      'STUDENT_MISSING_FROM_TAB MsOffice PNC2027-003',
+    ]);
     expect(counts).toEqual({
       students: { created: 3, updated: 0, unchanged: 0, rejected: 0 },
+      termEnrollments: { created: 3, classChanged: 0, unchanged: 0, blocked: 0 },
       offerings: { created: 0, updated: 0, unchanged: 5, rejected: 0, failed: 0 },
       criteria: { created: 0, updated: 0, unchanged: CRITERIA },
       schemes: { published: 5, drafted: 0, unchanged: 0, skipped: 0 },
-      enrollments: { created: ENROLLMENTS, unchanged: 0, missingInSource: 0 },
+      enrollments: { created: ENROLLMENTS, unchanged: 0, missingInSource: 0, commentsUpdated: 0 },
       scores: { created: MARKS, updated: 0, unchanged: 0, rejected: 0, clearedInSource: 0 },
     });
 
@@ -192,6 +203,92 @@ describe('first import', () => {
   });
 });
 
+const plComment = async (studentCode = S1) =>
+  (
+    await prisma.enrollment.findFirstOrThrow({
+      where: { student: { studentCode }, offering: { externalKey: 'T1-PL' } },
+    })
+  ).teacherComment;
+
+const allScores = () =>
+  prisma.assessmentScore.findMany({
+    select: { id: true, status: true, mark: true, updatedAt: true },
+    orderBy: { id: 'asc' },
+  });
+
+describe('teacher comments', () => {
+  const KHMER = 'ពូកែណាស់ សូមបន្ត 👏🏽';
+
+  it('stores Khmer text exactly and counts a changed comment', async () => {
+    await sync();
+    edit((tabs) => (tabs['PL']![1]![10] = KHMER));
+    const { counts } = await sync();
+    expect(counts.enrollments).toEqual({
+      created: 0,
+      unchanged: ENROLLMENTS,
+      missingInSource: 0,
+      commentsUpdated: 1,
+    });
+    expect(await plComment()).toBe(KHMER);
+  });
+
+  it('clears the stored comment when the cell is blank or only whitespace', async () => {
+    await sync();
+    edit((tabs) => (tabs['PL']![1]![10] = '   '));
+    const { counts } = await sync();
+    expect(counts.enrollments.commentsUpdated).toBe(1);
+    expect(await plComment()).toBeNull();
+  });
+
+  it('keeps the old comment when the new one is too long, and still imports the marks', async () => {
+    await sync();
+    edit((tabs) => {
+      tabs['PL']![1]![10] = 'x'.repeat(4001);
+      tabs['PL']![1]![5] = 55; // Quiz mark changes in the same row
+    });
+    const { job, counts } = await sync();
+    expect(await plComment()).toBe('Works well in a team.');
+    expect(counts.enrollments.commentsUpdated).toBe(0);
+    expect(counts.scores.updated).toBe(1);
+    expect(job.errors).toContainEqual(
+      expect.objectContaining({
+        severity: 'WARNING',
+        code: 'COMMENT_TOO_LONG',
+        sheetTab: 'PL',
+        rowNumber: 2,
+        studentCode: S1,
+      }),
+    );
+  });
+
+  it('re-syncing unchanged comments writes nothing', async () => {
+    edit((tabs) => (tabs['PL']![1]![10] = KHMER));
+    await sync();
+    const before = await prisma.enrollment.findMany({ orderBy: { id: 'asc' } });
+    const { counts } = await sync();
+    expect(counts.enrollments.commentsUpdated).toBe(0);
+    // Every sync stamps lastSeenSyncJobId, so updatedAt moves; the stored values must not.
+    const after = await prisma.enrollment.findMany({ orderBy: { id: 'asc' } });
+    const values = (rows: typeof before) =>
+      rows.map((e) => [e.id, e.teacherComment, e.sheetTotal?.toString() ?? null]);
+    expect(values(after)).toEqual(values(before));
+    expect(after.filter((e) => e.teacherComment === KHMER)).toHaveLength(1);
+  });
+
+  it('never changes marks: a comment-only change leaves every score untouched', async () => {
+    await sync();
+    const before = await allScores();
+    edit((tabs) => {
+      tabs['PL']![1]![10] = KHMER;
+      tabs['PL']![2]![10] = 'New comment for S2';
+    });
+    const { counts } = await sync();
+    expect(counts.scores).toMatchObject({ created: 0, updated: 0, unchanged: MARKS });
+    expect(await allScores()).toEqual(before);
+    expect(await plComment(S2)).toBe('New comment for S2');
+  });
+});
+
 describe('repeat synchronization', () => {
   it('is idempotent: a second run with unchanged data changes nothing', async () => {
     await sync();
@@ -199,10 +296,11 @@ describe('repeat synchronization', () => {
     expect(job.status).toBe('SUCCEEDED');
     expect(counts).toEqual({
       students: { created: 0, updated: 0, unchanged: 3, rejected: 0 },
+      termEnrollments: { created: 0, classChanged: 0, unchanged: 3, blocked: 0 },
       offerings: { created: 0, updated: 0, unchanged: 5, rejected: 0, failed: 0 },
       criteria: { created: 0, updated: 0, unchanged: CRITERIA },
       schemes: { published: 0, drafted: 0, unchanged: 5, skipped: 0 },
-      enrollments: { created: 0, unchanged: ENROLLMENTS, missingInSource: 0 },
+      enrollments: { created: 0, unchanged: ENROLLMENTS, missingInSource: 0, commentsUpdated: 0 },
       scores: { created: 0, updated: 0, unchanged: MARKS, rejected: 0, clearedInSource: 0 },
     });
     expect(await prisma.student.count()).toBe(3);
@@ -235,13 +333,15 @@ describe('repeat synchronization', () => {
     expect(absent!.mark.toString()).toBe('0');
   });
 
-  it('keeps a recorded mark when its cell is cleared, with a warning', async () => {
+  it('treats a cleared cell as not entered, keeps the value in history, and warns', async () => {
     await sync();
     edit((tabs) => (tabs['Logic']![1]![9] = null)); // S1 MIDTERM cleared
     const { job, counts } = await sync();
     expect(job.status).toBe('SUCCEEDED');
     expect(counts.scores.clearedInSource).toBe(1);
-    expect((await scoreOf(S1, 'T1-LOGIC', 'MIDTERM'))!.mark.toString()).toBe('60');
+    const score = await scoreOf(S1, 'T1-LOGIC', 'MIDTERM');
+    expect(score).toMatchObject({ status: 'CLEARED' });
+    expect(score!.mark.toString()).toBe('60');
     expect(job.errors).toContainEqual(
       expect.objectContaining({
         code: 'MARK_CLEARED_IN_SOURCE',
@@ -574,7 +674,7 @@ describe('run lease', () => {
         leaseExpiresAt: new Date(Date.now() + 60_000),
       },
     });
-    expect(await runSourceSync({ prisma, reader }, job.id, ONCE)).toEqual({ kind: 'busy' });
+    expect(await runSourceSync({ prisma, reader }, job.id, ONCE)).toMatchObject({ kind: 'busy' });
     expect(await prisma.student.count()).toBe(0);
   });
 

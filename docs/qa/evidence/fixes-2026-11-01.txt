@@ -1,0 +1,23 @@
+Re-test of QA-018 to QA-022 after their fixes, 2026-11-01. Same local QA stack as manual-cases.txt.
+
+Build: pass. Lint: pass. Typecheck: pass.
+pnpm test: 338 passed.
+pnpm test:integration: database 25, sync 31, API 279 passed, including the new SAME_SHEET check test.
+  Worker: 14 passed, 2 skipped, 1 failed: "processes a queued job end to end through BullMQ".
+  All 74 scores were saved, and the test read the queue state as 'active' a moment before 'completed'.
+  No worker code changed. The file was re-run 3 times: 3 of 3 passed each time.
+QA UI: 22 of 22. e2e: 12 of 12.
+
+Five cases, Microsoft Edge:
+  TC-126 passed. Check sheet refuses the active sheet. Local file stood in for the Google Sheet.
+  TC-154 passed. Click outside closed it: false. Esc closed it: false.
+  TC-156 passed. The empty Students page names the ALL tab.
+  TC-191 passed. Real API process stopped and restarted. Shows "The service is unreachable. Please try again."
+  TC-193 passed 10 of 10 repeats, with 12 fast Tab then 12 fast Shift+Tab presses.
+  QA-021 Fast Tab stays inside every kind of popup: passed 5 of 5 repeats (alert dialog, dialog, phone menu).
+
+QA-021 cause, measured on the build before the fix, 24 Tab presses in New generation:
+  No wait between keys: focus reached the page behind in 6 of 6 runs.
+  80 ms between keys: focus stayed inside in 6 of 6 runs.
+
+Not re-run: the other 191 cases, worker test/qa, session suite and live-check.mjs.

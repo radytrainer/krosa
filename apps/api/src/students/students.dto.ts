@@ -9,9 +9,14 @@ import {
   IsString,
   IsUUID,
   Length,
+  Matches,
 } from 'class-validator';
 import { PaginationQueryDto } from '../common/pagination.js';
 import { Trim } from '../common/validation.js';
+
+/** The filter becomes a case-insensitive LIKE, where these three characters are special. */
+const CLASS_NAME = /^[^%_\\]+$/;
+const CLASS_NAME_MESSAGE = 'className must not contain %, _ or a backslash';
 
 export class ListStudentsQueryDto extends PaginationQueryDto {
   @ApiPropertyOptional()
@@ -24,7 +29,22 @@ export class ListStudentsQueryDto extends PaginationQueryDto {
   @Trim()
   @IsString()
   @Length(1, 60)
+  @Matches(CLASS_NAME, { message: CLASS_NAME_MESSAGE })
   className?: string;
+
+  @ApiPropertyOptional({
+    description: 'Students enrolled in this term (class then means this term)',
+  })
+  @IsOptional()
+  @IsUUID()
+  termId?: string;
+
+  @ApiPropertyOptional({ example: 'WEP', description: 'Program code, with or without a term' })
+  @IsOptional()
+  @Trim()
+  @IsString()
+  @Length(2, 16)
+  program?: string;
 
   @ApiPropertyOptional({ enum: ['PENDING', 'ACTIVE', 'DISABLED'] })
   @IsOptional()
@@ -64,6 +84,7 @@ export class IssueCredentialsDto {
   @Trim()
   @IsString()
   @Length(1, 60)
+  @Matches(CLASS_NAME, { message: CLASS_NAME_MESSAGE })
   className?: string;
 
   @ApiPropertyOptional({

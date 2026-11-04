@@ -7,6 +7,7 @@ import { AuthGuard } from './guards/auth.guard.js';
 import { CsrfGuard } from './guards/csrf.guard.js';
 import { MustChangePasswordGuard } from './guards/must-change-password.guard.js';
 import { RolesGuard } from './guards/roles.guard.js';
+import { LoginLockout } from './login-lockout.js';
 import { RateLimiter } from './login-rate-limiter.js';
 import { PasswordService } from './password.service.js';
 import { SessionService } from './session.service.js';
@@ -26,6 +27,7 @@ import { TokenService } from './token.service.js';
     SessionService,
     TokenService,
     RateLimiter,
+    LoginLockout,
     { provide: APP_GUARD, useClass: IpThrottleGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: UserThrottleGuard },
@@ -33,6 +35,6 @@ import { TokenService } from './token.service.js';
     { provide: APP_GUARD, useClass: MustChangePasswordGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
-  exports: [PasswordService, SessionService, TokenService, RateLimiter],
+  exports: [PasswordService, SessionService, TokenService, RateLimiter, LoginLockout],
 })
 export class AuthModule {}

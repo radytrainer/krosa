@@ -1,6 +1,6 @@
 # Security Design
 
-Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+Last verified: 2026-11-01, commit 66888b7 plus uncommitted working tree.
 
 ## 1. Threat model (summary)
 
@@ -24,13 +24,16 @@ Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
   Argon2 verification against a dummy hash equalizes timing, and the response is identical to a
   wrong password (`INVALID_CREDENTIALS`). Status-specific errors (`ACCOUNT_DISABLED`,
   `ACCOUNT_PENDING`, `TEMPORARY_PASSWORD_EXPIRED`) are only returned after the password has been
-  verified, so they reveal nothing to someone guessing passwords. `ACCOUNT_LOCKED` is the exception:
-  it is returned before verification and never for unknown accounts, so it shows that an account
-  exists.
-- **Lockout**: the 5th consecutive failure locks the account for 1 min, and each further failure doubles
-  the lock (2, 4, 8 min), capped at 15 min. The counter is incremented atomically and reset on success
-  or password change. A locked account returns 429 `ACCOUNT_LOCKED` with `Retry-After`. Admins unlock
-  a student account by resetting its password. Admin account locks expire on their own.
+  verified, so they reveal nothing to someone guessing passwords. A lockout looks the same for real
+  and made-up identifiers.
+- **Lockout**: failures count per identifier and client IP, in Redis (`LoginLockout`), whether or not
+  the account exists. The 5th consecutive failure locks that pair for 1 min, and each further failure
+  doubles the lock (2, 4, 8 min), capped at 15 min. It returns the same 429 `RATE_LIMITED` with
+  `Retry-After` as every other sign-in limit. A correct password clears its own address. A password
+  change or an admin reset clears all addresses. Someone guessing from one address therefore does not
+  lock the student out on another; people sharing one address (school Wi-Fi) can still block each
+  other. A locked address does not use up the 5-per-minute identifier limit. While Redis is down the
+  account's `locked_until` in PostgreSQL is enforced instead, across all addresses.
 - **Access token**: JWT HS256, `JWT_ACCESS_SECRET` (≥ 32 random bytes), 15 min, claims
   `sub, role, sid, mcp (mustChangePassword)`, `iss`/`aud` validated.
 - **Refresh token**: 32 random bytes base64url, cookie only, SHA-256 hash stored. Rotation on every
@@ -38,9 +41,10 @@ Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
   detection). Absolute session lifetime 7 days. No `JWT_REFRESH_SECRET` is needed because refresh
   tokens are opaque, not JWTs.
 - **Revocation**: logout / password change / disable / reuse detection set `auth_sessions.revoked_at`
-  and write `ssrs:v1:auth:revoked:{sid}` to Redis with TTL = access TTL + 60 s. The JWT guard rejects
-  revoked `sid`s. If Redis is unavailable the guard falls back to a DB lookup (fail closed, not open).
-  See §13.
+  and write `ssrs:v1:auth:revoked:{sid}` to Redis with TTL = access TTL + 60 s. PostgreSQL decides: on
+  a Redis miss the guard reads `revoked_at`, `expires_at` and `users.status`, treats a missing row as
+  revoked, and caches a valid answer for 5 s. Losing Redis or its data never lets a revoked session
+  through. If the denylist write fails, a token already cached as valid can last up to 5 s.
 - **Forced password change**: `MustChangePasswordGuard` allows only routes marked
   `@AllowWhenPasswordChangeRequired` (`/auth/me`, `/auth/change-password`; login, refresh and logout are
   public) while `mcp` is true. A successful change re-issues the access cookie with `mcp=false` and
@@ -103,16 +107,16 @@ needs them for checks, tab detection and previews.
 
 Redis fixed-window counters (`RateLimiter`), keyed by a hash of the subject so raw usernames and IPs
 never sit in Redis. If Redis is unavailable every limiter fails **open**; the database-backed account
-lockout still protects accounts. Responses: 429 `RATE_LIMITED` with `Retry-After`.
+lockout (§2) still protects accounts. Responses: 429 `RATE_LIMITED` with `Retry-After`.
 
-| Scope                                        | Limit                               | Where                                                       |
-| -------------------------------------------- | ----------------------------------- | ----------------------------------------------------------- |
-| Every request, per client IP                 | 300/min (`RATE_LIMIT_PER_MINUTE`)   | `IpThrottleGuard`, before authentication; `/health*` exempt |
-| `/auth/login`                                | 10/min per IP, 5/min per identifier | `AuthService`                                               |
-| `/auth/refresh`                              | 30/min per IP                       | `@Throttle` (IP guard)                                      |
-| `/auth/change-password`                      | 5/min per user                      | `AuthService`                                               |
-| Credential issuance + resets (shared budget) | 20/min per admin                    | `@Throttle` (user guard, after authentication)              |
-| `POST /admin/sync`                           | 10/min per admin                    | `SyncService`                                               |
+| Scope                                                      | Limit                               | Where                                                       |
+| ---------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------- |
+| Every request, per client IP                               | 300/min (`RATE_LIMIT_PER_MINUTE`)   | `IpThrottleGuard`, before authentication; `/health*` exempt |
+| `/auth/login`                                              | 10/min per IP, 5/min per identifier | `AuthService`                                               |
+| `/auth/refresh`                                            | 30/min per IP                       | `@Throttle` (IP guard)                                      |
+| `/auth/change-password`                                    | 5/min per user                      | `AuthService`                                               |
+| Credential issuance + resets (shared budget)               | 20/min per admin                    | `@Throttle` (user guard, after authentication)              |
+| `POST /admin/sync` + `POST /admin/sync/:id/retry` (shared) | 10/min per admin                    | `SyncService`                                               |
 
 The plan named `@nestjs/throttler`; the project's own limiter was extended instead (one mechanism,
 same fail-open behaviour, no extra storage adapter). Route limits are declared with
@@ -186,16 +190,15 @@ See §13.
 The rules above stay as written. The code does not meet them yet. Review:
 [doc-review.md](doc-review.md).
 
-| Rule                                                                         | What the code does                                                                                                                     | Evidence                                                                            | Status             |
-| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------ |
-| §2 revocation fails closed                                                   | A failed denylist write is only logged, and a Redis miss does not check `revoked_at`. A revoked access token can work until it expires | `apps/api/src/auth/session.service.ts:213-217,241-245`                              | Fix before go-live |
-| [Database design](database-design.md): audit role has INSERT and SELECT only | Production connects as the bootstrap role. No GRANT exists. Only a trigger protects the table                                          | `docker-compose.prod.yml:13`                                                        | Fix before go-live |
-| §9 backups 30 daily + 12 monthly                                             | 14 daily, no monthly tier                                                                                                              | `docker/backup/backup.sh:12,27`; `docker-compose.prod.yml:148`                      | Fix before go-live |
-| §12 admin CLI revokes all sessions                                           | Does not exist                                                                                                                         | `apps/api/src/cli/`                                                                 | Fix before go-live |
-| §1, §8 audit metadata allowlist                                              | Key denylist. Unlisted keys pass, including raw `changes: dto`                                                                         | `apps/api/src/audit/audit.service.ts:17,33`                                         | Open               |
-| §4 student services accept `AuthUser`                                        | They take `userId: string`, always from the session. No IDOR path was found                                                            | `apps/api/src/results/results.service.ts:103,134,138,147,163`                       | Open               |
-| §5 exactly one Google mechanism                                              | None is also accepted. The app then reports `GOOGLE_NOT_CONFIGURED`                                                                    | `apps/api/src/config/env.ts:59-60`; `apps/worker/src/config/env.ts:27-29`           | Open               |
-| §8 audit kept 3 years, configurable                                          | No setting and no purge job                                                                                                            | No match in code                                                                    | Open               |
-| §9 sync errors kept 1 year                                                   | No purge                                                                                                                               | `packages/sync/src/engine.ts:221`                                                   | Open               |
-| §9 Redis dangerous commands disabled                                         | `requirepass` only                                                                                                                     | `docker-compose.prod.yml:118-126`                                                   | Open               |
-| §12 rotation: users silently refresh                                         | The CSRF key derives from the same secret, so `/auth/refresh` fails with 403 `CSRF_INVALID` and users sign in again                    | `apps/api/src/auth/token.service.ts:31`; `apps/api/src/auth/session.service.ts:111` | Open               |
+| Rule                                                                         | What the code does                                                                                                  | Evidence                                                                            | Status             |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------ |
+| [Database design](database-design.md): audit role has INSERT and SELECT only | Production connects as the bootstrap role. No GRANT exists. Only a trigger protects the table                       | `docker-compose.prod.yml:13`                                                        | Fix before go-live |
+| §9 backups 30 daily + 12 monthly                                             | 14 daily, no monthly tier                                                                                           | `docker/backup/backup.sh:12,27`; `docker-compose.prod.yml:148`                      | Fix before go-live |
+| §12 admin CLI revokes all sessions                                           | Does not exist                                                                                                      | `apps/api/src/cli/`                                                                 | Fix before go-live |
+| §1, §8 audit metadata allowlist                                              | Key denylist. Unlisted keys pass, including raw `changes: dto`                                                      | `apps/api/src/audit/audit.service.ts:17,33`                                         | Open               |
+| §4 student services accept `AuthUser`                                        | They take `userId: string`, always from the session. No IDOR path was found                                         | `apps/api/src/results/results.service.ts:103,134,138,147,163`                       | Open               |
+| §5 exactly one Google mechanism                                              | None is also accepted. The app then reports `GOOGLE_NOT_CONFIGURED`                                                 | `apps/api/src/config/env.ts:59-60`; `apps/worker/src/config/env.ts:27-29`           | Open               |
+| §8 audit kept 3 years, configurable                                          | No setting and no purge job                                                                                         | No match in code                                                                    | Open               |
+| §9 sync errors kept 1 year                                                   | No purge                                                                                                            | `packages/sync/src/engine.ts:221`                                                   | Open               |
+| §9 Redis dangerous commands disabled                                         | `requirepass` only                                                                                                  | `docker-compose.prod.yml:118-126`                                                   | Open               |
+| §12 rotation: users silently refresh                                         | The CSRF key derives from the same secret, so `/auth/refresh` fails with 403 `CSRF_INVALID` and users sign in again | `apps/api/src/auth/token.service.ts:31`; `apps/api/src/auth/session.service.ts:111` | Open               |

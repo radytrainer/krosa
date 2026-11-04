@@ -32,6 +32,8 @@ export type IssueCode =
   | 'DUPLICATE_STUDENT'
   | 'UNKNOWN_STUDENT'
   | 'DUPLICATE_ROW'
+  | 'IDENTITY_MISMATCH'
+  | 'IDENTITY_MISMATCH_TAB'
   // cell
   | 'INVALID_MARK'
   // warnings
@@ -42,7 +44,8 @@ export type IssueCode =
   | 'GROUP_WEIGHT_MISMATCH'
   | 'WEIGHTS_DISAGREE_WITH_SHEET_TOTAL'
   | 'UNRECOGNIZED_COLUMN'
-  | 'UNMAPPED_TAB';
+  | 'UNMAPPED_TAB'
+  | 'COMMENT_TOO_LONG';
 
 export interface TemplateIssue {
   severity: IssueSeverity;

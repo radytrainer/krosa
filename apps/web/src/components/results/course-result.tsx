@@ -1,6 +1,13 @@
 'use client';
 
-import { ArrowRight, ChevronDown, EyeOff, TriangleAlert, UserMinus } from 'lucide-react';
+import {
+  ArrowRight,
+  ChevronDown,
+  EyeOff,
+  MessageSquareText,
+  TriangleAlert,
+  UserMinus,
+} from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import { CourseStatusPill, StatusPill } from '@/components/app/status';
@@ -41,6 +48,19 @@ function Contribution({ c }: { c: CriterionResultView }) {
     <span className="text-muted-foreground">—</span>
   ) : (
     <span className="tabular-nums">{c.contribution}</span>
+  );
+}
+
+/** The teacher's comment. Rendered as a text node, so markup in the sheet shows as plain text. */
+function TeacherComment({ text }: { text: string }) {
+  return (
+    <figure className="rounded-lg bg-muted/50 p-3 text-sm">
+      <figcaption className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <MessageSquareText className="size-4" aria-hidden />
+        Teacher&apos;s comment
+      </figcaption>
+      <blockquote className="break-words whitespace-pre-wrap">{text}</blockquote>
+    </figure>
   );
 }
 
@@ -124,7 +144,9 @@ export function CourseResult({
               ) : null}
               {showAdmin && course.admin?.enrollmentStatus === 'WITHDRAWN' ? (
                 <StatusPill tone="neutral" icon={<UserMinus aria-hidden />}>
-                  Withdrawn
+                  {course.admin.endedReason === 'PROGRAM_SWITCH'
+                    ? 'Ended by program switch (marks kept)'
+                    : 'Withdrawn'}
                 </StatusPill>
               ) : null}
               {showAdmin && course.admin && !course.admin.presentInSource ? (
@@ -228,6 +250,7 @@ export function CourseResult({
               </ul>
             </>
           )}
+          {course.teacherComment ? <TeacherComment text={course.teacherComment} /> : null}
           {href ? (
             <Link
               href={href}

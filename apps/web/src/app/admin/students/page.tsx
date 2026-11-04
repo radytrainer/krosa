@@ -41,7 +41,7 @@ import { apiDownload, errorCode, saveBlob } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
 import { json, qs, useApi } from '@/lib/query';
 import { useQueryClient } from '@tanstack/react-query';
-import type { Generation, Paginated, Student } from '@/lib/types';
+import type { Generation, Paginated, Program, Student, Term } from '@/lib/types';
 
 const ISSUE_ERRORS: Record<string, string> = {
   TOO_MANY_STUDENTS: 'At most 500 students per file. Narrow the selection (for example by class).',
@@ -206,11 +206,28 @@ function IssueCredentialsDialog({
 }
 
 function StudentsList() {
-  const { values, page, set } = useUrlState(['generationId', 'className', 'status', 'q'] as const);
+  const { values, page, set } = useUrlState([
+    'generationId',
+    'termId',
+    'program',
+    'className',
+    'status',
+    'q',
+  ] as const);
   const [q, setQ] = useState(values.q);
   const [className, setClassName] = useState(values.className);
   const [selected, setSelected] = useState<Map<string, Student>>(new Map());
   const generations = useApi<Paginated<Generation>>('/admin/generations?pageSize=100');
+  const terms = useApi<Term[]>(
+    values.generationId ? `/admin/generations/${values.generationId}/terms` : null,
+  );
+  const programs = useApi<Program[]>('/admin/programs');
+  /** With a term chosen, each row shows that term's program and class. */
+  const shown = (s: Student) => {
+    const t = values.termId ? s.terms.find((x) => x.termId === values.termId) : undefined;
+    if (values.termId) return t ? `${t.program.code} ${t.className}` : 'not enrolled';
+    return s.className ? `${s.program?.code ?? ''} ${s.className}`.trim() : 'no class';
+  };
   const list = useApi<Paginated<Student>>(
     `/admin/students${qs({ ...values, page, pageSize: 25 })}`,
     {
@@ -249,7 +266,7 @@ function StudentsList() {
           />
         }
       />
-      <div className="mb-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,16rem)_12rem_10rem_10rem]">
+      <div className="mb-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,16rem)_10rem_8rem_8rem_8rem_10rem]">
         <div className="relative">
           <Search
             className="pointer-events-none absolute top-2 left-2.5 size-4 text-muted-foreground"
@@ -267,12 +284,37 @@ function StudentsList() {
         <NativeSelect
           aria-label="Generation"
           value={values.generationId}
-          onChange={(e) => set({ generationId: e.target.value })}
+          onChange={(e) => set({ generationId: e.target.value, termId: '' })}
         >
           <option value="">All generations</option>
           {generations.data?.data.map((g) => (
             <option key={g.id} value={g.id}>
               {g.code}
+            </option>
+          ))}
+        </NativeSelect>
+        <NativeSelect
+          aria-label="Term"
+          value={values.termId}
+          disabled={!values.generationId}
+          onChange={(e) => set({ termId: e.target.value })}
+        >
+          <option value="">Latest term</option>
+          {terms.data?.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </NativeSelect>
+        <NativeSelect
+          aria-label="Program"
+          value={values.program}
+          onChange={(e) => set({ program: e.target.value })}
+        >
+          <option value="">All programs</option>
+          {programs.data?.map((p) => (
+            <option key={p.id} value={p.code}>
+              {p.code}
             </option>
           ))}
         </NativeSelect>
@@ -305,7 +347,7 @@ function StudentsList() {
           description={
             Object.values(values).some(Boolean)
               ? 'Try other filters.'
-              : 'Students are imported from the Students tab of a generation’s spreadsheet.'
+              : 'Students are imported from the ALL tab of each term’s workbook.'
           }
         />
       ) : (
@@ -330,7 +372,7 @@ function StudentsList() {
                     />
                   </TableHead>
                   <TableHead>Student</TableHead>
-                  <TableHead className="hidden sm:table-cell">Generation · class</TableHead>
+                  <TableHead className="hidden sm:table-cell">Generation · program class</TableHead>
                   <TableHead>Account</TableHead>
                   <TableHead className="hidden lg:table-cell">Last sign-in</TableHead>
                 </TableRow>
@@ -358,13 +400,13 @@ function StudentsList() {
                     </TableCell>
                     <TableCell className="hidden sm:table-cell">
                       {s.generation.code}
-                      <span className="text-muted-foreground"> · {s.className ?? 'no class'}</span>
+                      <span className="text-muted-foreground"> · {shown(s)}</span>
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
                         <AccountStatusPill status={s.account.status} />
                         {s.account.locked ? (
-                          <span className="text-xs text-destructive">Locked</span>
+                          <span className="text-xs text-destructive">Failed sign-ins</span>
                         ) : null}
                       </div>
                     </TableCell>

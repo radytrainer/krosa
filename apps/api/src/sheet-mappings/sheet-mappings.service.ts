@@ -7,12 +7,19 @@ import {
 } from '@nestjs/common';
 import type { Prisma } from '@ssrs/database';
 import { validateScheme } from '@ssrs/shared';
-import { previewSource, type PreviewSummary } from '@ssrs/sync';
+import {
+  loadTermConfig,
+  previewSource,
+  proposeAudience,
+  termVisibility,
+  type PreviewSummary,
+} from '@ssrs/sync';
 import {
   cleanLabel,
   detectTermWorkbook,
   guessCategory,
   keyFromName,
+  normalizeTitle,
   parseLabelWeight,
   TERM_WORKBOOK_MAX_MARK,
   type CrossCheck,
@@ -24,15 +31,21 @@ import {
 import { AcademicGuardService } from '../academic/academic-guard.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
+import { paginated, skipTake } from '../common/pagination.js';
 import type { RequestMeta } from '../common/request-meta.js';
 import { PrismaService } from '../infra/prisma.service.js';
 import { toHttpError } from '../sheets-sources/sheets-errors.js';
 import { SHEETS_READER } from '../sheets-sources/sheets-reader.provider.js';
 import { DETECT_ISSUE_LIMIT } from '../sheets-sources/sheets-sources.service.js';
-import type { ConfirmMappingDto } from './sheet-mappings.dto.js';
+import type {
+  ConfirmMappingDto,
+  ConfirmPreviewDto,
+  ListPreviewIssuesQueryDto,
+} from './sheet-mappings.dto.js';
 
 const MAPPING_INCLUDE = {
   columns: { orderBy: { columnIndex: 'asc' } },
+  audienceProgram: { select: { code: true } },
 } satisfies Prisma.SheetTabMappingInclude;
 
 type MappingRow = Prisma.SheetTabMappingGetPayload<{ include: typeof MAPPING_INCLUDE }>;
@@ -47,21 +60,41 @@ export interface ColumnMappingView {
   proposedWeight: string | null;
 }
 
+/**
+ * A preview summary as the API returns it. Its issues can run to thousands, so they are listed
+ * page by page by GET .../preview/:previewId/issues; only counts and the first errors are here.
+ */
+export type PreviewSummaryView = Omit<PreviewSummary, 'issues' | 'issueCount'> & {
+  issueCounts: { total: number; errors: number; warnings: number };
+  /** The first error messages, for the "cannot be synced" notice. */
+  firstErrors: string[];
+};
+
 export interface SheetPreviewView {
   id: string;
   createdAt: string;
   confirmedAt: string | null;
-  summary: PreviewSummary;
+  summary: PreviewSummaryView;
+}
+
+/** Errors first, then in the order the sheet was read: the same order on every page. */
+function orderedIssues(issues: readonly TemplateIssue[]): TemplateIssue[] {
+  return [
+    ...issues.filter((i) => i.severity === 'ERROR'),
+    ...issues.filter((i) => i.severity !== 'ERROR'),
+  ];
 }
 
 export interface TabMappingView {
   id: string;
   tabName: string;
-  status: 'DRAFT' | 'CONFIRMED' | 'IGNORED';
+  status: 'DRAFT' | 'CONFIRMED' | 'IGNORED' | 'REMOVED';
   version: number;
   headerRow: number;
   offeringId: string | null;
   confirmedAt: string | null;
+  /** Who takes the subject: SHARED, a program code, or null (the sync guesses it). */
+  audience: string | null;
   columns: ColumnMappingView[];
   /** Pending sheets: the same-named tab of the active sheet, offered as a starting point. */
   carriedFrom: { subject: string; headersMatch: boolean } | null;
@@ -104,6 +137,7 @@ function toView(m: MappingRow, carried: TabMappingView['carriedFrom'] = null): T
     headerRow: m.headerRow,
     offeringId: m.offeringId,
     confirmedAt: m.confirmedAt?.toISOString() ?? null,
+    audience: m.audience === 'PROGRAM' ? (m.audienceProgram?.code ?? null) : m.audience,
     columns: m.columns.map((c) => ({
       columnIndex: c.columnIndex,
       headerLabel: c.headerLabel,
@@ -139,11 +173,22 @@ function toPreviewView(p: {
   confirmedAt: Date | null;
   summary: unknown;
 }): SheetPreviewView {
+  // Previews saved before `issueCount` existed kept at most 200 issues and no count.
+  const { issues = [], issueCount, ...summary } = p.summary as PreviewSummary;
+  const errors = issues.filter((i) => i.severity === 'ERROR');
   return {
     id: p.id,
     createdAt: p.createdAt.toISOString(),
     confirmedAt: p.confirmedAt?.toISOString() ?? null,
-    summary: p.summary as PreviewSummary,
+    summary: {
+      ...summary,
+      issueCounts: {
+        total: issueCount ?? issues.length,
+        errors: errors.length,
+        warnings: issues.length - errors.length,
+      },
+      firstErrors: errors.slice(0, 5).map((i) => i.message),
+    },
   };
 }
 
@@ -200,7 +245,8 @@ export class SheetMappingsService {
 
   /**
    * Locks in a tab: creates or reuses the subject, its term offering and the assessment columns.
-   * The weights given here are what the next sync publishes.
+   * The weights given here are what the next sync publishes. On a pending sheet only the mapping
+   * is written: live subjects stay as they are until the sync that promotes the sheet.
    */
   async confirm(
     sourceId: string,
@@ -238,64 +284,47 @@ export class SheetMappingsService {
     if (firstIssue) throw fail(firstIssue.code, firstIssue.message);
 
     const term = await this.prisma.client.term.findUniqueOrThrow({ where: { id: source.termId } });
+    const audience = dto.audience ? await this.audienceFor(term.id, dto.audience) : undefined;
     const subjectName = cleanLabel(dto.subjectName);
+    const reviewing = source.status === 'PENDING';
     const saved = await this.prisma.client.$transaction(async (tx) => {
-      const alias = await tx.courseAlias.findFirst({
-        where: { alias: { in: [cleanLabel(tab.tabName), subjectName] } },
-      });
-      const code = keyFromName(subjectName);
-      const course = alias
-        ? await tx.course.findUniqueOrThrow({ where: { id: alias.courseId } })
-        : await tx.course.upsert({
-            where: { code },
-            create: { code, name: subjectName },
-            update: {},
-          });
-      await tx.courseAlias.createMany({
-        data: [...new Set([cleanLabel(tab.tabName), subjectName])].map((name) => ({
-          alias: name,
-          courseId: course.id,
-        })),
-        skipDuplicates: true,
-      });
-
-      const courseKey = `T${term.number}-${course.code}`;
-      const current = await tx.courseOffering.findUnique({
-        where: { termId_courseId: { termId: term.id, courseId: course.id } },
-      });
-      const offering = current
-        ? await tx.courseOffering.update({
-            where: { id: current.id },
-            data: { title: subjectName, sourceId, sheetTab: tab.tabName },
-          })
-        : await tx.courseOffering.create({
-            data: {
-              termId: term.id,
-              generationId: source.generationId,
-              courseId: course.id,
-              externalKey: courseKey,
-              title: subjectName,
-              sourceId,
-              sheetTab: tab.tabName,
-            },
-          });
+      const offeringId = reviewing
+        ? await this.existingOffering(tx, tab, term.id, subjectName)
+        : await this.liveOffering(tx, tab, source, term, subjectName);
       const sharing = await tx.sheetTabMapping.findFirst({
-        where: { sourceId, offeringId: offering.id, id: { not: tab.id } },
+        where: {
+          sourceId,
+          id: { not: tab.id },
+          OR: [
+            ...(offeringId ? [{ offeringId }] : []),
+            {
+              status: 'CONFIRMED' as const,
+              proposedTitle: { equals: subjectName, mode: 'insensitive' as const },
+            },
+          ],
+        },
       });
-      if (sharing) {
+      // A rename: the subject's old tab left the sheet, so this tab takes over from it.
+      if (sharing && !reviewing && (await this.tabGone(source.spreadsheetId, sharing))) {
+        await tx.sheetTabMapping.update({
+          where: { id: sharing.id },
+          data: { status: 'REMOVED', offeringId: null },
+        });
+      } else if (sharing) {
         throw new ConflictException({
           code: 'SUBJECT_ALREADY_MAPPED',
           message: `Tab "${sharing.tabName}" is already mapped to ${subjectName}.`,
         });
       }
 
-      const existing = await tx.assessmentCriterion.findMany({
-        where: { offeringId: offering.id },
-      });
+      const existing = offeringId
+        ? await tx.assessmentCriterion.findMany({ where: { offeringId } })
+        : [];
       const byId = new Map(existing.map((c) => [c.id, c]));
       const byKey = new Map(existing.map((c) => [c.key.toUpperCase(), c]));
       const used = new Set<string>();
-      const criterionIds = new Map<number, string>();
+      const criterionIds = new Map<number, string | null>();
+      const criterionKeys = new Map<number, string>();
       for (const [order, column] of criteria.entries()) {
         const name = cleanLabel(column.name ?? '');
         const previous = stored.get(column.columnIndex);
@@ -305,6 +334,11 @@ export class SheetMappingsService {
         const match =
           (previous?.criterionId ? byId.get(previous.criterionId) : undefined) ?? byKey.get(key);
         used.add(match ? match.key.toUpperCase() : key);
+        if (reviewing) {
+          criterionIds.set(column.columnIndex, match?.id ?? null);
+          criterionKeys.set(column.columnIndex, match?.key ?? key);
+          continue;
+        }
         const group = previous?.groupLabel ? parseLabelWeight(previous.groupLabel).name : null;
         const data = {
           name,
@@ -314,7 +348,7 @@ export class SheetMappingsService {
         const criterion = match
           ? await tx.assessmentCriterion.update({ where: { id: match.id }, data })
           : await tx.assessmentCriterion.create({
-              data: { ...data, offeringId: offering.id, key },
+              data: { ...data, offeringId: offeringId ?? '', key },
             });
         criterionIds.set(column.columnIndex, criterion.id);
       }
@@ -332,6 +366,7 @@ export class SheetMappingsService {
             criterionId: criterionIds.get(column.columnIndex) ?? null,
             proposedName: column.role === 'CRITERION' ? cleanLabel(column.name ?? '') : null,
             proposedWeight: column.role === 'CRITERION' ? column.weight : null,
+            proposedKey: criterionKeys.get(column.columnIndex) ?? null,
           },
         });
       }
@@ -340,7 +375,9 @@ export class SheetMappingsService {
         where: { id: tab.id },
         data: {
           status: 'CONFIRMED',
-          offeringId: offering.id,
+          offeringId,
+          proposedTitle: reviewing ? subjectName : null,
+          ...audience,
           version: { increment: 1 },
           confirmedAt: new Date(),
           confirmedById: actor.userId,
@@ -366,6 +403,105 @@ export class SheetMappingsService {
       return confirmed;
     });
     return toView(saved);
+  }
+
+  /** SHARED or a program of the term, as stored on a tab mapping. */
+  private async audienceFor(
+    termId: string,
+    value: string,
+  ): Promise<{ audience: 'SHARED' | 'PROGRAM'; audienceProgramId: string | null }> {
+    if (value.toUpperCase() === 'SHARED') return { audience: 'SHARED', audienceProgramId: null };
+    const config = await loadTermConfig(this.prisma.client, termId);
+    const programId = config.programNames.get(value.toUpperCase());
+    if (!programId) {
+      throw fail('UNKNOWN_AUDIENCE', `${value} is not a program of Term ${config.termNumber}.`);
+    }
+    // A term with one program (Term 1, General): every subject is shared.
+    if (config.programs.length <= 1) return { audience: 'SHARED', audienceProgramId: null };
+    return { audience: 'PROGRAM', audienceProgramId: programId };
+  }
+
+  /** True only when the workbook was read and has no such tab. A failed read keeps the mapping. */
+  private async tabGone(
+    spreadsheetId: string,
+    tab: { tabName: string; sheetTabId: number | null },
+  ): Promise<boolean> {
+    try {
+      const { tabs } = await this.reader.getMetadata(spreadsheetId);
+      const title = normalizeTitle(tab.tabName);
+      return !tabs.some((t) => t.sheetId === tab.sheetTabId || normalizeTitle(t.title) === title);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Finds the subject a pending sheet's tab will feed, without changing anything. */
+  private async existingOffering(
+    tx: Prisma.TransactionClient,
+    tab: { tabName: string },
+    termId: string,
+    subjectName: string,
+  ): Promise<string | null> {
+    const alias = await tx.courseAlias.findFirst({
+      where: { alias: { in: [cleanLabel(tab.tabName), subjectName] } },
+    });
+    const courseId =
+      alias?.courseId ??
+      (await tx.course.findUnique({ where: { code: keyFromName(subjectName) } }))?.id;
+    if (!courseId) return null;
+    const offering = await tx.courseOffering.findUnique({
+      where: { termId_courseId: { termId, courseId } },
+    });
+    return offering?.id ?? null;
+  }
+
+  /** Creates or updates the subject and its term offering for a tab of a live sheet. */
+  private async liveOffering(
+    tx: Prisma.TransactionClient,
+    tab: { tabName: string },
+    source: { id: string; generationId: string },
+    term: { id: string; number: number },
+    subjectName: string,
+  ): Promise<string> {
+    const alias = await tx.courseAlias.findFirst({
+      where: { alias: { in: [cleanLabel(tab.tabName), subjectName] } },
+    });
+    const code = keyFromName(subjectName);
+    const course = alias
+      ? await tx.course.findUniqueOrThrow({ where: { id: alias.courseId } })
+      : await tx.course.upsert({
+          where: { code },
+          create: { code, name: subjectName },
+          update: {},
+        });
+    await tx.courseAlias.createMany({
+      data: [...new Set([cleanLabel(tab.tabName), subjectName])].map((name) => ({
+        alias: name,
+        courseId: course.id,
+      })),
+      skipDuplicates: true,
+    });
+    const current = await tx.courseOffering.findUnique({
+      where: { termId_courseId: { termId: term.id, courseId: course.id } },
+    });
+    const offering = current
+      ? await tx.courseOffering.update({
+          where: { id: current.id },
+          data: { title: subjectName, sourceId: source.id, sheetTab: tab.tabName },
+        })
+      : await tx.courseOffering.create({
+          data: {
+            termId: term.id,
+            generationId: source.generationId,
+            courseId: course.id,
+            externalKey: `T${term.number}-${course.code}`,
+            title: subjectName,
+            sourceId: source.id,
+            sheetTab: tab.tabName,
+            ...(await termVisibility(tx, term.id)),
+          },
+        });
+    return offering.id;
   }
 
   /** Marks a tab as not a subject; sync skips it without a warning. */
@@ -428,7 +564,7 @@ export class SheetMappingsService {
   async list(sourceId: string): Promise<TabMappingView[]> {
     const source = await this.termSource(sourceId);
     const rows = await this.prisma.client.sheetTabMapping.findMany({
-      where: { sourceId },
+      where: { sourceId, status: { not: 'REMOVED' } },
       include: MAPPING_INCLUDE,
       orderBy: { createdAt: 'asc' },
     });
@@ -472,13 +608,39 @@ export class SheetMappingsService {
     return preview ? toPreviewView(preview) : null;
   }
 
-  /** Compares a pending sheet with the database. Replaces any earlier preview; imports nothing. */
+  /** One page of a preview's issues, filtered like a sync job's (GET /sync/:jobId/errors). */
+  async previewIssues(sourceId: string, previewId: string, query: ListPreviewIssuesQueryDto) {
+    await this.termSource(sourceId);
+    const preview = await this.prisma.client.sheetPreview.findFirst({
+      where: { id: previewId, sourceId },
+      select: { summary: true },
+    });
+    if (!preview) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Preview not found' });
+    const summary = preview.summary as unknown as PreviewSummary;
+    const stored = summary.issues ?? [];
+    const matching = orderedIssues(stored).filter(
+      (i) =>
+        (!query.severity || i.severity === query.severity) &&
+        (!query.sheetTab || i.sheetTab === query.sheetTab),
+    );
+    const { skip, take } = skipTake(query);
+    return {
+      ...paginated(matching.slice(skip, skip + take), matching.length, query),
+      /** Every tab with issues in this preview, for the filter (not limited by the filters). */
+      tabs: [...new Set(stored.flatMap((i) => (i.sheetTab ? [i.sheetTab] : [])))].toSorted(),
+      /** Issues found but past the storage cap, so not listed. */
+      notListed: Math.max(0, (summary.issueCount ?? stored.length) - stored.length),
+    };
+  }
+
+  /** Compares a sheet with the database. Replaces any earlier preview; imports nothing. */
   async preview(sourceId: string, actor: AuthUser, meta: RequestMeta): Promise<SheetPreviewView> {
     const source = await this.termSource(sourceId);
-    if (source.status !== 'PENDING') {
+    await this.guard.assertGenerationEditable(source.generationId);
+    if (source.status === 'DISABLED') {
       throw new ConflictException({
-        code: 'NOT_PENDING',
-        message: 'Only a sheet waiting to replace the active one is previewed.',
+        code: 'SOURCE_DISABLED',
+        message: 'This spreadsheet source is disabled.',
       });
     }
     let result;
@@ -518,10 +680,12 @@ export class SheetMappingsService {
   async confirmPreview(
     sourceId: string,
     previewId: string,
+    dto: ConfirmPreviewDto,
     actor: AuthUser,
     meta: RequestMeta,
   ): Promise<SheetPreviewView> {
-    await this.termSource(sourceId);
+    const source = await this.termSource(sourceId);
+    await this.guard.assertGenerationEditable(source.generationId);
     const preview = await this.prisma.client.sheetPreview.findFirst({
       where: { id: previewId, sourceId },
     });
@@ -532,10 +696,18 @@ export class SheetMappingsService {
         message: 'This preview is out of date. Run a new one.',
       });
     }
-    if (!(preview.summary as unknown as PreviewSummary).canConfirm) {
+    const summary = preview.summary as unknown as PreviewSummary;
+    if (!summary.canConfirm) {
       throw new UnprocessableEntityException({
         code: 'PREVIEW_HAS_ERRORS',
         message: 'Fix the errors in this preview first: a sync of this sheet would be refused.',
+      });
+    }
+    const removed = summary.comparison?.removed ?? [];
+    if (removed.length > 0 && !dto.acknowledgeRemovals) {
+      throw new UnprocessableEntityException({
+        code: 'REMOVAL_ACK_REQUIRED',
+        message: 'Acknowledge the subjects this sync will remove.',
       });
     }
     const saved = await this.prisma.client.$transaction(async (tx) => {
@@ -549,7 +721,7 @@ export class SheetMappingsService {
           actorUserId: actor.userId,
           entityType: 'source',
           entityId: sourceId,
-          metadata: { previewId },
+          metadata: { previewId, removals: removed.map((r) => r.subject) },
           context: meta,
         },
         tx,
@@ -582,6 +754,7 @@ export class SheetMappingsService {
     }
 
     const active = await this.activeTabs(source);
+    const termConfig = await loadTermConfig(this.prisma.client, source.termId);
     const tabs = await this.prisma.client.$transaction(async (tx) => {
       const existing = new Map(
         (await tx.sheetTabMapping.findMany({ where: { sourceId }, include: MAPPING_INCLUDE })).map(
@@ -599,22 +772,28 @@ export class SheetMappingsService {
         }
         detectable.add(tab.tabName);
         let mapping: MappingRow;
-        if (previous && previous.status !== 'DRAFT') {
+        if (previous && previous.status !== 'DRAFT' && previous.status !== 'REMOVED') {
           mapping = await tx.sheetTabMapping.update({
             where: { id: previous.id },
             data: { sheetTabId: tab.sheetTabId },
             include: MAPPING_INCLUDE,
           });
         } else {
+          // Proposed from who the tab lists; the admin confirms or changes it.
+          const proposed = proposeAudience(termConfig, tab.rosterClasses);
           const data = {
+            status: 'DRAFT' as const,
             sheetTabId: tab.sheetTabId,
             headerRow: layout.headerRow,
             headerSignature: layout.headerSignature,
+            ...(proposed.kind === 'PROGRAM'
+              ? { audience: 'PROGRAM' as const, audienceProgramId: proposed.programId }
+              : { audience: 'SHARED' as const, audienceProgramId: null }),
           };
           const saved = previous
             ? await tx.sheetTabMapping.update({ where: { id: previous.id }, data })
             : await tx.sheetTabMapping.create({
-                data: { ...data, sourceId, tabName: tab.tabName, status: 'DRAFT' },
+                data: { ...data, sourceId, tabName: tab.tabName },
               });
           await tx.sheetColumnMapping.deleteMany({ where: { tabMappingId: saved.id } });
           // A reopened tab keeps what was confirmed for the columns that are still there.

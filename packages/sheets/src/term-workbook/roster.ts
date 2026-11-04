@@ -14,6 +14,8 @@ export interface RosterStudent {
   fullName: string;
   gender: Gender;
   className: string | null;
+  /** CLASS 2 / MAJOR / PROGRAM ("WEP A", "SNAC"): a cross-check of the class, never decisive. */
+  programText: string | null;
   rowNumber: number;
 }
 
@@ -24,6 +26,7 @@ const PROFILE_ROLES: readonly ColumnRole[] = [
   'FULL_NAME',
   'GENDER',
   'CLASS',
+  'PROGRAM',
 ];
 
 /**
@@ -31,7 +34,13 @@ const PROFILE_ROLES: readonly ColumnRole[] = [
  * score columns in the roster tab are ignored. Problems are FILE scope when the tab is unusable
  * and ROW scope for individual students. Duplicate IDs reject every copy, as in template v1.
  */
-export function parseRoster(grid: Grid, tab: string, log: IssueLog): RosterStudent[] | null {
+export function parseRoster(
+  grid: Grid,
+  tab: string,
+  log: IssueLog,
+  /** Collects every copy of a duplicated student ID, for the admin's issue list. */
+  duplicates?: Map<string, RosterStudent[]>,
+): RosterStudent[] | null {
   const headerIndex = findHeaderRow(grid);
   if (headerIndex < 0) {
     log.error('FILE', 'MISSING_COLUMN', `The roster tab "${tab}" has no "STUDENT ID" header.`, {
@@ -116,6 +125,7 @@ export function parseRoster(grid: Grid, tab: string, log: IssueLog): RosterStude
       fullName,
       gender: gender.gender,
       className: text(row, 'CLASS'),
+      programText: text(row, 'PROGRAM'),
       rowNumber,
     });
   }
@@ -124,6 +134,7 @@ export function parseRoster(grid: Grid, tab: string, log: IssueLog): RosterStude
   for (const s of students) counts.set(s.studentCode, (counts.get(s.studentCode) ?? 0) + 1);
   return students.filter((s) => {
     if (counts.get(s.studentCode) === 1) return true;
+    duplicates?.set(s.studentCode, [...(duplicates.get(s.studentCode) ?? []), s]);
     log.error(
       'ROW',
       'DUPLICATE_STUDENT',

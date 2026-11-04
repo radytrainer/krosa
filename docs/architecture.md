@@ -1,6 +1,6 @@
 # Architecture
 
-Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+Last verified: 2026-11-01, commit 66888b7 plus uncommitted working tree.
 
 ## 1. Overview
 
@@ -123,8 +123,9 @@ exception filter producing the standard error envelope, `RolesGuard`, `MustChang
                          refresh the parent job (if any)
 ```
 
-**Tab confirmation.** Offerings and criteria are created when an admin confirms a tab, not at sync
-(`apps/api/src/sheet-mappings/sheet-mappings.service.ts`).
+**Tab confirmation.** On an active sheet, offerings and criteria are created when an admin confirms a
+tab (`apps/api/src/sheet-mappings/sheet-mappings.service.ts`). On a pending sheet, confirming writes
+only the mapping rows, so review and Discard change nothing students see.
 
 **Concurrency.** Only one job per source and one per term can be active, which the partial unique
 indexes `sync_jobs_one_active_per_source` and `sync_jobs_one_active_per_term` and the BullMQ job id
@@ -145,7 +146,7 @@ never `SUCCEEDED`.
 
 **Sheet change.** A replacement sheet is PENDING until its sync succeeds. Its job needs a confirmed
 preview whose fingerprint and mapping versions still match (`packages/sync/src/confirmed.ts`). The
-roster, all subjects, the switch of the old sheet to DISABLED and the new one to ACTIVE commit in one
+reviewed names and new subjects (`packages/sync/src/promote.ts`), the roster, all subjects, the switch of the old sheet to DISABLED and the new one to ACTIVE commit in one
 transaction, with a timeout of up to 300 s, so any error leaves the old sheet active. The global
 roster lock is held for that whole transaction, which is a known deviation (see
 [delivery-plan-2027.md](delivery-plan-2027.md)). A sync of the old sheet voids the pending preview.
@@ -170,6 +171,10 @@ younger than 2 minutes so a job recorded by the API but not yet enqueued is neve
 startup run has no such grace. On SIGTERM, `worker.close()` lets
 active jobs finish.
 
+**A lease left behind.** When a run ends, its lease release is retried and can never hide the run's
+error. A delivery that finds the lease held is delayed in BullMQ until the lease expires, which costs
+no attempt, so a job is never reported complete while it is still unfinished.
+
 **Progress.** `phase` and `progress_current/total` (roster + one step per course) are written to
 `sync_jobs` as the job advances. The admin UI polls `GET /admin/sync/:jobId`.
 
@@ -186,8 +191,8 @@ that the views don't carry. All `/student/me*` endpoints read the same cache ent
 an unreadable entry) fall back to PostgreSQL. Admin views (`/admin/students/:id/results`) are never
 cached. The generation version counter is incremented after a sync commit, a term release or hide,
 and a generation or term edit, so stale entries are never read and simply expire. Confirming a tab
-does not increment it, and it changes names that results read (known deviation, see
-[delivery-plan-2027.md](delivery-plan-2027.md)).
+on an active sheet does not increment it, so a renamed subject can take up to the 10-minute cache
+life to show.
 
 ## 7. Web app (`apps/web`)
 

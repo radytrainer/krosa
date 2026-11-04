@@ -13,6 +13,7 @@ export interface SyncTarget {
   generationId?: string;
   termId?: string;
   termNumber?: number;
+  previewId?: string;
 }
 
 const MESSAGES: Record<string, string> = {
@@ -21,6 +22,7 @@ const MESSAGES: Record<string, string> = {
   NO_SOURCES: 'No confirmed workbooks match this Generation and Term.',
   QUEUE_UNAVAILABLE: 'The job queue is unavailable. Try again in a minute.',
   RATE_LIMITED: 'Too many sync requests. Wait a minute and try again.',
+  PREVIEW_STALE: 'The sheet changed since it was checked. Choose Sync now again.',
 };
 
 /** POST /admin/sync, then open the job page (or the job already running for this source). */

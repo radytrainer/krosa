@@ -56,3 +56,36 @@ describe('toErrorEnvelope', () => {
     expect(JSON.stringify(body)).not.toContain('secret');
   });
 });
+
+describe('toErrorEnvelope, errors from outside Nest', () => {
+  it('keeps a body parser 4xx status without exposing its message', () => {
+    const tooLarge = Object.assign(new Error('request entity too large'), { status: 413 });
+    expect(toErrorEnvelope(tooLarge, 'req-1')).toEqual({
+      status: 413,
+      body: {
+        error: {
+          code: 'PAYLOAD_TOO_LARGE',
+          message: 'The request is too large',
+          requestId: 'req-1',
+        },
+      },
+    });
+  });
+
+  it('maps an unreachable database to 503, also when the driver error is nested', () => {
+    const prisma = Object.assign(new Error('Cannot reach database'), { code: 'P1001' });
+    const nested = new Error('query failed', {
+      cause: Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }),
+    });
+    for (const error of [prisma, nested]) {
+      const { status, body } = toErrorEnvelope(error);
+      expect(status).toBe(503);
+      expect(body.error.code).toBe('SERVICE_UNAVAILABLE');
+      expect(JSON.stringify(body)).not.toContain('database');
+    }
+  });
+
+  it('stays an opaque 500 for anything else', () => {
+    expect(toErrorEnvelope(new Error('boom')).status).toBe(500);
+  });
+});

@@ -559,6 +559,12 @@ export default function GenerationDetailPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <span className="inline-flex items-center gap-2">
+                            <Link
+                              href={`/admin/terms/${t.id}`}
+                              className="text-sm font-medium whitespace-nowrap underline-offset-4 hover:underline"
+                            >
+                              Classes and students
+                            </Link>
                             <ReleaseButton term={t} disabled={archived} />
                             <EditTermDialog term={t} disabled={archived} generationId={g.id} />
                           </span>

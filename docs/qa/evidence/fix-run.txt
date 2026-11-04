@@ -1,0 +1,22 @@
+Re-test after the QA fixes, 2026-11-01, on top of commit 66888b7 (uncommitted changes).
+
+pnpm lint                 pass
+pnpm typecheck            13 of 13 tasks
+pnpm build                8 of 8 tasks
+pnpm test                 338 passed: sheets 183, shared 96, api 53, sync 3, worker 3
+pnpm test:integration     349 passed, 2 skipped: api 278, sync 31, database 25, worker 15
+                          Skipped: D-20 and D-20b, which need named containers
+apps/worker test/qa       14 of 14 on the ssrs-qa containers, including D-17b, D-20, D-20b
+e2e/qa/ui.spec.ts         22 of 22
+e2e/qa/session.spec.ts    3 of 3, 10 runs in a row
+  A-34 calls ["401 /api/v1/auth/me","204 /api/v1/auth/refresh","200 /api/v1/auth/me"]
+  A-33 calls ["204 /api/v1/auth/refresh","204 /api/v1/auth/refresh"]
+pnpm test:e2e             12 of 12
+prisma migrate diff       no drift
+
+G-19, separate API process on the ssrs-qa stack, POST /auth/login for an unknown user:
+  PostgreSQL running      401
+  PostgreSQL stopped      503 SERVICE_UNAVAILABLE
+  PostgreSQL restarted    401
+
+QA API suite before the fixes: 25 failed, 129 passed. After: 0 failed.

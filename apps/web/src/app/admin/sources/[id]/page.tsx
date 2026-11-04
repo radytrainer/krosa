@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import { useState } from 'react';
 import { SyncJobsTable } from '@/components/admin/sync-jobs-table';
 import { SheetPreviewPanel } from '@/components/admin/sheet-preview';
+import { SyncActiveSheet } from '@/components/admin/sync-confirm';
 import { TermMappings } from '@/components/admin/term-mappings';
 import { useStartSync } from '@/components/admin/use-start-sync';
 import { Confirm } from '@/components/app/confirm';
@@ -166,13 +167,17 @@ export default function SourceDetailPage() {
                 Enable
               </Button>
             )}
-            <Button
-              disabled={(pending ? !previewConfirmed : !active) || startSync.isPending}
-              onClick={() => startSync.mutate({ scope: 'SOURCE', sourceId: s.id })}
-            >
-              <RefreshCw aria-hidden />
-              Sync now
-            </Button>
+            {pending ? (
+              <Button
+                disabled={!previewConfirmed || startSync.isPending}
+                onClick={() => startSync.mutate({ scope: 'SOURCE', sourceId: s.id })}
+              >
+                <RefreshCw aria-hidden />
+                Sync now
+              </Button>
+            ) : (
+              <SyncActiveSheet sourceId={s.id} disabled={!active} />
+            )}
           </>
         }
       />
@@ -219,7 +224,7 @@ export default function SourceDetailPage() {
         </Card>
 
         <Section title="Subject tabs">
-          <TermMappings sourceId={s.id} readOnly={!active && !pending} />
+          <TermMappings sourceId={s.id} termId={s.term.id} readOnly={!active && !pending} />
         </Section>
 
         {pending ? (

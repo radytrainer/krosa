@@ -1,6 +1,6 @@
 # Student Score Record System
 
-Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+Last verified: 2026-11-01, commit 66888b7 plus uncommitted working tree.
 
 A web application for schools. Administrators import students, subjects and marks from Google
 Sheets; students sign in to see their own results across five terms, with every mark, weight and
@@ -172,7 +172,8 @@ Sign in as `GEN26-0001`.
 
 - A phone-sized window: menu button, courses shown as cards.
 - Collapsing the sidebar on a desktop: the choice is remembered.
-- Five wrong passwords in a row: the account locks for a minute, longer after further failures.
+- Five wrong passwords in a row from one address: sign-in for that ID pauses there for a minute,
+  longer after further failures.
 
 ## Everyday commands
 

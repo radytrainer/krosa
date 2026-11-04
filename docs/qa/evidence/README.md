@@ -15,9 +15,16 @@ checked for the QA passwords, password hashes and tokens.
 | `session-tests.txt` | `e2e/qa/session.spec.ts`                                                              |
 | `live-check.txt`    | `docs/qa/scripts/live-check.mjs` against separate API, worker and web processes       |
 | `live-queries.txt`  | SQL statements for one results call, from PostgreSQL's statement log                  |
+| `fix-run.txt`       | Summary of the re-test on 2026-11-01, after the fixes                                 |
 
 `live-check.txt` prints FAIL for G-19c on purpose: that is defect QA-013. In `api-tests.txt`, `×` means
 a test failed. Each failure belongs to a defect in `../qa-report.md`.
 
 `worker-tests.txt` is from the run before the final one. After it, the worker test file was only
 formatted and given a lint comment, and D-18, D-19 and D-21 were re-run with the same result.
+
+| File                    | Run                                                |
+| ----------------------- | -------------------------------------------------- |
+| `manual-cases.txt`      | The 196 cases of `test-case.xlsx`, 2026-11-01      |
+| `retest-2026-11-01.txt` | Independent re-test of the fixes, with live checks |
+| `fixes-2026-11-01.txt`  | Re-test of QA-018 to QA-022 after their fixes      |

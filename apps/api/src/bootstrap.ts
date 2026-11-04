@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module.js';
 import { HttpExceptionFilter } from './common/http-exception.filter.js';
+import { RejectNulPipe } from './common/reject-nul.pipe.js';
 import type { ApiEnv } from './config/env.js';
 
 export const API_PREFIX = 'api';
@@ -40,6 +41,7 @@ export function configureApp(app: NestExpressApplication, env: ApiEnv): void {
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
 
   app.useGlobalPipes(
+    new RejectNulPipe(),
     new ValidationPipe({
       whitelist: true,
       forbidNonWhitelisted: true,

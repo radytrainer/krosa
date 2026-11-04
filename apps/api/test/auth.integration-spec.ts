@@ -130,7 +130,7 @@ describe('Authentication & authorization (integration)', () => {
         .set('Origin', WEB_ORIGIN)
         .send({ identifier: ADMIN.username, password: ADMIN.password })
         .expect(429);
-      expect(locked.body.error.code).toBe('ACCOUNT_LOCKED');
+      expect(locked.body.error.code).toBe('RATE_LIMITED');
       expect(Number(locked.headers['retry-after'])).toBeGreaterThan(0);
 
       const user = await ctx.prisma.user.findUniqueOrThrow({ where: { username: ADMIN.username } });

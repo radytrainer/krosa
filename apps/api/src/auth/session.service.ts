@@ -8,6 +8,9 @@ import type { AuthUser } from './auth.types.js';
 import { TokenService } from './token.service.js';
 
 const REVOKED_KEY_PREFIX = 'ssrs:v1:auth:revoked:';
+const VALID_KEY_PREFIX = 'ssrs:v1:auth:valid:';
+/** How long a positive answer from PostgreSQL is reused, to spare it one read per request. */
+const VALID_TTL_SECONDS = 5;
 
 export interface IssuedSession {
   principal: AuthUser;
@@ -207,29 +210,44 @@ export class SessionService {
   }
 
   /**
-   * Whether an access token's session has been revoked. Redis is the fast path; when it is
-   * unavailable the database is consulted (fail closed).
+   * Whether an access token's session has been revoked or its account is no longer active.
+   * PostgreSQL decides. Redis only saves the read: a revocation entry answers at once, and a
+   * positive answer is reused for a few seconds. Losing Redis or its data never lets a revoked
+   * session through.
    */
   async isSessionRevoked(sessionId: string): Promise<boolean> {
+    const revokedKey = `${REVOKED_KEY_PREFIX}${sessionId}`;
+    const validKey = `${VALID_KEY_PREFIX}${sessionId}`;
     try {
-      const hit = await this.redis.client.exists(`${REVOKED_KEY_PREFIX}${sessionId}`);
-      if (hit === 1) return true;
-      return false;
+      const [revoked, valid] = await this.redis.client.mget(revokedKey, validKey);
+      if (revoked) return true;
+      if (valid) return false;
     } catch {
-      const session = await this.prisma.client.authSession.findUnique({
-        where: { id: sessionId },
-        select: { revokedAt: true, expiresAt: true },
-      });
-      return !session || session.revokedAt !== null || session.expiresAt <= new Date();
+      // Falls through to PostgreSQL.
     }
+    const session = await this.prisma.client.authSession.findUnique({
+      where: { id: sessionId },
+      select: { revokedAt: true, expiresAt: true, user: { select: { status: true } } },
+    });
+    if (
+      !session ||
+      session.revokedAt !== null ||
+      session.expiresAt <= new Date() ||
+      session.user.status !== 'ACTIVE'
+    ) {
+      return true;
+    }
+    await this.redis.client.set(validKey, '1', 'EX', VALID_TTL_SECONDS).catch(() => undefined); // only a missed optimization
+    return false;
   }
 
-  /** Denylist entries only need to outlive the longest-lived access token. */
+  /** Entries only need to outlive the longest-lived access token. */
   private async denylist(sessionIds: string[]): Promise<void> {
     if (sessionIds.length === 0) return;
     try {
       const pipeline = this.redis.client.pipeline();
       for (const id of sessionIds) {
+        pipeline.del(`${VALID_KEY_PREFIX}${id}`);
         pipeline.set(
           `${REVOKED_KEY_PREFIX}${id}`,
           '1',
@@ -239,7 +257,7 @@ export class SessionService {
       }
       await pipeline.exec();
     } catch (err) {
-      // Access tokens of these sessions stay valid until expiry (≤ ACCESS_TOKEN_TTL_SECONDS).
+      // PostgreSQL already says revoked; a cached positive answer ends within VALID_TTL_SECONDS.
       this.logger.error(
         `Failed to denylist ${sessionIds.length} session(s): ${err instanceof Error ? err.message : String(err)}`,
       );

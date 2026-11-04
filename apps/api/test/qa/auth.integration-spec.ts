@@ -116,7 +116,7 @@ describe('QA A: authentication and sessions', () => {
     expect(codes[5]).toBe(429);
   });
 
-  it('A-10 recorded: ACCOUNT_LOCKED exists only for real accounts (account discovery)', async () => {
+  it('A-10 a lockout looks the same for real and made-up IDs', async () => {
     await seedStudent();
     for (let i = 0; i < 5; i++) await loginRaw(ctx, STUDENT.username, 'wrong');
     await clearRateLimits(ctx);
@@ -131,15 +131,13 @@ describe('QA A: authentication and sessions', () => {
     });
   });
 
-  it('A-11 recorded: five wrong guesses by anyone lock the real student out', async () => {
-    await seedStudent();
+  it('A-11d an admin reset clears the lock on every address', async () => {
+    const user = await seedStudent();
     for (let i = 0; i < 5; i++) await loginRaw(ctx, STUDENT.username, 'wrong');
+    const student = await ctx.prisma.student.findUniqueOrThrow({ where: { userId: user.id } });
+    await h.admin.post(`${V1}/admin/students/${student.id}/reset-password`).expect(200);
     await clearRateLimits(ctx);
-    const res = await loginRaw(ctx, STUDENT.username, STUDENT.password);
-    // Measured effect, reported as a risk: the correct password is refused during the lock.
-    expect(res.status).toBe(429);
-    expect(res.body.error.code).toBe('ACCOUNT_LOCKED');
-    expect(Number(res.headers['retry-after'])).toBeGreaterThan(0);
+    expect((await loginRaw(ctx, STUDENT.username, 'wrong')).status).toBe(401);
   });
 
   it('A-09 lockout resets after a successful sign-in', async () => {
@@ -292,7 +290,8 @@ describe('QA A: authentication and sessions', () => {
         currentPassword: TEMP,
         newPassword: 'Another-Long-Phrase-2026',
       });
-      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('TEMPORARY_PASSWORD_EXPIRED');
     });
   });
 
@@ -578,6 +577,29 @@ describe('QA A: limits that need a trusted proxy', () => {
     }
     expect(codes.slice(0, 5)).toEqual(Array(5).fill(401));
     expect(codes[5]).toBe(429);
+  });
+
+  it('A-11 a guesser locks only its own address, not the student on another one', async () => {
+    await seedUser(h.ctx, { ...STUDENT, role: 'STUDENT' });
+    const attacker = '203.0.113.7';
+    for (let i = 0; i < 5; i++) await loginRaw(h.ctx, STUDENT.username, 'wrong', attacker);
+    await clearRateLimits(h.ctx);
+    const blocked = await loginRaw(h.ctx, STUDENT.username, STUDENT.password, attacker);
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error.code).toBe('RATE_LIMITED');
+    expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0);
+    const student = await loginRaw(h.ctx, STUDENT.username, STUDENT.password, '198.51.100.9');
+    expect(student.status).toBe(200);
+  });
+
+  it('A-11b a locked address does not use up the identifier budget', async () => {
+    await seedUser(h.ctx, { ...STUDENT, role: 'STUDENT' });
+    const attacker = '203.0.113.7';
+    for (let i = 0; i < 5; i++) await loginRaw(h.ctx, STUDENT.username, 'wrong', attacker);
+    await clearRateLimits(h.ctx);
+    for (let i = 0; i < 8; i++) await loginRaw(h.ctx, STUDENT.username, 'wrong', attacker);
+    const student = await loginRaw(h.ctx, STUDENT.username, STUDENT.password, '198.51.100.9');
+    expect(student.status).toBe(200);
   });
 });
 

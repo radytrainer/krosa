@@ -4,6 +4,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsInt,
   IsOptional,
@@ -13,6 +14,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { PaginationQueryDto } from '../common/pagination.js';
 import { Trim } from '../common/validation.js';
 
 const COLUMN_ROLES = [
@@ -22,12 +24,21 @@ const COLUMN_ROLES = [
   'FULL_NAME',
   'GENDER',
   'CLASS',
+  'PROGRAM',
+  'ROW_NUMBER',
   'CRITERION',
   'REFERENCE_TOTAL',
   'COMMENT',
   'IGNORE',
 ] as const;
 export type ColumnRoleInput = (typeof COLUMN_ROLES)[number];
+
+export class ConfirmPreviewDto {
+  @ApiPropertyOptional({ description: 'Required when the preview removes subjects' })
+  @IsOptional()
+  @IsBoolean()
+  acknowledgeRemovals?: boolean;
+}
 
 export class ConfirmColumnDto {
   @ApiProperty({ example: 5 })
@@ -60,6 +71,17 @@ export class ConfirmMappingDto {
   @Length(1, 120)
   subjectName!: string;
 
+  @ApiPropertyOptional({
+    example: 'SHARED',
+    description:
+      'Who takes the subject: SHARED, or a program code (WEP, SNAC). Left out: keep the proposal or the guess.',
+  })
+  @IsOptional()
+  @Trim()
+  @IsString()
+  @Length(2, 16)
+  audience?: string;
+
   @ApiProperty({ type: [ConfirmColumnDto] })
   @IsArray()
   @ArrayMinSize(1)
@@ -67,4 +89,17 @@ export class ConfirmMappingDto {
   @ValidateNested({ each: true })
   @Type(() => ConfirmColumnDto)
   columns!: ConfirmColumnDto[];
+}
+
+export class ListPreviewIssuesQueryDto extends PaginationQueryDto {
+  @ApiPropertyOptional({ enum: ['ERROR', 'WARNING'] })
+  @IsOptional()
+  @IsEnum(['ERROR', 'WARNING'])
+  severity?: 'ERROR' | 'WARNING';
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @Length(1, 200)
+  sheetTab?: string;
 }

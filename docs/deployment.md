@@ -36,7 +36,7 @@ running sync). The one-shot `migrate` does not need it.
 - A DNS name (A/AAAA record) pointing at the server, and ports **80 and 443** open to the internet
   (80 is needed for certificate issuance and the redirect to HTTPS). Nothing else needs to be open.
 - A Google Cloud **service account** with the Google Sheets API enabled, and its JSON key
-  ([google-sheets-template.md §7](google-sheets-template.md)).
+  ([google-sheets-template.md §8](google-sheets-template.md)).
 
 ## 3. First installation
 

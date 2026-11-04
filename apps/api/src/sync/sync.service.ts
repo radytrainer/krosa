@@ -101,6 +101,7 @@ interface Target {
   sourceId?: string | null;
   generationId?: string | null;
   termNumber?: number | null;
+  previewId?: string | null;
 }
 
 export interface SyncTargetOption {
@@ -138,6 +139,7 @@ export class SyncService {
         sourceId: dto.sourceId,
         generationId: dto.generationId,
         termNumber: dto.scope === 'ALL' ? dto.termNumber : null,
+        previewId: dto.previewId,
       },
       actor,
       meta,
@@ -187,6 +189,8 @@ export class SyncService {
   }
 
   async retry(jobId: string, actor: AuthUser, meta: RequestMeta): Promise<{ jobId: string }> {
+    const limit = await this.limiter.hit('sync:request', actor.userId, SYNC_REQUEST_LIMIT);
+    if (!limit.allowed) throw new RateLimitedException(limit.retryAfterSeconds);
     const job = await this.prisma.client.syncJob.findUnique({ where: { id: jobId } });
     if (!job) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Sync job not found' });
     if (!RETRYABLE.has(job.status)) {
@@ -195,7 +199,29 @@ export class SyncService {
         message: 'Only failed or partially failed jobs can be retried.',
       });
     }
-    return this.start(job, actor, meta, job.id);
+    // A preview authorizes one sync. A retry of an active sheet archives nothing.
+    return this.start({ ...job, previewId: null }, actor, meta, job.id);
+  }
+
+  /** The confirmed preview a job applies. It decides which subjects the job may archive. */
+  private async boundPreview(sourceId: string, previewId: string | null | undefined) {
+    const preview = await this.prisma.client.sheetPreview.findFirst({
+      where: {
+        sourceId,
+        invalidatedAt: null,
+        confirmedAt: { not: null },
+        ...(previewId ? { id: previewId } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    if (!preview) {
+      throw new UnprocessableEntityException({
+        code: 'PREVIEW_STALE',
+        message: 'This preview is out of date. Run a new one.',
+      });
+    }
+    return preview.id;
   }
 
   /** Creates the job rows, then enqueues per-source jobs (after commit, so the worker sees them). */
@@ -238,7 +264,11 @@ export class SyncService {
         const gate = await previewGate(db, source.id, null);
         if (gate) throw new UnprocessableEntityException(gate);
       }
-      const job = await this.createSourceJob(source, actor.userId, null, retryOfId);
+      const previewId =
+        source.status === 'PENDING' || target.previewId
+          ? await this.boundPreview(source.id, target.previewId)
+          : null;
+      const job = await this.createSourceJob(source, actor.userId, null, retryOfId, previewId);
       if (!job.ok) {
         throw new ConflictException({
           code: 'SYNC_IN_PROGRESS',
@@ -334,6 +364,7 @@ export class SyncService {
     requestedById: string,
     parentId: string | null,
     retryOfId: string | null,
+    previewId: string | null = null,
   ): Promise<{ ok: true; id: string } | { ok: false; activeJobId: string | null }> {
     try {
       const job = await this.prisma.client.syncJob.create({
@@ -344,6 +375,7 @@ export class SyncService {
           requestedById,
           parentId,
           retryOfId,
+          previewId,
         },
       });
       return { ok: true, id: job.id };
@@ -450,11 +482,11 @@ export class SyncService {
    * reads its children's rows as well as its own (job-level warnings). Nothing is copied.
    */
   async errors(id: string, query: ListSyncErrorsQueryDto) {
-    const exists = await this.prisma.client.syncJob.findUnique({
+    const totals = await this.prisma.client.syncJob.findUnique({
       where: { id },
-      select: { id: true },
+      select: { errorCount: true, warningCount: true },
     });
-    if (!exists) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Sync job not found' });
+    if (!totals) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Sync job not found' });
     const ofJob: Prisma.SyncErrorWhereInput = { OR: [{ jobId: id }, { job: { parentId: id } }] };
     const where: Prisma.SyncErrorWhereInput = {
       ...ofJob,
@@ -463,7 +495,7 @@ export class SyncService {
       ...(query.sheetTab ? { sheetTab: query.sheetTab } : {}),
       ...(query.sourceId ? { job: { sourceId: query.sourceId } } : {}),
     };
-    const [rows, total, tabs] = await Promise.all([
+    const [rows, total, stored, tabs] = await Promise.all([
       this.prisma.client.syncError.findMany({
         where,
         include: { job: { select: { source: { select: { id: true, label: true } } } } },
@@ -477,6 +509,7 @@ export class SyncService {
         ...skipTake(query),
       }),
       this.prisma.client.syncError.count({ where }),
+      this.prisma.client.syncError.count({ where: ofJob }),
       this.prisma.client.syncError.findMany({
         where: { ...ofJob, sheetTab: { not: null } },
         distinct: ['sheetTab'],
@@ -496,6 +529,8 @@ export class SyncService {
       ),
       /** Every tab with issues in this job, for the filter (not limited by the filters). */
       tabs: tabs.flatMap((t) => (t.sheetTab ? [t.sheetTab] : [])),
+      /** Issues counted on the job but past the per-job storage cap, so not listed. */
+      notListed: Math.max(0, totals.errorCount + totals.warningCount - stored),
     };
   }
 

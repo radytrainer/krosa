@@ -29,7 +29,7 @@ const SOURCE_INCLUDE = {
   generation: { select: { id: true, code: true, name: true } },
   term: { select: { id: true, number: true, name: true } },
   createdBy: { select: { id: true, username: true } },
-  _count: { select: { offerings: true } },
+  _count: { select: { offerings: { where: { status: 'ACTIVE' } } } },
 } satisfies Prisma.GoogleSheetSourceInclude;
 
 type SourceRow = Prisma.GoogleSheetSourceGetPayload<{ include: typeof SOURCE_INCLUDE }>;
@@ -71,6 +71,11 @@ export interface TermWorkbooksView {
 const SHEET_ID_IN_USE = {
   code: 'SOURCE_EXISTS',
   message: 'This spreadsheet is connected to another term.',
+};
+
+const SAME_SHEET = {
+  code: 'SAME_SHEET',
+  message: 'This sheet is already the active sheet of this term.',
 };
 
 function toView(s: SourceRow): SourceView {
@@ -217,11 +222,12 @@ export class SheetsSourcesService {
   /** Validates a new sheet for a term and shows what it holds. Changes nothing. */
   async checkSheet(termId: string, dto: CheckSheetDto): Promise<SheetCheck> {
     const { spreadsheetId, check } = await this.sheetCheck(termId, dto.url, dto.rosterTab ?? 'ALL');
-    const other = await this.prisma.client.googleSheetSource.findUnique({
+    const known = await this.prisma.client.googleSheetSource.findUnique({
       where: { spreadsheetId },
-      select: { termId: true },
+      select: { termId: true, status: true },
     });
-    if (other && other.termId !== termId) throw new ConflictException(SHEET_ID_IN_USE);
+    if (known && known.termId !== termId) throw new ConflictException(SHEET_ID_IN_USE);
+    if (known?.status === 'ACTIVE') throw new ConflictException(SAME_SHEET);
     return { spreadsheetId, spreadsheetTitle: check.spreadsheetTitle, tabs: check.tabs };
   }
 
@@ -256,12 +262,7 @@ export class SheetsSourcesService {
     const db = this.prisma.client;
     const known = await db.googleSheetSource.findUnique({ where: { spreadsheetId } });
     if (known && known.termId !== termId) throw new ConflictException(SHEET_ID_IN_USE);
-    if (known?.status === 'ACTIVE') {
-      throw new ConflictException({
-        code: 'SAME_SHEET',
-        message: 'This sheet is already the active sheet of this term.',
-      });
-    }
+    if (known?.status === 'ACTIVE') throw new ConflictException(SAME_SHEET);
     const active = await db.googleSheetSource.findFirst({
       where: { termId, status: 'ACTIVE' },
       select: { spreadsheetId: true },
@@ -326,6 +327,7 @@ export class SheetsSourcesService {
     const source = await this.prisma.client.googleSheetSource.findUnique({ where: { id } });
     if (!source)
       throw new NotFoundException({ code: 'NOT_FOUND', message: 'Spreadsheet source not found' });
+    await this.guard.assertGenerationEditable(source.generationId);
     if (source.status !== 'PENDING') {
       throw new ConflictException({ code: 'NOT_PENDING', message: 'This sheet is not pending.' });
     }

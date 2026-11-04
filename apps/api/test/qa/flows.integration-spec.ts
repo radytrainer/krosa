@@ -167,7 +167,8 @@ describe('QA F: student and admin flows', () => {
       'MsOffice',
       'PL',
     ]);
-    expect(JSON.stringify(body)).not.toMatch(/teacherComment|sheetTotal|passwordHash/);
+    // Teacher comments are shown to students (D6); internal fields never are.
+    expect(JSON.stringify(body)).not.toMatch(/sheetTotal|passwordHash/);
   });
 
   it('F-10 disable and enable are audited; disabling needs no login change', async () => {
@@ -246,6 +247,18 @@ describe('QA F: student and admin flows', () => {
       expect(
         gen.terms ?? (await h.admin.get(`${ADMIN_V1}/generations/${gen.id}/terms`)).body,
       ).toHaveLength(5);
+      // Every term gets the default programs and classes.
+      const classes = await h.ctx.prisma.termClass.findMany({
+        where: { termProgram: { term: { generationId: gen.id } } },
+        include: { termProgram: { include: { term: true, program: true } } },
+      });
+      const of = (n: number) =>
+        classes
+          .filter((c) => c.termProgram.term.number === n)
+          .map((c) => `${c.termProgram.program.code} ${c.name}`)
+          .toSorted();
+      expect(of(1)).toEqual(['GENERAL A', 'GENERAL B', 'GENERAL C', 'GENERAL D']);
+      expect(of(5)).toEqual(['SNAC D', 'WEP A', 'WEP B', 'WEP C']);
       const dup = await h.admin.post(`${ADMIN_V1}/generations`, { ...body, code: 'gen2030' });
       expect(dup.status).toBe(409);
       const range = await h.admin.post(`${ADMIN_V1}/generations`, {

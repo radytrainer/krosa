@@ -1,16 +1,10 @@
 'use client';
 
-import {
-  GraduationCap,
-  LogOut,
-  Menu,
-  PanelLeftClose,
-  PanelLeftOpen,
-  type LucideIcon,
-} from 'lucide-react';
+import { LogOut, Menu, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Suspense, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
+import { PnMark } from '@/components/app/pn-logo';
 import { PageLoading } from '@/components/app/states';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
@@ -128,9 +122,7 @@ function NavLinks({
 function Brand({ subtitle, collapsed = false }: { subtitle: string; collapsed?: boolean }) {
   return (
     <div className={cn('flex min-w-0 items-center gap-2.5', collapsed && 'justify-center')}>
-      <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
-        <GraduationCap className="size-5" aria-hidden />
-      </div>
+      <PnMark className="size-9" />
       {collapsed ? null : (
         <div className="min-w-0 leading-tight">
           <p className="truncate text-sm font-semibold">Score Records</p>

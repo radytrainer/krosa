@@ -89,7 +89,7 @@ describe('QA G: robustness', () => {
       .post(`${V1}/auth/login`)
       .set('Origin', WEB_ORIGIN)
       .send({ identifier: huge, password: huge });
-    expect.soft(res.status, 'a 100 KB login body').toBe(400);
+    expect.soft(res.status, 'a 100 KB login body').toBe(413);
     expect(Date.now() - started).toBeLessThan(1000);
     assertClean(
       await h.admin.post(`${ADMIN_V1}/generations`, {
@@ -261,8 +261,9 @@ describe('QA G: robustness', () => {
       ['page=abc', 400],
       ['page=1e308', 400],
       ['page=99999999999999999999', 400],
-      ['page=9007199254740991', 200],
-      ['page=2147483648', 200],
+      ['page=9007199254740991', 400],
+      ['page=2147483648', 400],
+      ['page=1000000', 200],
     ])('%s', async (q, expected) => {
       for (const path of lists(job)) {
         const res = await h.admin.get(`${ADMIN_V1}${path}?${q}`);

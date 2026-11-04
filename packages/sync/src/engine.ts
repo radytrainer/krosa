@@ -1,15 +1,38 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Prisma, PrismaClient, SyncStatus } from '@ssrs/database';
 import {
   readTermWorkbook,
   SheetsAccessError,
+  type ParsedCourse,
   type TemplateIssue,
   type TermWorkbookRead,
 } from '@ssrs/sheets';
-import { applyCourse } from './apply-course.js';
+import { applyCourse, type CourseTerm } from './apply-course.js';
 import { applyRoster } from './apply-roster.js';
-import { confirmedTabs, mappingVersions, previewGate, TAB_MAPPINGS_INCLUDE } from './confirmed.js';
+import {
+  activePreviewGate,
+  audienceByCourseKey,
+  confirmedRemovals,
+  confirmedTabs,
+  mappingVersions,
+  previewGate,
+  TAB_MAPPINGS_INCLUDE,
+} from './confirmed.js';
 import { refreshParentJob } from './parent.js';
+import { linkCriteria, prepareSubjects } from './promote.js';
+import { archiveSubjects, compareSheet, sameRemovals, type RemovedSubject } from './removals.js';
+import {
+  applyStudentTerms,
+  countPlan,
+  existingTerms,
+  guessAudience,
+  guessedAudienceIssue,
+  loadTermConfig,
+  planStudentTerms,
+  tabAudience,
+  type Audience,
+} from './student-terms.js';
 import {
   addCounts,
   emptyCounts,
@@ -31,6 +54,7 @@ const ERROR_BATCH = 1_000;
 /** Run lease length; matches the BullMQ lock duration so a crashed worker's job is reclaimable. */
 export const LEASE_MS = 120_000;
 const LEASE_RENEW_MS = LEASE_MS / 3;
+const LEASE_RELEASE_WAITS_MS = [0, 1_000, 3_000];
 const MAX_STORED_ISSUES = 20_000;
 /** A sheet change saves everything in one transaction, so it gets room for a whole workbook. */
 const SHEET_CHANGE_TX = { maxWait: 30_000, timeout: 300_000 } as const;
@@ -92,8 +116,9 @@ async function persistIssues(
  * redelivery takes over.
  *
  * Outcome semantics:
- *  - FAILED: nothing was applied (access/config problem, file-level template error, roster
- *    failure) — or every course failed to apply.
+ *  - FAILED: no subject was applied (access/config problem, file-level template error, roster
+ *    failure, every course failed). A job failed from outside the run may have saved some: see
+ *    `failJob`.
  *  - SUCCEEDED_WITH_ERRORS: data was applied, but some rows/cells/courses were rejected.
  *  - SUCCEEDED: applied with at most warnings.
  *  - retry: a transient Google failure before any write; the caller lets the queue retry.
@@ -119,13 +144,13 @@ export async function runSourceSync(
   if (claimed.count === 0) {
     const job = await prisma.syncJob.findUnique({
       where: { id: syncJobId },
-      select: { status: true },
+      select: { status: true, leaseExpiresAt: true },
     });
     if (!job) throw new Error(`Sync job ${syncJobId} not found`);
     if (TERMINAL.includes(job.status)) {
       return { kind: 'finished', status: job.status as 'SUCCEEDED' };
     }
-    return { kind: 'busy' };
+    return { kind: 'busy', retryAt: job.leaseExpiresAt ?? leaseUntil() };
   }
 
   const renew = setInterval(() => {
@@ -141,10 +166,29 @@ export async function runSourceSync(
     return await execute(deps, syncJobId, options);
   } finally {
     clearInterval(renew);
-    await prisma.syncJob.updateMany({
-      where: { id: syncJobId, leaseToken: token },
-      data: { leaseToken: null, leaseExpiresAt: null },
-    });
+    await releaseLease(deps, syncJobId, token);
+  }
+}
+
+/**
+ * Never throws: a failed release must not hide the run's real error, and the lease expires by
+ * itself. Retried because the database failure that ended a run is often over within seconds.
+ */
+async function releaseLease(deps: SyncDeps, syncJobId: string, token: string): Promise<void> {
+  for (const waitMs of LEASE_RELEASE_WAITS_MS) {
+    await sleep(waitMs);
+    try {
+      await deps.prisma.syncJob.updateMany({
+        where: { id: syncJobId, leaseToken: token },
+        data: { leaseToken: null, leaseExpiresAt: null },
+      });
+      return;
+    } catch (err) {
+      (deps.logger ?? silentLogger).warn('Could not release the run lease', {
+        syncJobId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 
@@ -294,7 +338,7 @@ async function execute(
   }
 
   const counts = emptyCounts();
-  const issues: SyncIssue[] = [...workbook.issues];
+  let issues: SyncIssue[] = [...workbook.issues];
   countParseRejections(workbook.issues, workbook.rosterTab, counts);
   if (workbook.spreadsheetTitle && workbook.spreadsheetTitle !== source.spreadsheetTitle) {
     await prisma.googleSheetSource.update({
@@ -316,19 +360,52 @@ async function execute(
     data: { phase: 'APPLY', progressCurrent: 0, progressTotal: workbook.courses.length + 1 },
   });
 
-  if (source.status === 'PENDING') {
-    const gate = await previewGate(prisma, source.id, workbook.fingerprint);
+  const pending = source.status === 'PENDING';
+  let removed: RemovedSubject[] = [];
+  if (pending || job.previewId) {
+    const gate =
+      job.previewId && !pending
+        ? await activePreviewGate(prisma, source.id, job.previewId)
+        : await previewGate(prisma, source.id, workbook.fingerprint);
     if (gate) {
       return finish('FAILED', { failureCode: gate.code, failureMessage: gate.message, issues });
     }
-    const refused = {
-      failureCode: 'SHEET_CHANGE_REJECTED',
-      failureMessage:
-        'The new sheet has errors, so nothing was imported. The current sheet stays active.',
-    };
+    // Exactly what the admin confirmed, or nothing: checked before anything is written.
+    const comparison = await compareSheet(prisma, source.termId, confirmed, workbook);
+    const expected = await confirmedRemovals(prisma, source.id, job.previewId);
+    if (!sameRemovals(comparison.removed, expected)) {
+      return finish('FAILED', {
+        failureCode: 'REMOVALS_CHANGED',
+        failureMessage:
+          'The subjects this sync would remove changed since the preview. Nothing was imported or removed. Run a new preview.',
+        issues,
+      });
+    }
+    removed = comparison.removed;
+    const removedTabs = new Set(removed.flatMap((r) => r.tabName ?? []));
+    const remaining = issues.filter(
+      (i) => !(i.code === 'WORKSHEET_NOT_FOUND' && removedTabs.has(i.sheetTab ?? '')),
+    );
+    counts.offerings.rejected -= issues.length - remaining.length;
+    issues = remaining;
+  }
+
+  if (pending || removed.length > 0) {
+    const refused = pending
+      ? {
+          failureCode: 'SHEET_CHANGE_REJECTED',
+          failureMessage:
+            'The new sheet has errors, so nothing was imported. The current sheet stays active.',
+        }
+      : {
+          failureCode: 'REMOVAL_REJECTED',
+          failureMessage:
+            'A sync that removes subjects needs zero errors, so nothing was imported or removed.',
+        };
     if (issues.some((i) => i.severity === 'ERROR')) return finish('FAILED', { ...refused, issues });
     try {
       await prisma.$transaction(async (tx) => {
+        const courses = await prepareSubjects(tx, source, workbook.courses);
         const roster = await applyRoster(
           prisma,
           {
@@ -343,16 +420,27 @@ async function execute(
         );
         issues.push(...roster.issues);
         addCounts(counts, { students: roster.counts });
-        for (const course of workbook.courses) {
+        const termOf = await applyTerm(tx, {
+          source,
+          workbook,
+          syncJobId: job.id,
+          studentIdByCode: roster.studentIdByCode,
+          now: now(),
+          counts,
+          issues,
+        });
+        for (const course of courses) {
           const result = await applyCourse(
             prisma,
             {
               syncJobId: job.id,
               sourceId: source.id,
               generationId: generation.id,
+              requestedById: job.requestedById,
               studentIdByCode: roster.studentIdByCode,
               now: now(),
               hooks: deps.hooks,
+              term: termOf(course),
             },
             course,
             tx,
@@ -363,10 +451,26 @@ async function execute(
         if (issues.some((i) => i.severity === 'ERROR')) {
           throw new SheetChangeRejected(refused.failureMessage);
         }
-        const previous = await tx.googleSheetSource.findFirst({
-          where: { termId: source.termId, status: 'ACTIVE' },
-          select: { id: true, spreadsheetId: true },
-        });
+        await linkCriteria(tx, source.id);
+        if (removed.length > 0) {
+          await archiveSubjects(
+            tx,
+            {
+              sourceId: source.id,
+              syncJobId: job.id,
+              requestedById: job.requestedById,
+              termId: source.termId,
+            },
+            removed,
+            now(),
+          );
+        }
+        const previous = pending
+          ? await tx.googleSheetSource.findFirst({
+              where: { termId: source.termId, status: 'ACTIVE' },
+              select: { id: true, spreadsheetId: true },
+            })
+          : null;
         if (previous) {
           await tx.googleSheetSource.update({
             where: { id: previous.id },
@@ -378,7 +482,7 @@ async function execute(
           data: { status: 'ACTIVE', lastSyncedAt: now(), lastSyncJobId: job.id },
         });
         await tx.sheetPreview.updateMany({
-          where: { sourceId: source.id, invalidatedAt: null },
+          where: { source: { termId: source.termId }, invalidatedAt: null },
           data: { invalidatedAt: now() },
         });
         await tx.generation.update({
@@ -389,20 +493,22 @@ async function execute(
           where: { id: job.id },
           data: { progressCurrent: workbook.courses.length + 1 },
         });
-        await tx.auditLog.create({
-          data: {
-            actorType: 'SYSTEM',
-            action: 'source.promoted',
-            entityType: 'source',
-            entityId: source.id,
-            metadata: {
-              syncJobId: job.id,
-              termId: source.termId,
-              oldSpreadsheetId: previous?.spreadsheetId ?? null,
-              newSpreadsheetId: source.spreadsheetId,
+        if (pending) {
+          await tx.auditLog.create({
+            data: {
+              actorType: 'SYSTEM',
+              action: 'source.promoted',
+              entityType: 'source',
+              entityId: source.id,
+              metadata: {
+                syncJobId: job.id,
+                termId: source.termId,
+                oldSpreadsheetId: previous?.spreadsheetId ?? null,
+                newSpreadsheetId: source.spreadsheetId,
+              },
             },
-          },
-        });
+          });
+        }
       }, SHEET_CHANGE_TX);
     } catch (err) {
       if (!(err instanceof SheetChangeRejected)) {
@@ -418,6 +524,15 @@ async function execute(
         });
       }
       return finish('FAILED', { ...refused, issues });
+    }
+    for (const r of removed) {
+      issues.push({
+        severity: 'WARNING',
+        scope: 'COURSE',
+        code: 'SUBJECT_ARCHIVED',
+        message: `${r.subject} is no longer in the sheet and was archived. Its ${r.scores} scores are kept.`,
+        ...(r.tabName ? { sheetTab: r.tabName } : {}),
+      });
     }
     return finish('SUCCEEDED', { counts, issues });
   }
@@ -453,6 +568,33 @@ async function execute(
       issues,
     });
   }
+  let termOf: (course: ParsedCourse) => CourseTerm;
+  try {
+    termOf = await prisma.$transaction(
+      (tx) =>
+        applyTerm(tx, {
+          source,
+          workbook,
+          syncJobId: job.id,
+          studentIdByCode,
+          now: now(),
+          counts,
+          issues,
+        }),
+      { maxWait: 30_000, timeout: 120_000 },
+    );
+  } catch (err) {
+    logger.error('Term enrollments failed', {
+      syncJobId: job.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return finish('FAILED', {
+      failureCode: 'APPLY_FAILED',
+      failureMessage: 'Saving the term enrollments failed; no subject was imported.',
+      counts,
+      issues,
+    });
+  }
   await prisma.syncJob.update({ where: { id: job.id }, data: { progressCurrent: 1 } });
 
   let applied = 0;
@@ -464,9 +606,11 @@ async function execute(
           syncJobId: job.id,
           sourceId: source.id,
           generationId: generation.id,
+          requestedById: job.requestedById,
           studentIdByCode,
           now: now(),
           hooks: deps.hooks,
+          term: termOf(course),
         },
         course,
       );
@@ -494,9 +638,9 @@ async function execute(
   }
 
   await prisma.$transaction([
-    // The scores a pending sheet was previewed against may have changed: it must be previewed again.
+    // The scores a preview of this term was run against may have changed: it must be run again.
     prisma.sheetPreview.updateMany({
-      where: { source: { termId: source.termId, status: 'PENDING' }, invalidatedAt: null },
+      where: { source: { termId: source.termId }, invalidatedAt: null },
       data: { invalidatedAt: now() },
     }),
     // Cached student results embed the generation's cache version (docs/architecture.md §6).
@@ -522,6 +666,83 @@ async function execute(
   });
 }
 
+/**
+ * Decides and saves the term enrollments of the roster (student-terms.ts), then tells each subject
+ * tab who may be imported and who takes it.
+ */
+async function applyTerm(
+  tx: Prisma.TransactionClient,
+  input: {
+    source: {
+      id: string;
+      termId: string;
+      generationId: string;
+      rosterTab: string;
+      tabMappings: Parameters<typeof audienceByCourseKey>[0];
+    };
+    workbook: TermWorkbookRead;
+    syncJobId: string;
+    studentIdByCode: Map<string, string>;
+    now: Date;
+    counts: SyncCounts;
+    issues: SyncIssue[];
+  },
+): Promise<(course: ParsedCourse) => CourseTerm> {
+  const { source, workbook } = input;
+  const config = await loadTermConfig(tx, source.termId);
+  const existing = await existingTerms(tx, source.termId);
+  const plan = planStudentTerms(
+    config,
+    workbook.roster,
+    existing,
+    workbook.rosterDuplicates,
+    workbook.rosterTab ?? source.rosterTab,
+  );
+  await applyStudentTerms(
+    tx,
+    {
+      syncJobId: input.syncJobId,
+      sourceId: source.id,
+      generationId: source.generationId,
+      now: input.now,
+    },
+    config,
+    plan,
+    input.studentIdByCode,
+    existing,
+  );
+  input.issues.push(...plan.issues);
+  addCounts(input.counts, { termEnrollments: countPlan(plan) });
+  // A tab nobody gave an audience gets one guessed from who it lists, saved once and reported.
+  const audiences = audienceByCourseKey(source.tabMappings);
+  const roster = new Map(workbook.roster.map((s) => [s.studentCode, s]));
+  const audienceOf = new Map<string, Audience | null>();
+  for (const course of workbook.courses) {
+    const key = course.courseKey.toUpperCase();
+    const tab = audiences.get(key);
+    let audience = tab ? tabAudience(config, tab) : null;
+    if (!audience && tab) {
+      audience = guessAudience(config, course, roster);
+      if (audience) {
+        await tx.sheetTabMapping.update({
+          where: { id: tab.id },
+          data:
+            audience.kind === 'PROGRAM'
+              ? { audience: 'PROGRAM', audienceProgramId: audience.programId }
+              : { audience: 'SHARED', audienceProgramId: null },
+        });
+        input.issues.push(guessedAudienceIssue(config, course, audience));
+      }
+    }
+    audienceOf.set(key, audience);
+  }
+  return (course) => ({
+    config,
+    decisions: plan.decisions,
+    audience: audienceOf.get(course.courseKey.toUpperCase()) ?? null,
+  });
+}
+
 /** Marks a job FAILED without running it (e.g. it could not be enqueued, or its worker died). */
 export async function failJob(
   prisma: PrismaClient,
@@ -532,12 +753,20 @@ export async function failJob(
 ): Promise<void> {
   const job = await prisma.syncJob.findUnique({
     where: { id: syncJobId },
-    select: { status: true, parentId: true },
+    select: { status: true, parentId: true, progressCurrent: true },
   });
   if (!job || TERMINAL.includes(job.status)) return;
+  // Step 1 is the roster; each later step is a subject that committed on its own.
+  const saved = job.progressCurrent > 1 ? ' Some subjects were already saved. Retry is safe.' : '';
   await prisma.syncJob.update({
     where: { id: syncJobId },
-    data: { status: 'FAILED', phase: 'DONE', finishedAt: now, failureCode, failureMessage },
+    data: {
+      status: 'FAILED',
+      phase: 'DONE',
+      finishedAt: now,
+      failureCode,
+      failureMessage: `${failureMessage}${saved}`,
+    },
   });
   if (job.parentId) await refreshParentJob(prisma, job.parentId, now);
 }

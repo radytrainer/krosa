@@ -19,8 +19,11 @@ import { RedisService } from '../infra/redis.service.js';
 export const RESULTS_CACHE_TTL_SECONDS = 600;
 
 /** docs/architecture.md §6. The version segment makes stale entries unreachable. */
+/** Bump the `v3` segment whenever the cached view's shape changes (v3: term history on the profile). */
+export const RESULTS_CACHE_PREFIX = 'ssrs:v3:results:';
+
 export function resultsCacheKey(generationId: string, version: number, studentId: string): string {
-  return `ssrs:v1:results:gen:${generationId}:v${version}:student:${studentId}`;
+  return `${RESULTS_CACHE_PREFIX}gen:${generationId}:v${version}:student:${studentId}`;
 }
 
 const STUDENT_SELECT = {
@@ -30,6 +33,13 @@ const STUDENT_SELECT = {
   gender: true,
   className: true,
   generation: { select: { id: true, code: true, name: true, cacheVersion: true } },
+  terms: {
+    select: {
+      term: { select: { number: true, name: true } },
+      program: { select: { code: true, name: true } },
+      class: { select: { name: true } },
+    },
+  },
 } satisfies Prisma.StudentSelect;
 
 type StudentRow = Prisma.StudentGetPayload<{ select: typeof STUDENT_SELECT }>;
@@ -83,6 +93,14 @@ function toProfile(s: StudentRow): StudentProfileView {
     gender: s.gender,
     className: s.className,
     generation,
+    terms: s.terms
+      .map((t) => ({
+        termNumber: t.term.number,
+        termName: t.term.name,
+        program: t.program,
+        className: t.class.name,
+      }))
+      .toSorted((a, b) => a.termNumber - b.termNumber),
   };
 }
 
@@ -182,17 +200,23 @@ export class ResultsService {
       db.enrollment.findMany({
         where: {
           studentId: student.id,
-          ...(options.admin ? {} : { status: 'ENROLLED', offering: { visibility: 'VISIBLE' } }),
+          ...(options.admin
+            ? { offering: { status: 'ACTIVE' } }
+            : { status: 'ENROLLED', offering: { status: 'ACTIVE', visibility: 'VISIBLE' } }),
         },
         include: ENROLLMENT_INCLUDE,
       }),
     ]);
-    const scores = enrollments.length
+    const rows = enrollments.length
       ? await db.assessmentScore.findMany({
           where: { enrollmentId: { in: enrollments.map((e) => e.id) } },
           select: { enrollmentId: true, criterionId: true, status: true, mark: true },
         })
       : [];
+    // A mark erased in the sheet is not entered (D3); only its history remains.
+    const scores = rows.flatMap((s) =>
+      s.status === 'CLEARED' ? [] : [{ ...s, status: s.status }],
+    );
 
     const scoresByEnrollment = new Map<string, typeof scores>();
     for (const score of scores) {
@@ -322,11 +346,13 @@ function computeCourse(
     finalScore: result.finalScore,
     attemptedWeight: result.attemptedWeight,
     earnedSoFar: result.earnedSoFar,
+    teacherComment: enrollment.teacherComment,
     ...(options.admin
       ? {
           admin: {
             visibility: offering.visibility,
             enrollmentStatus: enrollment.status,
+            endedReason: enrollment.endedReason,
             presentInSource: enrollment.presentInSource,
           },
         }

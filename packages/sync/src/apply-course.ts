@@ -1,15 +1,39 @@
 import type { Prisma, PrismaClient } from '@ssrs/database';
 import type { ParsedCourse, SubjectRow } from '@ssrs/sheets';
 import { sameSchemeItems } from './scheme-diff.js';
+import {
+  expectedInTab,
+  filterRowsForTerm,
+  type Audience,
+  type TermConfig,
+  type TermDecision,
+} from './student-terms.js';
 import type { SyncCounts, SyncDeps, SyncIssue } from './types.js';
 
 export interface CourseContext {
   syncJobId: string;
   sourceId: string;
   generationId: string;
+  /** The admin who started the sync. */
+  requestedById: string;
   studentIdByCode: Map<string, string>;
   now: Date;
   hooks?: SyncDeps['hooks'];
+  /** The term's enrollments and this tab's audience (term workbooks). */
+  term?: CourseTerm;
+}
+
+export interface CourseTerm {
+  config: TermConfig;
+  /** null: the term has several programs and nobody confirmed who takes this tab. */
+  audience: Audience | null;
+  decisions: ReadonlyMap<string, TermDecision>;
+}
+
+/** Who should and who does appear in the tab, for "missing" warnings. */
+interface TabPresence {
+  expected: Set<string>;
+  listed: Set<string>;
 }
 
 export interface CourseResult {
@@ -27,7 +51,7 @@ function zeroCounts(): CourseResult['counts'] {
     offerings: { created: 0, updated: 0, unchanged: 0, rejected: 0, failed: 0 },
     criteria: { created: 0, updated: 0, unchanged: 0 },
     schemes: { published: 0, drafted: 0, unchanged: 0, skipped: 0 },
-    enrollments: { created: 0, unchanged: 0, missingInSource: 0 },
+    enrollments: { created: 0, unchanged: 0, missingInSource: 0, commentsUpdated: 0 },
     scores: { created: 0, updated: 0, unchanged: 0, rejected: 0, clearedInSource: 0 },
   };
 }
@@ -47,22 +71,61 @@ class CourseRejected extends Error {
 export async function applyCourse(
   prisma: PrismaClient,
   ctx: CourseContext,
-  course: ParsedCourse,
+  parsed: ParsedCourse,
   /** Runs inside this transaction instead of its own (all-or-nothing sheet changes). */
   shared?: Tx,
 ): Promise<CourseResult> {
   const counts = zeroCounts();
   const issues: SyncIssue[] = [];
+  let course = parsed;
+  let presence: TabPresence | undefined;
+  const audience = ctx.term?.audience;
+  if (ctx.term) {
+    if (!audience) {
+      const rejected = zeroCounts();
+      rejected.offerings.rejected = 1;
+      const issue: SyncIssue = {
+        severity: 'ERROR',
+        scope: 'COURSE',
+        code: 'AUDIENCE_REQUIRED',
+        message: `Choose who takes "${parsed.worksheet}" (shared, or one program) and confirm the tab again; its scores were not synced.`,
+        sheetTab: parsed.worksheet,
+        courseKey: parsed.courseKey,
+      };
+      return { rejected: true, issues: [issue], counts: rejected };
+    }
+    const filtered = filterRowsForTerm(ctx.term.config, parsed, audience, ctx.term.decisions);
+    issues.push(...filtered.issues);
+    course = {
+      ...parsed,
+      rows: filtered.rows,
+      duplicateStudents: [...parsed.duplicateStudents, ...filtered.held],
+    };
+    presence = {
+      expected: expectedInTab(audience, ctx.term.decisions),
+      listed: new Set([...parsed.rows.map((r) => r.studentCode), ...parsed.duplicateStudents]),
+    };
+  }
 
   const run = (work: (tx: Tx) => Promise<void>) =>
     shared ? work(shared) : prisma.$transaction(work, TX_OPTIONS);
   try {
     await run(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`ssrs:sync:offering:${ctx.generationId}:${upper(course.courseKey)}`}))`;
-      const offeringId = await upsertOffering(tx, ctx, course, counts);
+      const { offeringId, restarted } = await upsertOffering(tx, ctx, course, counts);
+      if (audience) await syncAudience(tx, offeringId, audience);
       const criterionIdByKey = await syncCriteria(tx, offeringId, course, counts, issues);
       await syncScheme(tx, ctx, offeringId, course, criterionIdByKey, counts);
-      const enrollmentIdByCode = await syncEnrollments(tx, ctx, offeringId, course, counts, issues);
+      const enrollmentIdByCode = await syncEnrollments(
+        tx,
+        ctx,
+        offeringId,
+        course,
+        counts,
+        issues,
+        restarted,
+        presence,
+      );
       await syncScores(
         tx,
         ctx,
@@ -88,13 +151,67 @@ export async function applyCourse(
 
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * An archived subject whose tab came back starts empty, as if it were new: its marks are cleared
+ * and its enrollments withdrawn, so only what the sheet holds now is shown. Nothing is deleted:
+ * the old marks stay in the history, and enrollments the tab lists are restored by this sync.
+ */
+async function restartSubject(
+  tx: Tx,
+  ctx: CourseContext,
+  offering: { id: string; termId: string },
+  course: ParsedCourse,
+): Promise<void> {
+  const scores = await tx.assessmentScore.findMany({
+    where: { offeringId: offering.id, status: { not: 'CLEARED' } },
+  });
+  if (scores.length > 0) {
+    await tx.assessmentScore.updateMany({
+      where: { id: { in: scores.map((s) => s.id) } },
+      data: { status: 'CLEARED', syncJobId: ctx.syncJobId },
+    });
+    await tx.assessmentScoreRevision.createMany({
+      data: scores.map((s) => ({
+        scoreId: s.id,
+        oldStatus: s.status,
+        oldMark: s.mark,
+        newStatus: 'CLEARED' as const,
+        newMark: s.mark,
+        syncJobId: ctx.syncJobId,
+        sourceTab: course.worksheet,
+      })),
+    });
+  }
+  await tx.enrollment.updateMany({
+    where: { offeringId: offering.id },
+    data: { status: 'WITHDRAWN', presentInSource: false },
+  });
+  await tx.auditLog.create({
+    data: {
+      actorType: 'USER',
+      actorUserId: ctx.requestedById,
+      action: 'subject.reactivated',
+      entityType: 'offering',
+      entityId: offering.id,
+      metadata: {
+        termId: offering.termId,
+        sourceId: ctx.sourceId,
+        syncJobId: ctx.syncJobId,
+        subject: course.title,
+        tab: course.worksheet,
+        clearedScores: scores.length,
+      },
+    },
+  });
+}
+
 /** The offering exists since the tab was confirmed; only its sheet-derived fields can change. */
 async function upsertOffering(
   tx: Tx,
   ctx: CourseContext,
   course: ParsedCourse,
   counts: CourseResult['counts'],
-): Promise<string> {
+): Promise<{ offeringId: string; restarted: boolean }> {
   const existing = await tx.courseOffering.findUnique({ where: { id: course.offeringId } });
   if (!existing) {
     throw new CourseRejected({
@@ -107,6 +224,12 @@ async function upsertOffering(
     });
   }
   const data: Prisma.CourseOfferingUpdateInput = {};
+  const restarted = existing.status === 'ARCHIVED';
+  if (restarted) {
+    await restartSubject(tx, ctx, existing, course);
+    data.status = 'ACTIVE';
+    data.archivedAt = null;
+  }
   if (existing.title !== course.title) data.title = course.title;
   if (existing.sheetTab !== course.worksheet) data.sheetTab = course.worksheet;
   if (existing.sourceId !== ctx.sourceId) data.source = { connect: { id: ctx.sourceId } };
@@ -116,7 +239,22 @@ async function upsertOffering(
   } else {
     counts.offerings.unchanged++;
   }
-  return existing.id;
+  return { offeringId: existing.id, restarted };
+}
+
+/** Who takes the subject, as offering_programs rows: none = shared by every program. */
+async function syncAudience(tx: Tx, offeringId: string, audience: Audience): Promise<void> {
+  const current = await tx.offeringProgram.findMany({ where: { offeringId } });
+  const wanted = audience.kind === 'PROGRAM' ? [audience.programId] : [];
+  const same =
+    current.length === wanted.length && current.every((c) => wanted.includes(c.programId));
+  if (same) return;
+  await tx.offeringProgram.deleteMany({ where: { offeringId } });
+  if (wanted.length > 0) {
+    await tx.offeringProgram.createMany({
+      data: wanted.map((programId) => ({ offeringId, programId })),
+    });
+  }
 }
 
 /** Creates new criteria and applies cosmetic changes (name, category, order). */
@@ -249,6 +387,8 @@ async function syncEnrollments(
   course: ParsedCourse,
   counts: CourseResult['counts'],
   issues: SyncIssue[],
+  restarted: boolean,
+  presence?: TabPresence,
 ): Promise<Map<string, string>> {
   const existing = await tx.enrollment.findMany({
     where: { offeringId },
@@ -268,15 +408,16 @@ async function syncEnrollments(
       enrollmentIdByCode.set(row.studentCode, current.id);
       counts.enrollments.unchanged++;
       const sheetTotal = fixedTotal(row);
-      if (
-        (current.teacherComment ?? null) !== row.comment ||
-        (current.sheetTotal?.toFixed(3) ?? null) !== sheetTotal
-      ) {
+      const stored = current.teacherComment ?? null;
+      // A comment over the length limit was reported by the parser; the stored one stays.
+      const comment = row.commentRejected ? stored : row.comment;
+      if (comment !== stored || (current.sheetTotal?.toFixed(3) ?? null) !== sheetTotal) {
         await tx.enrollment.update({
           where: { id: current.id },
-          data: { teacherComment: row.comment, sheetTotal },
+          data: { teacherComment: comment, sheetTotal },
         });
       }
+      if (comment !== stored) counts.enrollments.commentsUpdated++;
     } else {
       toCreate.push({ studentId, code: row.studentCode, row });
     }
@@ -287,7 +428,7 @@ async function syncEnrollments(
         studentId: c.studentId,
         offeringId,
         lastSeenSyncJobId: ctx.syncJobId,
-        teacherComment: c.row.comment,
+        teacherComment: c.row.commentRejected ? null : c.row.comment,
         sheetTotal: fixedTotal(c.row),
       })),
       select: { id: true, studentId: true },
@@ -302,13 +443,41 @@ async function syncEnrollments(
   if (seenIds.length > 0) {
     await tx.enrollment.updateMany({
       where: { id: { in: seenIds } },
-      data: { presentInSource: true, lastSeenSyncJobId: ctx.syncJobId },
+      data: {
+        presentInSource: true,
+        lastSeenSyncJobId: ctx.syncJobId,
+        ...(restarted ? { status: 'ENROLLED' as const } : {}),
+      },
     });
   }
 
   // Never delete on disappearance (SYNC-08): flag, report, keep marks.
   const seen = new Set(seenIds);
-  const missing = existing.filter((e) => !seen.has(e.id) && e.presentInSource);
+  const duplicates = new Set(course.duplicateStudents);
+  // A subject ended by a program switch is not expected in the tab any more.
+  const missing = existing.filter(
+    (e) =>
+      !seen.has(e.id) &&
+      e.presentInSource &&
+      e.endedReason === null &&
+      !duplicates.has(e.student.studentCode),
+  );
+  if (presence) {
+    const enrolled = new Set(existing.map((e) => e.student.studentCode));
+    for (const code of presence.expected) {
+      if (presence.listed.has(code) || enrolled.has(code)) continue;
+      // Students of other programs are absent from a program's subject by design: no warning.
+      issues.push({
+        severity: 'WARNING',
+        scope: 'ROW',
+        code: 'STUDENT_MISSING_FROM_TAB',
+        message: `Student ${code} takes this subject but is not listed in its tab.`,
+        sheetTab: course.worksheet,
+        courseKey: course.courseKey,
+        studentCode: code,
+      });
+    }
+  }
   if (missing.length > 0) {
     await tx.enrollment.updateMany({
       where: { id: { in: missing.map((e) => e.id) } },
@@ -364,13 +533,34 @@ async function syncScores(
       };
 
       if (value === 'BLANK') {
-        if (current) {
+        // Blank means not entered (D3), also for a mark that was erased. It stays in the history.
+        if (current && current.status !== 'CLEARED') {
+          await tx.assessmentScore.update({
+            where: { id: current.id },
+            data: {
+              status: 'CLEARED',
+              sourceId: ctx.sourceId,
+              sourceTab: course.worksheet,
+              sourceRow: row.rowNumber,
+              syncJobId: ctx.syncJobId,
+            },
+          });
+          revisions.push({
+            scoreId: current.id,
+            oldStatus: current.status,
+            oldMark: current.mark,
+            newStatus: 'CLEARED',
+            newMark: current.mark,
+            syncJobId: ctx.syncJobId,
+            sourceTab: course.worksheet,
+            sourceRow: row.rowNumber,
+          });
           counts.scores.clearedInSource++;
           issues.push({
             severity: 'WARNING',
             scope: 'CELL',
             code: 'MARK_CLEARED_IN_SOURCE',
-            message: `The cell is now empty but a mark (${current.mark.toString()}) was recorded before. The recorded mark is kept.`,
+            message: `The cell is now empty, so the mark (${current.mark.toString()}) no longer counts. It stays in the history.`,
             ...cellAt,
           });
         }

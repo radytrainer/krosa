@@ -4,7 +4,12 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { createPrismaClient, type PrismaClient, type SyncStatus } from '@ssrs/database';
+import {
+  applyTermDefaults,
+  createPrismaClient,
+  type PrismaClient,
+  type SyncStatus,
+} from '@ssrs/database';
 import { truncateAllTables } from '@ssrs/database/testing';
 import {
   InMemorySheetsReader,
@@ -30,6 +35,10 @@ const db = process.env['TEST_DATABASE_URL']!;
 const redisUrl = process.env['TEST_REDIS_URL']!;
 if (new URL(redisUrl).pathname !== '/15' || !db.includes('_test')) throw new Error('test DB only');
 if (new URL(db).hostname !== 'localhost') throw new Error('localhost only');
+
+/** D-20 restarts these. Unset, it is skipped, so CI and dev machines are never touched. */
+const POSTGRES_CONTAINER = process.env['QA_POSTGRES_CONTAINER'] ?? '';
+const REDIS_CONTAINER = process.env['QA_REDIS_CONTAINER'] ?? '';
 
 const env = loadWorkerEnv({
   ...process.env,
@@ -78,6 +87,8 @@ describe('QA D: queue faults', () => {
         },
       })
     ).id;
+    // Default programs and classes, as creating a generation through the API gives them.
+    await applyTermDefaults(prisma, generationId);
   });
 
   afterEach(async () => {
@@ -380,77 +391,85 @@ describe('QA D: queue faults', () => {
     expect(error.message).not.toMatch(/deadlock|prisma|postgres/i);
   });
 
-  it('D-20 PostgreSQL restarts mid-job: no lost marks, and the term is not left blocked', async () => {
-    const reader = new InMemorySheetsReader().set(SHEET, bigWorkbook(1));
-    const src = await source(reader);
-    await importOnce(reader, src);
+  it.skipIf(!POSTGRES_CONTAINER)(
+    'D-20 PostgreSQL restarts mid-job: no lost marks, and the term is not left blocked',
+    async () => {
+      const reader = new InMemorySheetsReader().set(SHEET, bigWorkbook(1));
+      const src = await source(reader);
+      await importOnce(reader, src);
 
-    const job = await newJob(src);
-    await queue.add(SYNC_SOURCE_JOB, { syncJobId: job.id }, syncJobQueueOptions(job.id));
-    await childWorker(2);
-    for (;;) {
-      const row = await prisma.syncJob.findUniqueOrThrow({ where: { id: job.id } });
-      if (row.progressCurrent >= 2 || TERMINAL.includes(row.status)) break;
-      await sleep(20);
-    }
-    execFileSync('docker', ['restart', '-t', '0', 'ssrs-qa-postgres-1'], { stdio: 'ignore' });
-    for (let i = 0; i < 100; i++) {
-      try {
-        await prisma.$queryRaw`SELECT 1`;
-        break;
-      } catch {
-        await sleep(300);
+      const job = await newJob(src);
+      await queue.add(SYNC_SOURCE_JOB, { syncJobId: job.id }, syncJobQueueOptions(job.id));
+      await childWorker(2);
+      for (;;) {
+        const row = await prisma.syncJob.findUniqueOrThrow({ where: { id: job.id } });
+        if (row.progressCurrent >= 2 || TERMINAL.includes(row.status)) break;
+        await sleep(20);
       }
-    }
-    const queued = await queue.getJob(job.id);
-    const stuck = await prisma.syncJob.findUniqueOrThrow({ where: { id: job.id } });
-    const started = Date.now();
-    // The sweep runs every ORPHAN_SWEEP_INTERVAL_MS (5 minutes), so allow for a full cycle.
-    const timer = setInterval(() => {
-      void Promise.all([
-        queued?.getState(),
-        prisma.syncJob.findUnique({ where: { id: job.id } }),
-        queue.getJob(job.id),
-      ]).then(([state, row, fresh]) =>
-        console.log(
-          `[D-20] +${Math.round((Date.now() - started) / 1000)}s queue=${state} attempts=${fresh?.attemptsMade} job=${row?.status}/${row?.phase} lease=${row?.leaseExpiresAt?.toISOString() ?? null}`,
-        ),
-      );
-    }, 30_000);
-    console.log('[D-20] right after restart', stuck.status, stuck.phase, stuck.progressCurrent);
-    const blocked = await prisma.syncJob.findFirst({
-      where: { termId: src.termId, finishedAt: null },
-    });
-    expect(blocked).not.toBeNull();
-    const { job: done, ms } = await terminal(job.id, 400_000).finally(() => clearInterval(timer));
-    console.log('[D-20] finished', done.status, done.failureCode, 'after', ms, 'ms');
-    // A term must not stay blocked for longer than a normal retry cycle.
-    expect.soft(ms, 'time the term stayed blocked').toBeLessThan(120_000);
-    const count = await prisma.assessmentScore.count();
-    expect(count).toBe(STUDENTS * 5 * 6);
-    const states = await versionsApplied();
-    console.log('[D-20] tabs at v2:', states);
-    expect(done.status === 'SUCCEEDED' ? states : [2, 2, 2, 2, 2]).toEqual([2, 2, 2, 2, 2]);
-  }, 500_000);
+      execFileSync('docker', ['restart', '-t', '0', POSTGRES_CONTAINER], { stdio: 'ignore' });
+      for (let i = 0; i < 100; i++) {
+        try {
+          await prisma.$queryRaw`SELECT 1`;
+          break;
+        } catch {
+          await sleep(300);
+        }
+      }
+      const queued = await queue.getJob(job.id);
+      const stuck = await prisma.syncJob.findUniqueOrThrow({ where: { id: job.id } });
+      const started = Date.now();
+      // The sweep runs every ORPHAN_SWEEP_INTERVAL_MS (5 minutes), so allow for a full cycle.
+      const timer = setInterval(() => {
+        void Promise.all([
+          queued?.getState(),
+          prisma.syncJob.findUnique({ where: { id: job.id } }),
+          queue.getJob(job.id),
+        ]).then(([state, row, fresh]) =>
+          console.log(
+            `[D-20] +${Math.round((Date.now() - started) / 1000)}s queue=${state} attempts=${fresh?.attemptsMade} job=${row?.status}/${row?.phase} lease=${row?.leaseExpiresAt?.toISOString() ?? null}`,
+          ),
+        );
+      }, 30_000);
+      console.log('[D-20] right after restart', stuck.status, stuck.phase, stuck.progressCurrent);
+      const blocked = await prisma.syncJob.findFirst({
+        where: { termId: src.termId, finishedAt: null },
+      });
+      expect(blocked).not.toBeNull();
+      const { job: done, ms } = await terminal(job.id, 400_000).finally(() => clearInterval(timer));
+      console.log('[D-20] finished', done.status, done.failureCode, 'after', ms, 'ms');
+      // A term must not stay blocked for longer than a normal retry cycle.
+      expect.soft(ms, 'time the term stayed blocked').toBeLessThan(120_000);
+      const count = await prisma.assessmentScore.count();
+      expect(count).toBe(STUDENTS * 5 * 6);
+      const states = await versionsApplied();
+      console.log('[D-20] tabs at v2:', states);
+      expect(done.status === 'SUCCEEDED' ? states : [2, 2, 2, 2, 2]).toEqual([2, 2, 2, 2, 2]);
+    },
+    500_000,
+  );
 
-  it('D-20b Redis restarts mid-job: the job still finishes correctly', async () => {
-    const reader = new InMemorySheetsReader().set(SHEET, bigWorkbook(1));
-    const src = await source(reader);
-    await importOnce(reader, src);
-    const job = await newJob(src);
-    await queue.add(SYNC_SOURCE_JOB, { syncJobId: job.id }, syncJobQueueOptions(job.id));
-    await childWorker(2);
-    for (;;) {
-      const row = await prisma.syncJob.findUniqueOrThrow({ where: { id: job.id } });
-      if (row.progressCurrent >= 2 || TERMINAL.includes(row.status)) break;
-      await sleep(20);
-    }
-    execFileSync('docker', ['restart', '-t', '0', 'ssrs-qa-redis-1'], { stdio: 'ignore' });
-    const { job: done, ms } = await terminal(job.id, 200_000);
-    console.log('[D-20b] finished', done.status, done.failureCode, 'after', ms, 'ms');
-    expect(done.status).toBe('SUCCEEDED');
-    expect(await versionsApplied()).toEqual([2, 2, 2, 2, 2]);
-  }, 280_000);
+  it.skipIf(!REDIS_CONTAINER)(
+    'D-20b Redis restarts mid-job: the job still finishes correctly',
+    async () => {
+      const reader = new InMemorySheetsReader().set(SHEET, bigWorkbook(1));
+      const src = await source(reader);
+      await importOnce(reader, src);
+      const job = await newJob(src);
+      await queue.add(SYNC_SOURCE_JOB, { syncJobId: job.id }, syncJobQueueOptions(job.id));
+      await childWorker(2);
+      for (;;) {
+        const row = await prisma.syncJob.findUniqueOrThrow({ where: { id: job.id } });
+        if (row.progressCurrent >= 2 || TERMINAL.includes(row.status)) break;
+        await sleep(20);
+      }
+      execFileSync('docker', ['restart', '-t', '0', REDIS_CONTAINER], { stdio: 'ignore' });
+      const { job: done, ms } = await terminal(job.id, 200_000);
+      console.log('[D-20b] finished', done.status, done.failureCode, 'after', ms, 'ms');
+      expect(done.status).toBe('SUCCEEDED');
+      expect(await versionsApplied()).toEqual([2, 2, 2, 2, 2]);
+    },
+    280_000,
+  );
 
   it('D-16b orphans: QUEUED with no queue entry is re-queued; RUNNING with none is failed', async () => {
     const reader = new InMemorySheetsReader().set(SHEET, termWorkbookFixture());

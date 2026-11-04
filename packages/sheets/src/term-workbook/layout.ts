@@ -130,6 +130,17 @@ function isNumericCell(value: CellValue | undefined): boolean {
   return /^-?\d+(\.\d+)?$/.test(text) || text.toUpperCase() === 'ABS';
 }
 
+/** Every data row filled with consecutive whole numbers (1, 2, 3… or 5, 6, 7…), at least two. */
+export function isRowNumbering(cells: readonly (CellValue | undefined)[]): boolean {
+  if (cells.length < 2) return false;
+  const numbers = cells.map((v) => (typeof v === 'string' ? Number(v.trim()) : v));
+  const start = numbers[0];
+  return (
+    typeof start === 'number' &&
+    numbers.every((n, i) => typeof n === 'number' && Number.isInteger(n) && n === start + i)
+  );
+}
+
 /**
  * Group spans for one row above the header: a label covers its own column and the following
  * criterion columns until the next label in that row (merged cells come back as top-left only).
@@ -184,7 +195,10 @@ export function detectTabLayout(grid: Grid, tab: string, log: IssueLog): TabLayo
     const label = cellText(header[c]);
     let role: ColumnRole = label === null ? 'IGNORE' : roleFromLabel(label);
     const values = rows.map((r) => r.cells[c]).filter((v) => cellText(v) !== null);
-    if (label === null && values.length > 0) {
+    // A column numbering the rows (1, 2, 3…) under a blank or generic header ("Column 1").
+    const unweighted = label === null || (role === 'CRITERION' && !parseLabelWeight(label).weight);
+    if (unweighted && isRowNumbering(rows.map((r) => r.cells[c]))) role = 'ROW_NUMBER';
+    if (label === null && values.length > 0 && role !== 'ROW_NUMBER') {
       log.warn('UNRECOGNIZED_COLUMN', `Column ${c + 1} has data but no header; it is ignored.`, {
         sheetTab: tab,
         rowNumber: headerIndex + 1,

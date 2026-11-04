@@ -1,4 +1,4 @@
-import { createPrismaClient, type PrismaClient } from '../src/index.js';
+import { applyTermDefaults, createPrismaClient, type PrismaClient } from '../src/index.js';
 import { assertTestDatabaseUrl, truncateAllTables } from '../src/testing.js';
 
 /**
@@ -518,7 +518,240 @@ describe('term workbooks (delivery plan A.3)', () => {
       /programs_code_check/,
     );
     await prisma.program.create({
-      data: { code: 'SNA', name: 'System and Network Administration' },
+      data: { code: 'SNAC', name: 'System Network Administrators and Cybersecurity' },
+    });
+  });
+});
+
+/** Runs the migration's re-runnable backfill and returns its report. */
+const backfill = async () =>
+  (await prisma.$queryRaw<{ r: unknown }[]>`SELECT ssrs_backfill_student_terms() AS r`)[0]!.r;
+
+const terms = () =>
+  prisma.term.findMany({ where: { generationId: fx.generationId }, orderBy: { number: 'asc' } });
+const program = (code: string) => prisma.program.findUniqueOrThrow({ where: { code } });
+const classOf = async (termId: string, name: string) =>
+  prisma.termClass.findFirstOrThrow({ where: { termId, name } });
+const student = () => prisma.student.findFirstOrThrow({ where: { generationId: fx.generationId } });
+
+describe('term enrollments (step 3)', () => {
+  it('gives every term the default programs and classes, once', async () => {
+    await applyTermDefaults(prisma, fx.generationId);
+    await applyTermDefaults(prisma, fx.generationId);
+    const rows = await prisma.termClass.findMany({
+      include: { termProgram: { include: { term: true, program: true } } },
+    });
+    const byTerm = (n: number) =>
+      rows
+        .filter((r) => r.termProgram.term.number === n)
+        .map((r) => `${r.termProgram.program.code} ${r.name}`)
+        .toSorted();
+    expect(byTerm(1)).toEqual(['GENERAL A', 'GENERAL B', 'GENERAL C', 'GENERAL D']);
+    for (const n of [2, 3, 4, 5]) {
+      expect(byTerm(n)).toEqual(['SNAC D', 'WEP A', 'WEP B', 'WEP C']);
+    }
+    expect(await prisma.programAlias.findMany({ include: { program: true } })).toEqual([
+      expect.objectContaining({ alias: 'SNA', program: expect.objectContaining({ code: 'SNAC' }) }),
+    ]);
+  });
+
+  it('never overwrites a term an admin configured', async () => {
+    await applyTermDefaults(prisma, fx.generationId);
+    const t1 = (await terms())[0]!;
+    await prisma.termClass.deleteMany({ where: { termId: t1.id, name: 'D' } });
+    await applyTermDefaults(prisma, fx.generationId);
+    expect(await prisma.termClass.count({ where: { termId: t1.id } })).toBe(3);
+  });
+
+  it('keeps class names unique within a term, across programs, and trimmed', async () => {
+    await applyTermDefaults(prisma, fx.generationId);
+    const t2 = (await terms())[1]!;
+    const wep = await program('WEP');
+    await expect(
+      prisma.termClass.create({ data: { termId: t2.id, programId: wep.id, name: 'd' } }),
+    ).rejects.toThrow(/term_classes_term_id_name_key|Unique constraint/);
+    await expect(
+      prisma.termClass.create({ data: { termId: t2.id, programId: wep.id, name: ' E' } }),
+    ).rejects.toThrow(/term_classes_name_check/);
+    // A class needs its program to be taught in that term.
+    const general = await program('GENERAL');
+    await expect(
+      prisma.termClass.create({ data: { termId: t2.id, programId: general.id, name: 'G' } }),
+    ).rejects.toThrow(/Foreign key constraint|term_classes_term_id_program_id_fkey/);
+  });
+
+  it('allows one enrollment per student per term, with a class of that term and program', async () => {
+    await applyTermDefaults(prisma, fx.generationId);
+    const [t1, t2] = await terms();
+    const s = await student();
+    const general = await program('GENERAL');
+    const wep = await program('WEP');
+    const base = { studentId: s.id, generationId: fx.generationId };
+    await prisma.studentTerm.create({
+      data: {
+        ...base,
+        termId: t1!.id,
+        programId: general.id,
+        classId: (await classOf(t1!.id, 'A')).id,
+      },
+    });
+    await expect(
+      prisma.studentTerm.create({
+        data: {
+          ...base,
+          termId: t1!.id,
+          programId: general.id,
+          classId: (await classOf(t1!.id, 'B')).id,
+        },
+      }),
+    ).rejects.toThrow(/Unique constraint/);
+    // SNAC's class D under WEP, and a Term 1 class in Term 2, are both refused.
+    await expect(
+      prisma.studentTerm.create({
+        data: {
+          ...base,
+          termId: t2!.id,
+          programId: wep.id,
+          classId: (await classOf(t2!.id, 'D')).id,
+        },
+      }),
+    ).rejects.toThrow(/Foreign key constraint|student_terms_class_id_term_id_program_id_fkey/);
+    await expect(
+      prisma.studentTerm.create({
+        data: {
+          ...base,
+          termId: t2!.id,
+          programId: wep.id,
+          classId: (await classOf(t1!.id, 'A')).id,
+        },
+      }),
+    ).rejects.toThrow(/Foreign key constraint|student_terms_class_id_term_id_program_id_fkey/);
+  });
+
+  it('withdraws for a program switch only with status WITHDRAWN', async () => {
+    await expect(
+      prisma.enrollment.update({
+        where: { id: fx.enrollmentId },
+        data: { endedReason: 'PROGRAM_SWITCH' },
+      }),
+    ).rejects.toThrow(/enrollments_ended_reason_check/);
+    await prisma.enrollment.update({
+      where: { id: fx.enrollmentId },
+      data: { status: 'WITHDRAWN', endedReason: 'PROGRAM_SWITCH' },
+    });
+  });
+
+  it('requires a program for a PROGRAM audience and none otherwise', async () => {
+    await applyTermDefaults(prisma, fx.generationId);
+    const src = await source();
+    const wep = await program('WEP');
+    const tab = (tabName: string, data: object) =>
+      prisma.sheetTabMapping.create({
+        data: { sourceId: src.id, tabName, headerRow: 1, headerSignature: 'a'.repeat(64), ...data },
+      });
+    await expect(tab('A', { audience: 'PROGRAM' })).rejects.toThrow(
+      /sheet_tab_mappings_audience_check/,
+    );
+    await expect(tab('B', { audience: 'SHARED', audienceProgramId: wep.id })).rejects.toThrow(
+      /sheet_tab_mappings_audience_check/,
+    );
+    await tab('C', { audience: 'PROGRAM', audienceProgramId: wep.id });
+    await tab('D', { audience: 'SHARED' });
+    await tab('E', {});
+  });
+
+  it('keeps one open issue per student, term and kind', async () => {
+    const t1 = (await terms())[0]!;
+    const issue = { termId: t1.id, studentCode: 'GEN26-0001', kind: 'UNKNOWN_CLASS' as const };
+    const first = await prisma.studentTermIssue.create({ data: issue });
+    await expect(prisma.studentTermIssue.create({ data: issue })).rejects.toThrow(
+      /Unique constraint/,
+    );
+    await expect(
+      prisma.studentTermIssue.update({ where: { id: first.id }, data: { resolvedAt: new Date() } }),
+    ).rejects.toThrow(/student_term_issues_resolution_check/);
+    await prisma.studentTermIssue.update({
+      where: { id: first.id },
+      data: { resolvedAt: new Date(), resolution: 'FIXED_IN_SHEET' },
+    });
+    await prisma.studentTermIssue.create({ data: issue });
+  });
+
+  describe('backfill', () => {
+    it('creates a row for the term the class came from, and reports the others', async () => {
+      await applyTermDefaults(prisma, fx.generationId);
+      const [t1, t2] = await terms();
+      const sheet = await source(); // Term 1's sheet
+      const s = await student();
+      await prisma.student.update({
+        where: { id: s.id },
+        data: { className: 'B', sourceId: sheet.id },
+      });
+      // A second student whose class came from a Term 2 sheet, with Term 1 subjects only.
+      const user2 = await prisma.user.create({
+        data: { username: 'GEN26-0002', role: 'STUDENT', passwordHash: 'x' },
+      });
+      const sheet2 = await prisma.googleSheetSource.create({
+        data: {
+          generationId: fx.generationId,
+          termId: t2!.id,
+          spreadsheetId: '1ZyXwVuTsRqPoNmLkJiHgFeDcBa9876543210',
+          label: 'Term 2',
+          createdById: fx.userId,
+        },
+      });
+      const s2 = await prisma.student.create({
+        data: {
+          studentCode: 'GEN26-0002',
+          userId: user2.id,
+          generationId: fx.generationId,
+          fullName: 'Example Student B',
+          className: 'C',
+          sourceId: sheet2.id,
+        },
+      });
+      await prisma.enrollment.create({ data: { studentId: s2.id, offeringId: fx.offeringId } });
+      // A third with a class no list knows.
+      const user3 = await prisma.user.create({
+        data: { username: 'GEN26-0003', role: 'STUDENT', passwordHash: 'x' },
+      });
+      const s3 = await prisma.student.create({
+        data: {
+          studentCode: 'GEN26-0003',
+          userId: user3.id,
+          generationId: fx.generationId,
+          fullName: 'Example Student C',
+          className: 'Z',
+          sourceId: sheet.id,
+        },
+      });
+      await prisma.enrollment.create({ data: { studentId: s3.id, offeringId: fx.offeringId } });
+
+      expect(await backfill()).toEqual({
+        created: 1,
+        createdByTermAndClass: { 'T1 GENERAL B': 1 },
+        classFromAnotherTerm: ['GEN26-0002 T1'],
+        unknownClass: ['GEN26-0003 T1'],
+      });
+      const row = await prisma.studentTerm.findFirstOrThrow({
+        include: { class: true, program: true },
+      });
+      expect(row).toMatchObject({ studentId: s.id, termId: t1!.id, programSource: 'SHEET' });
+      expect(row.class.name).toBe('B');
+      expect(row.program.code).toBe('GENERAL');
+      // The latest term's values are mirrored on the student.
+      const general = await program('GENERAL');
+      expect(await prisma.student.findUniqueOrThrow({ where: { id: s.id } })).toMatchObject({
+        className: 'B',
+        programId: general.id,
+      });
+      expect(await prisma.auditLog.count({ where: { action: 'student_terms.backfilled' } })).toBe(
+        1,
+      );
+
+      // Running it again changes nothing.
+      expect(await backfill()).toMatchObject({ created: 0 });
+      expect(await prisma.studentTerm.count()).toBe(1);
     });
   });
 });

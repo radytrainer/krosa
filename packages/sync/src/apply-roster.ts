@@ -23,7 +23,8 @@ const ROSTER_LOCK = 'ssrs:sync:roster';
 const TX_OPTIONS = { maxWait: 30_000, timeout: 120_000 } as const;
 
 /**
- * Creates or updates students from the roster (PROV-01/02):
+ * Creates or updates students from the roster (PROV-01/02). The class is not written here: it
+ * belongs to the student's term enrollment (student-terms.ts), mirrored on the student.
  *  - New student → user (STUDENT, PENDING, locked password, must change) + student + audit row.
  *  - Existing student of this generation → profile fields updated if changed. The user account
  *    (password, status, sessions) is never touched.
@@ -95,8 +96,7 @@ export async function applyRoster(
         existing.fullName !== parsed.fullName ||
         (existing.firstName ?? null) !== parsed.firstName ||
         (existing.lastName ?? null) !== parsed.lastName ||
-        existing.gender !== parsed.gender ||
-        (existing.className ?? null) !== parsed.className;
+        existing.gender !== parsed.gender;
       if (changed) {
         await tx.student.update({
           where: { id: existing.id },
@@ -105,7 +105,6 @@ export async function applyRoster(
             firstName: parsed.firstName,
             lastName: parsed.lastName,
             gender: parsed.gender,
-            className: parsed.className,
           },
         });
         counts.updated++;
@@ -142,7 +141,6 @@ export async function applyRoster(
           firstName: s.firstName,
           lastName: s.lastName,
           gender: s.gender,
-          className: s.className,
           sourceId: ctx.sourceId,
           lastSeenSyncJobId: ctx.syncJobId,
         })),

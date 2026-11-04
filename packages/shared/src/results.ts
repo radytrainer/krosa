@@ -9,8 +9,18 @@ export interface StudentProfileView {
   studentCode: string;
   fullName: string;
   gender: 'FEMALE' | 'MALE' | 'OTHER' | 'UNSPECIFIED';
+  /** The latest term's class. */
   className: string | null;
   generation: { id: string; code: string; name: string };
+  /** Program and class in each term the student was enrolled in, Term 1 first. */
+  terms: StudentTermView[];
+}
+
+export interface StudentTermView {
+  termNumber: number;
+  termName: string;
+  program: { code: string; name: string };
+  className: string;
 }
 
 export interface CriterionResultView {
@@ -41,10 +51,14 @@ export interface CourseResultView {
   finalScore: string | null;
   attemptedWeight: string;
   earnedSoFar: string;
+  /** The teacher's comment from the sheet, as plain text. Never part of any calculation. */
+  teacherComment: string | null;
   /** Present in admin views only. */
   admin?: {
     visibility: 'HIDDEN' | 'VISIBLE';
     enrollmentStatus: 'ENROLLED' | 'WITHDRAWN';
+    /** PROGRAM_SWITCH: withdrawn because the student moved to a program without this subject. */
+    endedReason: 'PROGRAM_SWITCH' | null;
     presentInSource: boolean;
   };
 }

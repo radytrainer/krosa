@@ -6,3 +6,6 @@ export * from './parent.js';
 export * from './engine.js';
 export * from './confirmed.js';
 export * from './preview.js';
+export * from './removals.js';
+export * from './student-terms.js';
+export { termVisibility } from './promote.js';

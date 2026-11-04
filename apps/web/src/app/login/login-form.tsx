@@ -8,14 +8,13 @@ import { Field, onSubmit } from '@/components/app/form';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ApiError, apiFetch } from '@/lib/api';
+import { ApiError, UNREACHABLE, apiFetch } from '@/lib/api';
 import { homeFor, useAuth } from '@/lib/auth';
 import { json } from '@/lib/query';
 import type { Me } from '@/lib/types';
 
 const MESSAGES: Record<string, string> = {
   INVALID_CREDENTIALS: 'The username / student ID or password is incorrect.',
-  ACCOUNT_LOCKED: 'Too many failed attempts. The account is locked for a few minutes.',
   RATE_LIMITED: 'Too many sign-in attempts. Please wait a moment and try again.',
   ACCOUNT_DISABLED: 'This account is disabled. Contact the registrar.',
   ACCOUNT_PENDING:
@@ -67,11 +66,7 @@ export function LoginForm() {
       setBusy(false);
       router.replace(destination(user, next));
     } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? (MESSAGES[err.code] ?? err.message)
-          : 'The service is unreachable. Please try again.',
-      );
+      setError(err instanceof ApiError ? (MESSAGES[err.code] ?? err.message) : UNREACHABLE);
       form.querySelector<HTMLInputElement>('input[name=password]')!.value = '';
       setBusy(false);
     }

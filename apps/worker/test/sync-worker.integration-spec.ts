@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { Test, type TestingModule } from '@nestjs/testing';
-import type { PrismaClient, SyncStatus } from '@ssrs/database';
+import { applyTermDefaults, type PrismaClient, type SyncStatus } from '@ssrs/database';
 import { truncateAllTables } from '@ssrs/database/testing';
 import {
   InMemorySheetsReader,
@@ -95,6 +95,8 @@ describe('Sync worker (integration)', () => {
         },
       })
     ).id;
+    // Default programs and classes, as creating a generation through the API gives them.
+    await applyTermDefaults(prisma, generationId);
   }
 
   beforeAll(async () => {

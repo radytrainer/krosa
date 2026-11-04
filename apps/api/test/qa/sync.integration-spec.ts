@@ -141,7 +141,7 @@ describe('QA D: Google Sheets sync', () => {
         .filter((c) => c.role === 'CRITERION')
         .map((c) => c.proposedWeight);
       expect(weights.map(Number).reduce((a, b) => a + b, 0)).toBeCloseTo(100, 6);
-      await h.sync(src.id);
+      await h.sync(src.id); // Term 3 has two programs: the tab's audience is guessed (WEP only)
       await h.admin.post(`${ADMIN_V1}/terms/${gen.id}/release`, { visible: true }).expect(200);
       const one = await h.activate(CODE_1);
       const two = await h.activate(CODE_2);
@@ -299,15 +299,29 @@ describe('QA D: Google Sheets sync', () => {
     expect((await course(three, 'Logic')).finalScore).toBe('70.00');
   });
 
-  it('D-05 recorded: an erased mark stays, with a warning, and the total stays visible', async () => {
+  it('D-05 an erased mark counts as not entered, with a warning, and stays in the history', async () => {
     const one = await h.activate(CODE_1);
     setSheet((s) => (s.tabs['Logic']![1]![5] = null));
     const job = await h.sync(source);
     const warned = (await issues(job.id)).find((i) => i.code === 'MARK_CLEARED_IN_SOURCE');
     expect(warned).toMatchObject({ severity: 'WARNING', sheetTab: 'Logic', rowNumber: 2 });
     const logic = await course(one, 'Logic');
-    // Q7 default: documented behavior. Blank in the sheet, COMPLETE with the old mark on screen.
-    expect(logic).toMatchObject({ status: 'COMPLETE', finalScore: '78.90' });
+    // Decided after QA: any blank means INCOMPLETE, also for a mark that was entered and erased.
+    expect(logic).toMatchObject({ status: 'INCOMPLETE', finalScore: null });
+    const quiz = logic?.criteria.find((c: { key: string }) => c.key === 'QUIZ_1');
+    expect(quiz?.score).toBeNull();
+    const score = await ctx.prisma.assessmentScore.findFirstOrThrow({
+      where: { status: 'CLEARED' },
+      include: { revisions: { orderBy: { createdAt: 'asc' } } },
+    });
+    expect(score.revisions.at(-1)).toMatchObject({ oldStatus: 'RECORDED', newStatus: 'CLEARED' });
+
+    const again = await h.sync(source);
+    expect((await issues(again.id)).some((i) => i.code === 'MARK_CLEARED_IN_SOURCE')).toBe(false);
+
+    setSheet((s) => (s.tabs['Logic']![1]![5] = 90));
+    await h.sync(source);
+    expect(await course(one, 'Logic')).toMatchObject({ status: 'COMPLETE', finalScore: '78.90' });
   });
 
   describe('D-06 rejected rows name tab and row', () => {
@@ -546,7 +560,7 @@ describe('QA D: Google Sheets sync', () => {
       await h.runJob(res.find((r) => r.status === 202)!.body.jobId);
     });
 
-    it('recorded: retries are not counted against the sync request limit', async () => {
+    it('retries share the limit of 10 sync requests per minute', async () => {
       h.reader.fail(SHEET_A, 'SHEET_NOT_SHARED');
       const failed = await h.sync(source);
       const statuses: number[] = [];
@@ -558,8 +572,7 @@ describe('QA D: Google Sheets sync', () => {
         await h.runJob(res.body.jobId);
         jobId = res.body.jobId;
       }
-      // The spec limits POST /admin/sync only; a retry loop bypasses it.
-      expect(statuses).not.toContain(429);
+      expect(statuses.at(-1)).toBe(429);
     });
   });
 
@@ -578,7 +591,7 @@ describe('QA D: Google Sheets sync', () => {
     });
   });
 
-  it('D-18b new subject after release: recorded whether students see it', async () => {
+  it('D-18b a new subject after release is visible at once (D42)', async () => {
     setSheet((s) => {
       s.tabs['Science'] = [
         ['STUDENT ID', 'FIRST NAME', 'LAST NAME', 'Final 100%'],
@@ -594,11 +607,15 @@ describe('QA D: Google Sheets sync', () => {
       .expect(200);
     await h.sync(source);
     const one = await h.activate(CODE_1);
-    // Decision D7/D16: hidden until released. A released term gets a hidden subject silently.
-    expect(await course(one, 'Science')).toBeUndefined();
+    // It follows the term, which is released. The generation page shows it through these counts.
+    expect(await course(one, 'Science')).toBeDefined();
+    const generation = (await h.admin.get(`${ADMIN_V1}/generations/${h.generationId}`).expect(200))
+      .body as { terms: { number: number; subjects: number; visibleSubjects: number }[] };
+    const term = generation.terms.find((t) => t.number === 1)!;
+    expect(term.visibleSubjects).toBe(term.subjects);
     const offering = await ctx.prisma.courseOffering.findFirstOrThrow({
       where: { title: 'Science' },
     });
-    expect(offering.visibility).toBe('HIDDEN');
+    expect(offering.visibility).toBe('VISIBLE');
   });
 });

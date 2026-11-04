@@ -10,7 +10,12 @@ export interface SubjectRow {
   rowNumber: number;
   /** Keyed by upper-cased criterion key; 'BLANK' = not entered. Invalid cells are absent. */
   marks: Map<string, ParsedMark | 'BLANK'>;
+  /** Teacher comment; null when blank (clears the stored one). */
   comment: string | null;
+  /** Over the length limit: not imported, the stored comment is kept (COMMENT_TOO_LONG). */
+  commentRejected: boolean;
+  /** The tab's MAJOR / PROGRAM cell, cross-checked against the roster by the sync. */
+  programText: string | null;
   /** The sheet's own total, for the cross-check only. */
   sheetTotal: number | null;
 }
@@ -32,4 +37,6 @@ export interface ParsedCourse {
   worksheet: string;
   criteria: ParsedCriterion[];
   rows: SubjectRow[];
+  /** Students rejected for appearing twice: still in the tab, so not missing from it. */
+  duplicateStudents: string[];
 }

@@ -2,7 +2,8 @@
 
 import { CheckCircle2, ChevronDown, ChevronRight, ScanSearch, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
-import { IssuesTable } from '@/components/admin/issues-table';
+import { IssueFilters, PagedIssues, useIssuePage } from '@/components/admin/paged-issues';
+import { NativeSelect } from '@/components/app/form';
 import { StatusPill } from '@/components/app/status';
 import { EmptyState, ErrorState, LoadingRows } from '@/components/app/states';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -19,7 +20,15 @@ import {
 } from '@/components/ui/table';
 import { apiFetch } from '@/lib/api';
 import { json, useApi, useApiMutation } from '@/lib/query';
-import type { ColumnMapping, ColumnRole, DetectedTab, Detection, TabMapping } from '@/lib/types';
+import type {
+  ColumnMapping,
+  ColumnRole,
+  DetectedTab,
+  Detection,
+  SheetIssue,
+  TabMapping,
+  TermClasses,
+} from '@/lib/types';
 
 const ROLES: { value: ColumnRole; label: string }[] = [
   { value: 'CRITERION', label: 'Marks' },
@@ -29,6 +38,8 @@ const ROLES: { value: ColumnRole; label: string }[] = [
   { value: 'FULL_NAME', label: 'Full name' },
   { value: 'GENDER', label: 'Gender' },
   { value: 'CLASS', label: 'Class' },
+  { value: 'PROGRAM', label: 'Major / program (check only)' },
+  { value: 'ROW_NUMBER', label: 'Row number' },
   { value: 'REFERENCE_TOTAL', label: 'Sheet total (check only)' },
   { value: 'COMMENT', label: 'Teacher comment' },
   { value: 'IGNORE', label: 'Ignore' },
@@ -51,18 +62,29 @@ function totalWeight(columns: ColumnMapping[]): number {
   return sum / 1000;
 }
 
+/** "Shared" or "WEP only", for an audience as the API returns it. */
+function audienceLabel(audience: string | null, programs: number): string {
+  if (programs <= 1) return 'Everyone (one program this term)';
+  if (!audience) return 'Not set: the next sync guesses it from who the tab lists';
+  return audience === 'SHARED' ? 'Shared by every program' : `${audience} only`;
+}
+
 function TabReview({
   sourceId,
   tab,
   detected,
   readOnly,
+  programs,
 }: {
   sourceId: string;
   tab: TabMapping;
   detected: DetectedTab['detected'] | undefined;
   readOnly: boolean;
+  /** The term's program codes. */
+  programs: string[];
 }) {
   const [subjectName, setSubjectName] = useState(tab.carriedFrom?.subject ?? tab.tabName);
+  const [audience, setAudience] = useState(tab.audience ?? 'SHARED');
   const [columns, setColumns] = useState(tab.columns);
   const invalidate = [`/admin/sources/${sourceId}`, '/admin/term-workbooks'];
   const base = `/admin/sources/${sourceId}/mappings/${tab.id}`;
@@ -72,6 +94,7 @@ function TabReview({
         `${base}/confirm`,
         json({
           subjectName,
+          ...(programs.length > 1 ? { audience } : {}),
           columns: columns.map((c) => ({
             columnIndex: c.columnIndex,
             role: c.role,
@@ -127,16 +150,43 @@ function TabReview({
         </p>
       ) : null}
       {editable ? (
-        <div className="max-w-sm space-y-1.5">
-          <Label htmlFor={`subject-${tab.id}`}>Subject name</Label>
-          <Input
-            id={`subject-${tab.id}`}
-            value={subjectName}
-            maxLength={120}
-            onChange={(e) => setSubjectName(e.target.value)}
-          />
+        <div className="flex flex-wrap gap-4">
+          <div className="w-full max-w-sm space-y-1.5">
+            <Label htmlFor={`subject-${tab.id}`}>Subject name</Label>
+            <Input
+              id={`subject-${tab.id}`}
+              value={subjectName}
+              maxLength={120}
+              onChange={(e) => setSubjectName(e.target.value)}
+            />
+          </div>
+          {programs.length > 1 ? (
+            <div className="w-full max-w-xs space-y-1.5">
+              <Label htmlFor={`audience-${tab.id}`}>Who takes it</Label>
+              <NativeSelect
+                id={`audience-${tab.id}`}
+                value={audience}
+                onChange={(e) => setAudience(e.target.value)}
+              >
+                <option value="SHARED">Shared by every program</option>
+                {programs.map((p) => (
+                  <option key={p} value={p}>
+                    {p} only
+                  </option>
+                ))}
+              </NativeSelect>
+              <p className="text-xs text-muted-foreground">
+                Proposed from who the tab lists. Students of another program in it are rejected.
+              </p>
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      ) : (
+        <p className="text-sm">
+          <span className="text-muted-foreground">Who takes it: </span>
+          {audienceLabel(tab.audience, programs.length)}
+        </p>
+      )}
       <div className="overflow-x-auto rounded-xl ring-1 ring-foreground/10">
         <Table>
           <TableHeader>
@@ -246,9 +296,42 @@ function TabReview({
   );
 }
 
-export function TermMappings({ sourceId, readOnly }: { sourceId: string; readOnly: boolean }) {
+/** Detection issues are not stored, so they are paged in the browser, the same way as the others. */
+function DetectionIssues({ issues }: { issues: SheetIssue[] }) {
+  const [filters, setFilters] = useState({ severity: '', sheetTab: '' });
+  const matching = issues.filter(
+    (i) =>
+      (!filters.severity || i.severity === filters.severity) &&
+      (!filters.sheetTab || i.sheetTab === filters.sheetTab),
+  );
+  const paged = useIssuePage(matching, `${filters.severity}|${filters.sheetTab}`);
+  const tabs = [...new Set(issues.flatMap((i) => (i.sheetTab ? [i.sheetTab] : [])))].toSorted();
+  return (
+    <div className="space-y-3">
+      <IssueFilters value={filters} tabs={tabs} onChange={setFilters} />
+      <PagedIssues
+        issues={paged.items}
+        total={paged.total}
+        page={paged.page}
+        onPage={paged.setPage}
+      />
+    </div>
+  );
+}
+
+export function TermMappings({
+  sourceId,
+  termId,
+  readOnly,
+}: {
+  sourceId: string;
+  termId: string;
+  readOnly: boolean;
+}) {
   const [open, setOpen] = useState<string | null>(null);
   const mappings = useApi<TabMapping[]>(`/admin/sources/${sourceId}/mappings`);
+  const classes = useApi<TermClasses>(`/admin/terms/${termId}/classes`);
+  const programs = classes.data?.programs.map((p) => p.code) ?? [];
   const detect = useApiMutation(
     () => apiFetch<Detection>(`/admin/sources/${sourceId}/detect`, { method: 'POST' }),
     { invalidate: [`/admin/sources/${sourceId}`] },
@@ -287,9 +370,12 @@ export function TermMappings({ sourceId, readOnly }: { sourceId: string; readOnl
                 : `${detect.data.tabs.length} subject tabs read. Nothing was imported.`}
             </AlertDescription>
           </Alert>
-          {detect.data.issues.length ? <IssuesTable issues={detect.data.issues} /> : null}
+          {detect.data.issues.length ? (
+            // A new detection remounts the list, which starts again on page 1.
+            <DetectionIssues key={detect.submittedAt} issues={detect.data.issues} />
+          ) : null}
           {detect.data.issuesTruncated ? (
-            <p className="text-xs text-muted-foreground">Only the first 500 issues are shown.</p>
+            <p className="text-xs text-muted-foreground">Only the first 500 issues are listed.</p>
           ) : null}
         </div>
       ) : null}
@@ -322,11 +408,12 @@ export function TermMappings({ sourceId, readOnly }: { sourceId: string; readOnl
                 </button>
                 {expanded ? (
                   <TabReview
-                    key={`${tab.id}:${tab.status}:${tab.version}:${tab.columns.length}`}
+                    key={`${tab.id}:${tab.status}:${tab.version}:${tab.columns.length}:${tab.audience}`}
                     sourceId={sourceId}
                     tab={tab}
                     detected={detectedByTab.get(tab.tabName)}
                     readOnly={readOnly}
+                    programs={programs}
                   />
                 ) : null}
               </li>

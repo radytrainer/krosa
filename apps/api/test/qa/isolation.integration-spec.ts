@@ -49,11 +49,11 @@ describe('QA B: authorization and data isolation', () => {
   const offerings = (r: Results) => r.terms.flatMap((t) => t.courses);
 
   describe('route coverage', () => {
-    it('sanity: the live route list matches the documented 53 routes', () => {
+    it('sanity: the live route list matches the documented 61 routes', () => {
       const routes = liveRoutes(ctx);
-      expect(routes.filter((r) => r.path.startsWith('/api/v1/admin'))).toHaveLength(41);
+      expect(routes.filter((r) => r.path.startsWith('/api/v1/admin'))).toHaveLength(49);
       expect(routes.filter((r) => r.path.startsWith('/api/v1/student'))).toHaveLength(5);
-      expect(routes).toHaveLength(53);
+      expect(routes).toHaveLength(61);
     });
 
     it('B-01 a student token is refused on every admin route', async () => {
@@ -183,7 +183,7 @@ describe('QA B: authorization and data isolation', () => {
         expect(ra.student.studentCode).toBe(CODE_A);
         expect(rb.student.studentCode).toBe(CODE_B);
       }
-      const keys = await ctx.redis.keys('ssrs:v1:results:*');
+      const keys = await ctx.redis.keys('ssrs:v3:results:*');
       expect(keys.length).toBeGreaterThanOrEqual(2);
       for (const key of keys) expect(key).toMatch(/:student:[0-9a-f-]{36}$/);
     });

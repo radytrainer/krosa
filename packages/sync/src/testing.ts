@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@ssrs/database';
 import { detectTermWorkbook, type SheetsReader } from '@ssrs/sheets';
+import { loadTermConfig, proposeAudience } from './student-terms.js';
 
 /** MsOffice has no weights in its headers; these reproduce its TOTAL column. */
 const MISSING_WEIGHTS: Record<string, string> = {
@@ -11,13 +12,15 @@ const MISSING_WEIGHTS: Record<string, string> = {
 
 /**
  * Test helper: detects a term workbook and confirms every subject tab, as an admin would on the
- * mapping screen. Tabs named in `skip` stay unconfirmed.
+ * mapping screen. Tabs named in `skip` stay unconfirmed. Each tab gets the audience proposed from
+ * who it lists, unless `audiences` names one ('SHARED' or a program code).
  */
 export async function confirmAllTabs(
   prisma: PrismaClient,
   reader: SheetsReader,
   sourceId: string,
   skip: readonly string[] = [],
+  audiences: Readonly<Record<string, string>> = {},
 ): Promise<void> {
   const source = await prisma.googleSheetSource.findUniqueOrThrow({
     where: { id: sourceId },
@@ -28,6 +31,23 @@ export async function confirmAllTabs(
     termNumber: source.term.number,
     rosterTab: source.rosterTab,
   });
+  const config = await loadTermConfig(prisma, source.termId);
+  const missing = (code: string): never => {
+    throw new Error(`Term ${config.termNumber} has no program ${code}`);
+  };
+  const programId = (code: string) =>
+    config.programs.find((p) => p.code.toUpperCase() === code.toUpperCase())?.id;
+  const audienceOf = (tabName: string, rosterClasses: Record<string, number>) => {
+    const named = audiences[tabName];
+    const proposed = named
+      ? named.toUpperCase() === 'SHARED'
+        ? ({ kind: 'SHARED' } as const)
+        : ({ kind: 'PROGRAM', programId: programId(named) ?? missing(named) } as const)
+      : proposeAudience(config, rosterClasses);
+    return proposed.kind === 'PROGRAM'
+      ? { audience: 'PROGRAM' as const, audienceProgramId: proposed.programId }
+      : { audience: 'SHARED' as const };
+  };
   for (const tab of detection.tabs) {
     const layout = tab.layout;
     if (!layout) continue;
@@ -66,6 +86,7 @@ export async function confirmAllTabs(
         status: 'CONFIRMED',
         version: 1,
         confirmedAt: new Date(),
+        ...audienceOf(tab.tabName, tab.rosterClasses),
       },
     });
     let order = 0;

@@ -10,6 +10,17 @@ export interface CreatePrismaClientOptions {
   log?: Array<'query' | 'info' | 'warn' | 'error'>;
 }
 
+/**
+ * Gives every term of a generation the default programs and classes (migration
+ * 20261103090000_term_enrollments holds them). Terms that already have programs are left alone.
+ */
+export async function applyTermDefaults(
+  db: Pick<PrismaClient, '$executeRaw'>,
+  generationId: string,
+): Promise<void> {
+  await db.$executeRaw`SELECT ssrs_apply_term_defaults(id) FROM terms WHERE generation_id = ${generationId}::uuid`;
+}
+
 export function createPrismaClient(options: CreatePrismaClientOptions): PrismaClient {
   const adapter = new PrismaPg({
     connectionString: options.connectionString,

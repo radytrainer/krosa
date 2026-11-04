@@ -33,7 +33,6 @@ export default function StudentProfilePage() {
                   ['Full name', data.fullName],
                   ['Student ID', data.studentCode],
                   ['Generation', `${data.generation.name} (${data.generation.code})`],
-                  ['Class', data.className ?? '—'],
                   ['Gender', humanize(data.gender)],
                 ].map(([label, value]) => (
                   <div key={label}>
@@ -41,6 +40,18 @@ export default function StudentProfilePage() {
                     <dd className="font-medium">{value}</dd>
                   </div>
                 ))}
+                <div>
+                  <dt className="text-muted-foreground">Program and class by term</dt>
+                  {data.terms.length === 0 ? (
+                    <dd className="font-medium">—</dd>
+                  ) : (
+                    data.terms.map((t) => (
+                      <dd key={t.termNumber} className="font-medium">
+                        {t.termName}: {t.program.name}, class {t.className}
+                      </dd>
+                    ))
+                  )}
+                </div>
               </dl>
             )}
           </CardContent>

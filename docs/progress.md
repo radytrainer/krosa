@@ -5,7 +5,7 @@ Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
 Legend: ✅ done · 🟡 in progress · ⬜ pending · ⛔ blocked · unverified = finished at the time, but the
 code was later removed or changed, so it cannot be checked now
 
-_Last updated: 2026-10-31_
+_Last updated: 2026-11-01_
 
 ## Phases
 
@@ -175,6 +175,70 @@ See the open items in `delivery-plan-2027.md`. A7 (no `EX` marks) is implemented
 ## Blocked
 
 Nothing blocks development. **A live connect through the app needs a real sheet URL.** Automated tests use the in-memory reader, which follows the same contract. Error mapping and retries are unit-tested. Google accepted the key on 2026-10-30, with a made-up ID returning `SHEET_NOT_FOUND`.
+
+## Term enrollments, part 3c: admin screens and history (2026-11-04)
+
+API (`apps/api/src/programs`): programs, a term's class lists (edit; a class in two programs or a
+class with students is refused), student issues per term, approve and reverse a program switch
+(withdrawn subjects keep their marks, flagged for admins, restored on reverse), and an admin's
+program/class per term. Tab confirm takes `audience`; detection proposes it. Students list filters
+by term, program and class; admin student page and the student profile show program and class per
+term. `termNumber` in a sync request is 1–5 (`TERMS_PER_GENERATION` in `@ssrs/shared`, checked
+against the database's CHECK). Web: **Generations → term → Classes and students**, audience on the
+tab review, term/program filters, history sections.
+
+## Term enrollments, part 3b: sync and preview (2026-11-04)
+
+`ALL` decides each student's class and program per term (`packages/sync/src/student-terms.ts`);
+`CLASS 2` cross-checks; subject-tab CLASS/MAJOR only warn; swapped names are silent; a name of
+another student rejects the row and over 20% blocks the tab; row-number columns are recognised.
+Tab audience: confirmed, or guessed once by the sync from who the tab lists and saved
+(`AUDIENCE_GUESSED`). Student issues (unknown class, conflict, duplicate, program switch) block
+only that student. The preview counts new enrollments, class changes and program changes. Fixtures
+shaped like the real files: `program-workbooks-fixture.ts` (made-up people). Rehearsed on a copy
+of the dev database with the real workbooks: Term 1 101 General (A 26, B 24, C 25, D 26); Term 2
+75 WEP + 25 SNAC with Term 1 unchanged; audiences guessed right; Web Design and UXUI blocked
+(74 of 75 rows carry another student's name); re-sync changes nothing. Admin screens (class lists,
+issue list, audience on confirm, program-switch approval) are part 3c.
+
+## Term enrollments, part 3a: data model (2026-11-03)
+
+Migration `20261103090000_term_enrollments`: `program_aliases`, `term_programs`, `term_classes`,
+`student_terms`, `student_term_issues`, tab audience on `sheet_tab_mappings`,
+`enrollments.ended_reason`, column roles PROGRAM and ROW_NUMBER. Defaults and the backfill are SQL
+functions (`ssrs_apply_term_defaults`, `ssrs_backfill_student_terms`); new generations get the
+defaults. Rehearsed on a copy of the dev database: 101 Term 1 General rows (A 26, B 24, C 25, D 26),
+none from another term, re-run creates 0, no schema drift. **Not applied to the dev database yet.**
+Sync does not use the new tables until part 3b. Check report: `qa/step3-check.md`.
+
+## Issue lists, 5 per page (2026-11-03)
+
+Retest issue 2. Job, preview and tab-detection issues share one component (`paged-issues.tsx`):
+5 per page, "1–5 of 23", no page controls at 5 or fewer, back to page 1 on any filter change, tab
+and severity filters everywhere (plus workbook on multi-source jobs). Jobs and previews are paged
+on the server; a preview now keeps up to 20,000 issues and its summary carries only counts
+(`GET /admin/sources/:id/preview/:previewId/issues`). Detection issues are not stored, so they are
+paged in the browser. What is reported did not change. The dev database held 5 stored warnings,
+none repeated per row; detection warnings are not stored, so a flood there is not yet explained.
+
+## Teacher comments (2026-11-03)
+
+Retest issue 1. The comment was stored but never returned by the results API or shown on the student
+screen, and the preview ignored it (D6 was "stored only"). Now: shown to the student per released
+subject, also when Incomplete, as plain text; counted in the preview (`comments`) and the job
+(`enrollments.commentsUpdated`); blank or whitespace-only cells clear it; over 4000 characters
+(code points) it is not imported and `COMMENT_TOO_LONG` is reported. Results cache key is now
+`ssrs:v2:results:`. Results: 343 unit, all integration packages green (worker: 2 skipped without
+QA containers), 12 of 12 e2e with `E2E_CHANNEL=msedge`. Next: warnings pagination, then term
+enrollments (classes and programs).
+
+## QA fixes (2026-11-01)
+
+All 17 defects in `qa/qa-report.md` fixed and re-tested, on top of commit `66888b7`. Decisions D32-D37
+are in `delivery-plan-2027.md`. Results: 338 unit, 349 integration (2 skipped without QA containers),
+12 of 12 e2e, 22 of 22 QA UI, 3 of 3 QA session in 10 runs, 14 of 14 QA worker on the `ssrs-qa`
+containers. Migrations `20261101090000_score_cleared` and `20261101090100_pending_sheet_review` are
+applied to the dev database. Not yet tried on a real Google Sheet.
 
 ## Re-review (2026-10-31)
 

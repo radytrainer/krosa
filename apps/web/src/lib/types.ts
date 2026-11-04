@@ -97,6 +97,8 @@ export type ColumnRole =
   | 'FULL_NAME'
   | 'GENDER'
   | 'CLASS'
+  | 'PROGRAM'
+  | 'ROW_NUMBER'
   | 'CRITERION'
   | 'REFERENCE_TOTAL'
   | 'COMMENT'
@@ -120,6 +122,8 @@ export interface TabMapping {
   headerRow: number;
   offeringId: string | null;
   confirmedAt: string | null;
+  /** SHARED, a program code, or null (the sync guesses it from who the tab lists). */
+  audience: string | null;
   columns: ColumnMapping[];
   carriedFrom: { subject: string; headersMatch: boolean } | null;
 }
@@ -146,13 +150,40 @@ export interface ImpactCounts {
   invalid: number;
 }
 
+/** Teacher comments a sync would write; missing on previews run before comments were counted. */
+export interface CommentCounts {
+  new: number;
+  changed: number;
+  cleared: number;
+  unchanged: number;
+  tooLong: number;
+}
+
 export interface PreviewTab {
   tabName: string;
   subject: string;
   status: 'OK' | 'MISSING' | 'HEADERS_CHANGED' | 'INVALID';
   scores: ImpactCounts;
-  keptBlank: number;
+  comments?: CommentCounts;
+  /** Stored marks that a now-blank cell would clear. */
+  cleared: number;
   weightsChanged: boolean;
+}
+
+export interface RemovedSubject {
+  offeringId: string;
+  subject: string;
+  tabName: string | null;
+  students: number;
+  scores: number;
+}
+
+export interface SheetComparison {
+  kept: string[];
+  added: { subject: string; tabName: string; returning: boolean }[];
+  removed: RemovedSubject[];
+  possibleRenames: { from: string; to: string }[];
+  blockers: string[];
 }
 
 export interface SheetPreview {
@@ -164,13 +195,27 @@ export interface SheetPreview {
     canConfirm: boolean;
     students: ImpactCounts;
     scores: ImpactCounts;
+    comments?: CommentCounts;
+    /** Missing on previews run before term enrollments existed. */
+    termEnrollments?: { created: number; classChanged: number; unchanged: number; blocked: number };
+    programChanges?: { studentCode: string; from: string; to: string }[];
+    studentIssues?: Record<string, number>;
     tabs: PreviewTab[];
     unmappedTabs: string[];
-    subjectsNotInSheet: string[];
+    comparison: SheetComparison;
     missingStudents: { total: number; sample: { studentCode: string; fullName: string }[] };
-    issues: SheetIssue[];
+    /** The issues themselves are paged: GET /admin/sources/:id/preview/:previewId/issues. */
+    issueCounts: { total: number; errors: number; warnings: number };
+    firstErrors: string[];
     issuesTruncated: boolean;
   };
+}
+
+/** One page of a preview's issues. */
+export interface PreviewIssuePage extends Paginated<SheetIssue> {
+  tabs: string[];
+  /** Issues found but past the storage cap. */
+  notListed: number;
 }
 
 export interface DetectedTab {
@@ -207,8 +252,11 @@ export interface Student {
   studentCode: string;
   fullName: string;
   gender: 'FEMALE' | 'MALE' | 'OTHER' | 'UNSPECIFIED';
+  /** The latest term's class and program. */
   className: string | null;
+  program: { code: string; name: string } | null;
   generation: { id: string; code: string; name: string };
+  terms: StudentTerm[];
   account: {
     status: AccountStatus;
     mustChangePassword: boolean;
@@ -218,6 +266,57 @@ export interface Student {
   };
   createdAt: string;
   updatedAt: string;
+}
+
+export interface StudentTerm {
+  termId: string;
+  termNumber: number;
+  termName: string;
+  program: { code: string; name: string };
+  className: string;
+  /** ADMIN: set by an admin; the sync keeps the program. */
+  programSource: 'SHEET' | 'ADMIN';
+}
+
+export interface Program {
+  id: string;
+  code: string;
+  name: string;
+  aliases: string[];
+}
+
+export interface TermClasses {
+  termId: string;
+  termNumber: number;
+  termName: string;
+  generationId: string;
+  programs: {
+    id: string;
+    code: string;
+    name: string;
+    classes: { id: string; name: string; students: number }[];
+  }[];
+}
+
+export type StudentIssueKind =
+  | 'UNDETERMINED_PROGRAM'
+  | 'PROGRAM_CONFLICT'
+  | 'PROGRAM_SWITCH'
+  | 'UNKNOWN_CLASS'
+  | 'DUPLICATE_IN_ROSTER';
+
+export interface StudentIssue {
+  id: string;
+  termId: string;
+  studentId: string | null;
+  studentCode: string;
+  fullName: string | null;
+  kind: StudentIssueKind;
+  detail: Record<string, unknown>;
+  syncJobId: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  resolution: string | null;
 }
 
 export interface IssuedCredential {
@@ -270,6 +369,8 @@ export interface SyncError extends SheetIssue {
 
 export interface SyncErrorPage extends Paginated<SyncError> {
   tabs: string[];
+  /** Issues counted on the job but past the storage cap. */
+  notListed: number;
 }
 
 export interface SyncTargetOption {

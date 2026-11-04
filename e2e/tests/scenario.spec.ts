@@ -1,5 +1,11 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
-import { TERM_FIXTURE_REPLACEMENT_ID, TERM_FIXTURE_SPREADSHEET_ID } from '@ssrs/sheets/testing';
+import {
+  LOGIC_COMMENT,
+  TERM_FIXTURE_REPLACEMENT_ID,
+  TERM_FIXTURE_SPREADSHEET_ID,
+} from '@ssrs/sheets/testing';
+import { createPrismaClient } from '@ssrs/database';
+import { loadRootEnv } from '@ssrs/shared/node';
 import { E2E } from '../support/stack.js';
 
 /**
@@ -79,11 +85,51 @@ test('4. detects the tabs and confirms Logic', async () => {
 
 test('5. synchronizes: the worker imports students and marks', async () => {
   await admin.getByRole('button', { name: 'Sync now' }).click();
+  await admin.getByRole('dialog').getByRole('button', { name: 'Sync now' }).click();
   await expect(admin).toHaveURL(/\/admin\/sync\/[0-9a-f-]+$/);
   await expect(admin.getByText('Succeeded', { exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(admin.getByRole('heading', { name: 'What changed' })).toBeVisible();
   // Issues saved at the end of the job appear without reloading the page.
   await expect(admin.getByText(/UNMAPPED_TAB/).first()).toBeVisible();
+  // Five issues or fewer: a count, and no page controls.
+  await expect(admin.getByText(/^[1-5] issues?$/)).toBeVisible();
+  await expect(admin.getByRole('navigation', { name: 'Pagination' })).toHaveCount(0);
+});
+
+test('5b. a long issue list is paged 5 at a time', async () => {
+  // The fixture gives only a few issues: add warnings to this job until it has 23.
+  const jobId = new URL(admin.url()).pathname.split('/').pop()!;
+  loadRootEnv();
+  const prisma = createPrismaClient({
+    connectionString: process.env['TEST_DATABASE_URL']!,
+    poolMax: 1,
+  });
+  try {
+    const existing = await prisma.syncError.count({ where: { jobId } });
+    await prisma.syncError.createMany({
+      data: Array.from({ length: 23 - existing }, (_, i) => ({
+        jobId,
+        severity: 'WARNING' as const,
+        code: 'PROFILE_MISMATCH',
+        message: `Added warning ${i + 1}`,
+        sheetTab: 'Logic',
+        rowNumber: 100 + i,
+      })),
+    });
+  } finally {
+    await prisma.$disconnect();
+  }
+  await admin.reload();
+  await expect(admin.getByText('1–5 of 23')).toBeVisible();
+  const issues = admin.locator('section', {
+    has: admin.getByRole('heading', { name: 'Issues', exact: true }),
+  });
+  await expect(issues.locator('tbody tr')).toHaveCount(5);
+  await admin.getByRole('button', { name: 'Next page' }).click();
+  await expect(admin.getByText('6–10 of 23')).toBeVisible();
+  // A filter change goes back to page 1.
+  await admin.getByLabel('Tab', { exact: true }).selectOption('Logic');
+  await expect(admin.getByText(/^1–5 of \d+$/)).toBeVisible();
 });
 
 test('6. issues a temporary password to a student', async () => {
@@ -126,6 +172,23 @@ test('9. an administrator releases the term and the student sees it at once', as
   await expect(logic).toContainText('78.90');
   await logic.click();
   await expect(student.getByRole('cell', { name: 'Quiz 1' })).toBeVisible();
+  // The teacher's comment, shown as plain text: the markup is not rendered.
+  await expect(student.getByText(LOGIC_COMMENT, { exact: true })).toBeVisible();
+  await expect(student.locator('blockquote b')).toHaveCount(0);
+});
+
+test('9b. term classes for the admin, term history for the student', async () => {
+  await nav(admin, 'Generations').click();
+  await admin.getByRole('link', { name: 'GEN2027' }).click();
+  await admin.getByRole('link', { name: 'Classes and students' }).first().click();
+  await expect(admin.getByRole('heading', { name: 'Term 1: classes and students' })).toBeVisible();
+  await expect(admin.getByRole('cell', { name: /^GENERAL/ })).toBeVisible();
+  await expect(admin.getByText('Nothing to settle')).toBeVisible();
+
+  await student.goto('/student/profile');
+  await expect(student.getByText('Term 1: General, class A')).toBeVisible();
+  await nav(student, 'My results').click(); // where the next step expects the student
+  await expect(student.getByRole('button', { name: /Logic/ })).toBeVisible();
 });
 
 test('10. changing the sheet changes nothing for students until its sync completes', async () => {
@@ -157,9 +220,16 @@ test('10. changing the sheet changes nothing for students until its sync complet
   await admin.getByRole('button', { name: 'Confirm tab' }).click();
   await expect(admin.getByRole('button', { name: 'Reopen for review' })).toBeVisible();
   await expect(admin.getByText('Could not load this data')).toHaveCount(0);
+  // Every subject tab of a new sheet needs a decision before its preview can be confirmed.
+  for (const tab of ['ENG', 'PL', 'BCU', 'MsOffice']) {
+    await admin.getByRole('button', { name: new RegExp(`^${tab}`) }).click();
+    await admin.getByRole('button', { name: 'Not a subject' }).click();
+    await expect(admin.getByRole('button', { name: 'Not a subject' })).toHaveCount(0);
+  }
   await admin.getByRole('button', { name: 'Run preview' }).click();
   await expect(admin.getByText(/1 changed/)).toBeVisible();
   await admin.getByRole('button', { name: 'Confirm preview' }).click();
+  await admin.getByRole('dialog').getByRole('button', { name: 'Confirm' }).click();
   await expect(admin.getByRole('button', { name: 'Sync now' })).toBeEnabled();
   await student.reload();
   await expect(student.getByRole('button', { name: /Logic/ })).toContainText('78.90');

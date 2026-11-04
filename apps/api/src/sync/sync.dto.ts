@@ -8,9 +8,11 @@ import {
   IsString,
   IsUUID,
   Length,
+  Max,
   Min,
   ValidateIf,
 } from 'class-validator';
+import { TERMS_PER_GENERATION } from '@ssrs/shared';
 import { PaginationQueryDto } from '../common/pagination.js';
 
 export class RequestSyncDto {
@@ -39,7 +41,15 @@ export class RequestSyncDto {
   @ValidateIf((o: RequestSyncDto) => o.scope === 'ALL' && o.termNumber !== undefined)
   @IsInt()
   @Min(1)
+  @Max(TERMS_PER_GENERATION)
   termNumber?: number;
+
+  @ApiPropertyOptional({
+    description: 'Scope SOURCE: the confirmed preview of the active sheet that this sync applies',
+  })
+  @ValidateIf((o: RequestSyncDto) => o.scope === 'SOURCE' && o.previewId !== undefined)
+  @IsUUID()
+  previewId?: string;
 }
 
 const STATUSES = [

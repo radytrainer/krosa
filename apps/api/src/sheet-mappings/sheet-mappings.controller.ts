@@ -7,6 +7,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Req,
 } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
@@ -14,7 +15,11 @@ import type { Request } from 'express';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CurrentUser, Roles } from '../auth/decorators.js';
 import { requestMeta } from '../common/request-meta.js';
-import { ConfirmMappingDto } from './sheet-mappings.dto.js';
+import {
+  ConfirmMappingDto,
+  ConfirmPreviewDto,
+  ListPreviewIssuesQueryDto,
+} from './sheet-mappings.dto.js';
 import { SheetMappingsService } from './sheet-mappings.service.js';
 
 @ApiTags('admin: term workbook mappings')
@@ -69,7 +74,7 @@ export class SheetMappingsController {
     return this.mappings.latestPreview(sourceId);
   }
 
-  /** Compares a pending sheet with the database. Imports nothing. */
+  /** Compares a pending or active sheet with the database. Imports nothing. */
   @Post('preview')
   preview(
     @Param('id', ParseUUIDPipe) sourceId: string,
@@ -79,15 +84,26 @@ export class SheetMappingsController {
     return this.mappings.preview(sourceId, user, requestMeta(req));
   }
 
+  /** One page of a preview's issues; the preview itself carries only counts. */
+  @Get('preview/:previewId/issues')
+  previewIssues(
+    @Param('id', ParseUUIDPipe) sourceId: string,
+    @Param('previewId', ParseUUIDPipe) previewId: string,
+    @Query() query: ListPreviewIssuesQueryDto,
+  ) {
+    return this.mappings.previewIssues(sourceId, previewId, query);
+  }
+
   @Post('preview/:previewId/confirm')
   @HttpCode(HttpStatus.OK)
   confirmPreview(
     @Param('id', ParseUUIDPipe) sourceId: string,
     @Param('previewId', ParseUUIDPipe) previewId: string,
+    @Body() dto: ConfirmPreviewDto,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    return this.mappings.confirmPreview(sourceId, previewId, user, requestMeta(req));
+    return this.mappings.confirmPreview(sourceId, previewId, dto, user, requestMeta(req));
   }
 
   /** Reads the term workbook and stores a DRAFT mapping proposal for every subject tab. */

@@ -14,6 +14,13 @@ const ALICE = { username: 'GEN26-0001', password: 'Student-Alice-Pass-2026' };
 const BOB = { username: 'GEN26-0002', password: 'Student-Bob-Pass-2026' };
 const ME = '/api/v1/student/me';
 
+const allCourses = (body: { terms: { courses: Record<string, unknown>[] }[] }) =>
+  body.terms.flatMap((t) => t.courses);
+
+/** A results body without teacher comments, to show they change nothing else. */
+const strip = (body: unknown) =>
+  JSON.parse(JSON.stringify(body), (k, v) => (k === 'teacherComment' ? undefined : v));
+
 interface CriterionSpec {
   key: string;
   maxMark: string;
@@ -164,6 +171,17 @@ describe('Student results (integration)', () => {
   let bob: ReturnType<typeof api>;
   let admin: ReturnType<typeof api>;
 
+  const comment = (studentId: string, offeringId: string, teacherComment: string) =>
+    ctx.prisma.enrollment.updateMany({
+      where: { studentId, offeringId },
+      data: { teacherComment },
+    });
+  // Comments are written straight to the database here, which does not bump the cache version.
+  const clearResultsCache = async () => {
+    const keys = await ctx.redis.keys('ssrs:v3:results:*');
+    if (keys.length) await ctx.redis.del(...keys);
+  };
+
   beforeEach(async () => {
     s = await seed();
     alice = api(await login(ctx, ALICE.username, ALICE.password));
@@ -247,6 +265,49 @@ describe('Student results (integration)', () => {
       expect(t3.summary.status).toBe('EMPTY');
     });
 
+    describe('teacher comments', () => {
+      const KHMER = 'ពូកែណាស់ <script>alert(1)</script> 👏🏽';
+
+      it('shows a student their own comment per subject, also when INCOMPLETE', async () => {
+        const before = await alice.get(`${ME}/results`).expect(200);
+        await comment(s.alice.id, s.math.id, KHMER);
+        await comment(s.alice.id, s.eng.id, 'Finish the final exam.');
+        await clearResultsCache();
+        const after = await alice.get(`${ME}/results`).expect(200);
+        const [eng, math] = after.body.terms[0].courses;
+        expect(math).toMatchObject({ status: 'COMPLETE', teacherComment: KHMER });
+        expect(eng).toMatchObject({
+          status: 'INCOMPLETE',
+          teacherComment: 'Finish the final exam.',
+        });
+        expect(
+          allCourses(before.body).find((c) => c.offeringId === s.sci.id)?.teacherComment,
+        ).toBeNull();
+
+        // Text only: totals, status and summaries are identical with or without comments.
+        expect(strip(after.body)).toEqual(strip(before.body));
+        const one = await alice.get(`${ME}/courses/${s.math.id}`).expect(200);
+        expect(one.body.teacherComment).toBe(KHMER);
+      });
+
+      it("never shows another student's comment or a hidden subject's comment", async () => {
+        await comment(s.alice.id, s.math.id, 'For Alice only');
+        await comment(s.alice.id, s.art.id, 'Hidden subject comment');
+        await clearResultsCache();
+        const bobRes = await bob.get(`${ME}/results`).expect(200);
+        expect(JSON.stringify(bobRes.body)).not.toContain('For Alice only');
+        expect(allCourses(bobRes.body)[0]?.teacherComment).toBeNull();
+        const aliceRes = await alice.get(`${ME}/results`).expect(200);
+        expect(JSON.stringify(aliceRes.body)).not.toContain('Hidden subject comment');
+        await alice.get(`${ME}/courses/${s.art.id}`).expect(404);
+        // Admins see it, on hidden subjects too.
+        const adminRes = await admin
+          .get(`/api/v1/admin/students/${s.alice.id}/results`)
+          .expect(200);
+        expect(JSON.stringify(adminRes.body)).toContain('Hidden subject comment');
+      });
+    });
+
     it('filters to one term and validates the term parameter', async () => {
       const res = await alice.get(`${ME}/results?term=2`).expect(200);
       expect(res.body.terms.map((t: { number: number }) => t.number)).toEqual([2]);
@@ -263,6 +324,7 @@ describe('Student results (integration)', () => {
         gender: 'UNSPECIFIED',
         className: null,
         generation: { id: s.generation.id, code: 'GEN2026', name: 'Generation 2026' },
+        terms: [],
       });
 
       const courses = await alice.get(`${ME}/courses`).expect(200);
@@ -396,6 +458,7 @@ describe('Student results (integration)', () => {
       expect(t1.courses[0].admin).toEqual({
         visibility: 'HIDDEN',
         enrollmentStatus: 'ENROLLED',
+        endedReason: null,
         presentInSource: true,
       });
       expect(t1.summary.totalCourses).toBe(3);
@@ -407,7 +470,7 @@ describe('Student results (integration)', () => {
       expect(t3.summary).toMatchObject({ status: 'EMPTY', totalCourses: 0 });
 
       // Never cached.
-      expect(await ctx.redis.keys('ssrs:v1:results:*')).toEqual([]);
+      expect(await ctx.redis.keys('ssrs:v3:results:*')).toEqual([]);
       await admin
         .get('/api/v1/admin/students/01900000-0000-7000-8000-000000000000/results')
         .expect(404);

@@ -1,6 +1,6 @@
 # Verifying Term Workbooks
 
-Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+Last verified: 2026-11-01, commit 66888b7 plus uncommitted working tree.
 
 How to check the full flow: connect, confirm, sync, release.
 
@@ -26,10 +26,10 @@ pnpm test
 pnpm test:integration
 ```
 
-| Command                 | Expected on 2026-10-31                                      |
-| ----------------------- | ----------------------------------------------------------- |
-| `pnpm test`             | 217 passed: shared 51, sheets 114, sync 3, api 46, worker 3 |
-| `pnpm test:integration` | 178 passed: database 25, sync 31, worker 3, api 119         |
+| Command                 | Expected on 2026-11-01                                          |
+| ----------------------- | --------------------------------------------------------------- |
+| `pnpm test`             | 338 passed: sheets 183, shared 96, api 53, sync 3, worker 3     |
+| `pnpm test:integration` | 349 passed, 2 skipped: api 278, sync 31, database 25, worker 15 |
 
 Both need `TEST_DATABASE_URL` and `TEST_REDIS_URL` in `.env`.
 
@@ -57,9 +57,11 @@ E2E_CHANNEL=msedge pnpm test:e2e
 Expected: 12 passed. Without `E2E_CHANNEL` it uses Chromium. In PowerShell, set it first:
 `$env:E2E_CHANNEL='msedge'`, then run `pnpm test:e2e`.
 
-`apps/api/test/sheet-change.integration-spec.ts` covers changing a term's sheet: student scores stay
-identical until a sync completes (subject and column names do not, see
-[delivery-plan-2027.md](delivery-plan-2027.md)), previews are required and can't be reused, and failed or cancelled
+`apps/api/test/removed-subjects.integration-spec.ts` covers subjects leaving a sheet: the preview lists,
+the acknowledgment, archive, rollback, renames, and a returning subject starting fresh.
+
+`apps/api/test/sheet-change.integration-spec.ts` covers changing a term's sheet: student scores and
+names stay identical until a sync completes, previews are required and can't be reused, and failed or cancelled
 syncs change nothing.
 
 ## 3. Real workbook, without the app

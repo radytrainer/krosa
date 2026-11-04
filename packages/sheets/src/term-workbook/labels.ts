@@ -13,6 +13,8 @@ export type ColumnRole =
   | 'FULL_NAME'
   | 'GENDER'
   | 'CLASS'
+  | 'PROGRAM'
+  | 'ROW_NUMBER'
   | 'CRITERION'
   | 'REFERENCE_TOTAL'
   | 'COMMENT'
@@ -56,20 +58,15 @@ const ROLE_SYNONYMS: [ColumnRole, readonly string[]][] = [
   ['FULL_NAME', ['NAME', 'FULL NAME', 'STUDENT NAME', 'STUDENT_NAME']],
   ['GENDER', ['GENDER', 'SEX']],
   ['CLASS', ['CLASS', 'GROUP']],
+  // Cross-checked against the roster only. CLASS 2 holds program and class ("WEP A", "SNAC").
+  ['PROGRAM', ['MAJOR', 'PROGRAM', 'PROGRAMME', 'CLASS 2', 'CLASS2']],
+  ['ROW_NUMBER', ['#', '#N', 'NO', 'NO.', 'N°']],
   ['REFERENCE_TOTAL', ['TOTAL', 'TOTAL SCORE', 'FINAL TOTAL', 'FINAL SCORE']],
   ['COMMENT', ['COMMENT', 'COMMENTS', 'REMARK', 'REMARKS', 'FEEDBACK']],
 ];
 
 /** Computed or bookkeeping columns that are never marks. */
-const COMPUTED = [
-  /^GRADE$/,
-  /^GLOBAL GRADE$/,
-  /^RANK$/,
-  /^NO\.?$/,
-  /^#$/,
-  /^TOTAL \d+$/,
-  /^AVERAGE\b/,
-];
+const COMPUTED = [/^GRADE$/, /^GLOBAL GRADE$/, /^RANK$/, /^TOTAL \d+$/, /^AVERAGE\b/];
 
 /** Role implied by the label alone; CRITERION when nothing else matches. */
 export function roleFromLabel(label: string): ColumnRole {

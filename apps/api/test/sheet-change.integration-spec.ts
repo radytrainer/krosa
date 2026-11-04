@@ -1,5 +1,6 @@
 import {
   InMemorySheetsReader,
+  LOGIC_COMMENT,
   TERM_FIXTURE_SPREADSHEET_ID,
   termWorkbookFixture,
 } from '@ssrs/sheets/testing';
@@ -38,6 +39,10 @@ interface Tab {
   carriedFrom: { subject: string; headersMatch: boolean } | null;
 }
 
+/** The PL tab's comment counts in a preview summary. */
+const plTab = (summary: { tabs: { tabName: string; comments: unknown }[] }) =>
+  summary.tabs.find((t) => t.tabName === 'PL')!.comments;
+
 /** Sheet B: the same workbook, with one changed Logic mark for student 001. */
 function sheetB() {
   const sheet = termWorkbookFixture();
@@ -45,6 +50,16 @@ function sheetB() {
   sheet.tabs['Logic']![1]![5] = 55;
   return sheet;
 }
+
+/** Sheet B with a subject no other sheet has. */
+const withScience = () => {
+  const sheet = sheetB();
+  sheet.tabs['Science'] = [
+    ['STUDENT ID', 'FIRST NAME', 'LAST NAME', 'Final 100%'],
+    ['PNC2027-001', 'DARA', 'SOK', 88],
+  ];
+  return sheet;
+};
 
 describe('Changing the sheet of a term (integration)', () => {
   let ctx: TestContext;
@@ -73,6 +88,11 @@ describe('Changing the sheet of a term (integration)', () => {
 
   const statusOf = async (spreadsheetId: string) =>
     (await ctx.prisma.googleSheetSource.findUniqueOrThrow({ where: { spreadsheetId } })).status;
+
+  const offering = () => ctx.prisma.courseOffering.findFirst({ where: { title: 'Science' } });
+
+  const previewOf = async () =>
+    (await admin.post(`${V1}/sources/${sourceA}/preview`).expect(201)).body.summary;
 
   const change = (id = SHEET_B, label = 'Sheet B') =>
     admin.post(`${V1}/terms/${termId}/sources/change`, { url: urlFor(id), label });
@@ -168,6 +188,87 @@ describe('Changing the sheet of a term (integration)', () => {
       .expect(204);
   });
 
+  describe('teacher comments', () => {
+    const KHMER = 'ពូកែណាស់ សូមបន្ត 👏🏽';
+
+    it('counts new, changed, cleared and too-long comments in the preview', async () => {
+      const sheet = termWorkbookFixture();
+      sheet.tabs['PL']![1]![10] = 'Much improved.'; // S1: changed
+      sheet.tabs['PL']![2]![10] = KHMER; // S2: new
+      sheet.tabs['Logic']![1]![12] = 'x'.repeat(4001); // S1: too long
+      reader.set(SHEET_A, sheet);
+      const preview = (await admin.post(`${V1}/sources/${sourceA}/preview`).expect(201)).body;
+      const summary = preview.summary;
+      expect(summary.scores).toEqual({ new: 0, changed: 0, unchanged: MARKS, invalid: 0 });
+      expect(plTab(summary)).toEqual({ new: 1, changed: 1, cleared: 0, unchanged: 0, tooLong: 0 });
+      expect(summary.comments).toEqual({
+        new: 1,
+        changed: 1,
+        cleared: 0,
+        unchanged: 0,
+        tooLong: 1,
+      });
+      const warnings = await admin
+        .get(`${V1}/sources/${sourceA}/preview/${preview.id}/issues?severity=WARNING`)
+        .expect(200);
+      expect(warnings.body.data).toContainEqual(
+        expect.objectContaining({ code: 'COMMENT_TOO_LONG', sheetTab: 'Logic', rowNumber: 2 }),
+      );
+
+      const blank = termWorkbookFixture();
+      blank.tabs['PL']![1]![10] = null;
+      reader.set(SHEET_A, blank);
+      expect(plTab(await previewOf())).toMatchObject({ cleared: 1, unchanged: 0 });
+    });
+
+    it('shows the synced comment to the right student only, and a re-sync changes nothing', async () => {
+      const sheet = termWorkbookFixture();
+      sheet.tabs['ENG']![3]![23] = KHMER; // S1's ENG row
+      reader.set(SHEET_A, sheet);
+      const job = await sync(sourceA);
+      expect(job.counts.enrollments.commentsUpdated).toBe(1);
+
+      const res = (await student.get('/api/v1/student/me/results').expect(200)).body;
+      const byTitle = Object.fromEntries(
+        res.terms[0].courses.map((c: { title: string; teacherComment: string | null }) => [
+          c.title,
+          c.teacherComment,
+        ]),
+      );
+      expect(byTitle).toMatchObject({
+        ENG: KHMER,
+        PL: 'Works well in a team.',
+        Logic: LOGIC_COMMENT,
+        BCU: null,
+      });
+
+      const other = await ctx.prisma.student.findUniqueOrThrow({
+        where: { studentCode: 'PNC2027-002' },
+      });
+      const issued = await admin.post(`${V1}/students/${other.id}/reset-password`).expect(200);
+      const s2 = api(await login(ctx, 'PNC2027-002', issued.body.temporaryPassword));
+      await s2
+        .post('/api/v1/auth/change-password', {
+          currentPassword: issued.body.temporaryPassword,
+          newPassword: STUDENT_PASSWORD,
+        })
+        .expect(204);
+      const s2Body = JSON.stringify((await s2.get('/api/v1/student/me/results').expect(200)).body);
+      expect(s2Body).not.toContain(KHMER);
+      expect(s2Body).not.toContain('Works well in a team.');
+
+      const again = await sync(sourceA);
+      expect(again.counts.enrollments.commentsUpdated).toBe(0);
+      expect(plTab(await previewOf())).toEqual({
+        new: 0,
+        changed: 0,
+        cleared: 0,
+        unchanged: 1,
+        tooLong: 0,
+      });
+    });
+  });
+
   describe('checking a sheet', () => {
     it('shows the workbook name and tabs, and changes nothing', async () => {
       const res = await admin
@@ -179,6 +280,13 @@ describe('Changing the sheet of a term (integration)', () => {
         tabs: ['_meta', 'ALL', 'Logic', 'ENG', 'PL', 'BCU', 'MsOffice'],
       });
       expect(await ctx.prisma.googleSheetSource.count()).toBe(1);
+    });
+
+    it('refuses the sheet that is already active', async () => {
+      const res = await admin
+        .post(`${V1}/terms/${termId}/sources/check`, { url: urlFor(SHEET_A) })
+        .expect(409);
+      expect(res.body.error.code).toBe('SAME_SHEET');
     });
 
     it('rejects invalid links and unreadable sheets with a clear code', async () => {
@@ -376,9 +484,6 @@ describe('Changing the sheet of a term (integration)', () => {
         .post(`${V1}/sync`, { scope: 'SOURCE', sourceId: sheetC.id })
         .expect(422);
       expect(res.body.error.code).toBe('PREVIEW_REQUIRED');
-      expect(
-        (await admin.post(`${V1}/sources/${sourceA}/preview`).expect(409)).body.error.code,
-      ).toBe('NOT_PENDING');
     });
 
     it('discards a preview when a tab is reviewed again or the old sheet syncs', async () => {
@@ -424,7 +529,7 @@ describe('Changing the sheet of a term (integration)', () => {
         .expect(200);
 
       const { summary } = (await admin.post(`${V1}/sources/${source.id}/preview`).expect(201)).body;
-      expect(summary.canConfirm).toBe(true);
+      expect(summary.canConfirm).toBe(false);
       expect(summary.students).toEqual({ new: 0, changed: 0, unchanged: 2, invalid: 0 });
       expect(summary.scores).toMatchObject({ new: 0, changed: 1, unchanged: 11, invalid: 0 });
       expect(summary.tabs).toEqual([
@@ -435,7 +540,15 @@ describe('Changing the sheet of a term (integration)', () => {
         }),
       ]);
       expect(summary.unmappedTabs).toEqual(expect.arrayContaining(['ENG', 'Extra']));
-      expect(summary.subjectsNotInSheet).toEqual(expect.arrayContaining(['MsOffice', 'PL']));
+      expect(summary.comparison.blockers).toEqual(
+        expect.arrayContaining([
+          'Tab "ENG" has no confirmed subject. Confirm or ignore it first.',
+          'Tab "Extra" has no confirmed subject. Confirm or ignore it first.',
+        ]),
+      );
+      expect(summary.comparison.removed.map((r: { subject: string }) => r.subject)).toEqual([
+        'MsOffice',
+      ]);
       expect(summary.missingStudents).toEqual({
         total: 1,
         sample: [{ studentCode: 'PNC2027-003', fullName: 'RITHY KEO' }],
@@ -460,6 +573,39 @@ describe('Changing the sheet of a term (integration)', () => {
         .post(`${V1}/sources/${source.id}/preview/${preview.id}/confirm`)
         .expect(422);
       expect(res.body.error.code).toBe('PREVIEW_HAS_ERRORS');
+    });
+  });
+
+  describe('a subject that only the new sheet has', () => {
+    it('does not exist until the sync, and Discard leaves nothing behind', async () => {
+      reader.set(SHEET_B, withScience());
+      const source = (await change().expect(201)).body as { id: string };
+      await reviewTabs(source.id);
+      const preview = await previewAndConfirm(source.id);
+      expect(
+        preview.summary.tabs.find((t: { tabName: string }) => t.tabName === 'Science').scores.new,
+      ).toBe(1);
+      expect(await offering()).toBeNull();
+      await admin.post(`${V1}/sources/${source.id}/discard`).expect(200);
+      expect(await offering()).toBeNull();
+    });
+
+    it('is created by the sync, and later syncs of the sheet keep working', async () => {
+      reader.set(SHEET_B, withScience());
+      const id = await readyToSync();
+      expect((await sync(id)).status).toBe('SUCCEEDED');
+      const created = await offering();
+      expect(created).toMatchObject({ sourceId: id, visibility: 'VISIBLE', sheetTab: 'Science' });
+      const science = await ctx.prisma.sheetTabMapping.findFirstOrThrow({
+        where: { sourceId: id, tabName: 'Science' },
+        include: { columns: true },
+      });
+      expect(science).toMatchObject({ offeringId: created?.id, proposedTitle: null });
+      const marks = science.columns.filter((c) => c.role === 'CRITERION');
+      expect(marks.every((c) => c.criterionId && c.proposedKey === null)).toBe(true);
+      const again = await sync(id);
+      expect(again.status).toBe('SUCCEEDED');
+      expect(again.counts.scores).toMatchObject({ created: 0, updated: 0 });
     });
   });
 

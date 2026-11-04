@@ -13,7 +13,7 @@ export class NotConfiguredSheetsReader implements SheetsReader {
   private fail(): never {
     throw new SheetsAccessError(
       'GOOGLE_NOT_CONFIGURED',
-      'Google Sheets access is not configured on the server (see docs/google-sheets-template.md §7).',
+      'Google Sheets access is not configured on the server (see docs/google-sheets-template.md §8).',
     );
   }
 

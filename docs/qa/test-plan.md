@@ -3,6 +3,10 @@
 Written: 2026-10-31. Tested revision: commit `b62f43f`, branch `feature/implement_sync_google_sheet`.
 Status: **Approved with the section 8 defaults on 2026-10-31 and executed. Results: [qa-report.md](qa-report.md).**
 
+The school's manual test cases in `test-case.xlsx` (196) were run separately on 2026-11-01. See the
+re-test section of the report.
+On 2026-11-01 the defects were fixed and some cases changed; see "Test cases changed" in that report.
+
 ## 1. Scope changes from the brief
 
 The brief named files and features that do not exist here. Nothing below is guessed; anything that
@@ -110,42 +114,42 @@ A-34, D-25 and E-22. They are marked below.
 
 ### A. Authentication and sessions
 
-| ID   | Case                                                                                     | Method   | Pri |
-| ---- | ---------------------------------------------------------------------------------------- | -------- | --- |
-| A-01 | Unknown user and wrong password: same status, body and headers                           | API      | P0  |
-| A-02 | Timing of unknown user and wrong password over 30 samples                                | API      | P1  |
-| A-03 | Disabled account: correct and wrong password; existing session refused                   | NT       | P0  |
-| A-04 | PENDING account and locked password hash cannot sign in                                  | NT       | P0  |
-| A-05 | Per-IP limit: 429 with `Retry-After` on the 11th attempt                                 | API      | P0  |
-| A-06 | Per-username limit: 429 on the 6th attempt, from different IPs                           | NT       | P0  |
-| A-07 | Case and whitespace variants of a username cannot dodge the limit                        | NT       | P0  |
-| A-08 | Spoofed `X-Forwarded-For` cannot dodge the IP limit with `TRUST_PROXY_HOPS=0`            | API      | P0  |
-| A-09 | Lockout timing: 1, 2, 4, 8, capped at 15 min; reset on success                           | EX + NT  | P1  |
-| A-10 | `ACCOUNT_LOCKED` reveals a real account: measure against the "same response" requirement | API      | P1  |
-| A-11 | An attacker can lock a student out: measure the effect                                   | NT       | P1  |
-| A-12 | Refresh rotates both tokens; old access token behavior recorded                          | API      | P0  |
-| A-13 | Reusing an old refresh token revokes the whole chain                                     | API      | P0  |
-| A-14 | Two refreshes at once with the same token: no fork, no valid leftover token              | NT       | P0  |
-| A-15 | Logout revokes access and refresh tokens at once                                         | API      | P0  |
-| A-16 | Logout with only the refresh cookie (expired access token)                               | NT       | P1  |
-| A-17 | Temporary password: every score and admin route returns 403 until changed                | NT       | P0  |
-| A-18 | Forced-change flag cannot be cleared by refresh or a new login                           | NT       | P0  |
-| A-19 | Temporary password past expiry: no login; existing session behavior recorded             | NT       | P0  |
-| A-20 | Admin reset ends the student's session at once (access and refresh)                      | API      | P0  |
-| A-21 | Admin reset while Redis is failing: token refused afterwards (known deviation T4)        | NT       | P0  |
-| A-22 | Disable while Redis is failing: same check                                               | NT       | P0  |
-| A-23 | Cookies: HttpOnly, SameSite and Path on all three, local and with `COOKIE_SECURE=true`   | API      | P0  |
-| A-24 | `NODE_ENV=production` with insecure cookies is refused at startup                        | NT       | P0  |
-| A-25 | No hash or token in any JSON response: scan all 53 routes                                | NT       | P0  |
-| A-26 | No password, hash, token or temporary password in API or worker logs, or audit rows      | NT       | P0  |
-| A-27 | JWT tampering: `alg:none`, wrong secret, changed role, wrong `iss` or `aud`, expired     | NT       | P0  |
-| A-28 | Token for a deleted or other session's `sid`                                             | NT       | P0  |
-| A-29 | CSRF: missing, wrong, other session's token; missing and foreign Origin                  | EX + API | P0  |
-| A-30 | Change password: policy, wrong current password, 5/min limit, other sessions revoked     | EX + NT  | P1  |
-| A-31 | Refresh past the 7-day absolute lifetime                                                 | NT       | P1  |
-| A-32 | Disabled, then enabled: old sessions stay dead                                           | NT       | P0  |
-| A-33 | Added: two open tabs refresh at the same moment; the user stays signed in                | BR       | P1  |
-| A-34 | Added: a page load after the access cookie expires keeps the valid session               | BR       | P1  |
+| ID   | Case                                                                                   | Method   | Pri |
+| ---- | -------------------------------------------------------------------------------------- | -------- | --- |
+| A-01 | Unknown user and wrong password: same status, body and headers                         | API      | P0  |
+| A-02 | Timing of unknown user and wrong password over 30 samples                              | API      | P1  |
+| A-03 | Disabled account: correct and wrong password; existing session refused                 | NT       | P0  |
+| A-04 | PENDING account and locked password hash cannot sign in                                | NT       | P0  |
+| A-05 | Per-IP limit: 429 with `Retry-After` on the 11th attempt                               | API      | P0  |
+| A-06 | Per-username limit: 429 on the 6th attempt, from different IPs                         | NT       | P0  |
+| A-07 | Case and whitespace variants of a username cannot dodge the limit                      | NT       | P0  |
+| A-08 | Spoofed `X-Forwarded-For` cannot dodge the IP limit with `TRUST_PROXY_HOPS=0`          | API      | P0  |
+| A-09 | Lockout timing: 1, 2, 4, 8, capped at 15 min; reset on success                         | EX + NT  | P1  |
+| A-10 | A lockout gives the same response for real and made-up IDs                             | API      | P1  |
+| A-11 | A guesser locks only its own address; the student on another address can sign in       | NT       | P1  |
+| A-12 | Refresh rotates both tokens; old access token behavior recorded                        | API      | P0  |
+| A-13 | Reusing an old refresh token revokes the whole chain                                   | API      | P0  |
+| A-14 | Two refreshes at once with the same token: no fork, no valid leftover token            | NT       | P0  |
+| A-15 | Logout revokes access and refresh tokens at once                                       | API      | P0  |
+| A-16 | Logout with only the refresh cookie (expired access token)                             | NT       | P1  |
+| A-17 | Temporary password: every score and admin route returns 403 until changed              | NT       | P0  |
+| A-18 | Forced-change flag cannot be cleared by refresh or a new login                         | NT       | P0  |
+| A-19 | Temporary password past expiry: no login; existing session behavior recorded           | NT       | P0  |
+| A-20 | Admin reset ends the student's session at once (access and refresh)                    | API      | P0  |
+| A-21 | Admin reset while Redis is failing: token refused afterwards (known deviation T4)      | NT       | P0  |
+| A-22 | Disable while Redis is failing: same check                                             | NT       | P0  |
+| A-23 | Cookies: HttpOnly, SameSite and Path on all three, local and with `COOKIE_SECURE=true` | API      | P0  |
+| A-24 | `NODE_ENV=production` with insecure cookies is refused at startup                      | NT       | P0  |
+| A-25 | No hash or token in any JSON response: scan all 53 routes                              | NT       | P0  |
+| A-26 | No password, hash, token or temporary password in API or worker logs, or audit rows    | NT       | P0  |
+| A-27 | JWT tampering: `alg:none`, wrong secret, changed role, wrong `iss` or `aud`, expired   | NT       | P0  |
+| A-28 | Token for a deleted or other session's `sid`                                           | NT       | P0  |
+| A-29 | CSRF: missing, wrong, other session's token; missing and foreign Origin                | EX + API | P0  |
+| A-30 | Change password: policy, wrong current password, 5/min limit, other sessions revoked   | EX + NT  | P1  |
+| A-31 | Refresh past the 7-day absolute lifetime                                               | NT       | P1  |
+| A-32 | Disabled, then enabled: old sessions stay dead                                         | NT       | P0  |
+| A-33 | Added: two open tabs refresh at the same moment; the user stays signed in              | BR       | P1  |
+| A-34 | Added: a page load after the access cookie expires keeps the valid session             | BR       | P1  |
 
 ### B. Authorization and data isolation (highest priority)
 
@@ -207,7 +211,7 @@ started as a separate process so it can really be killed. Live Google was not us
 | D-02 | Re-import of the same data: every table identical, zero revisions                                     | NT     | P0  |
 | D-03 | One changed mark: one score updated, one revision row with job, tab and row                           | NT     | P0  |
 | D-04 | Row missing later: scores kept, enrollment flagged, warning raised                                    | NT     | P0  |
-| D-05 | Cleared cell: mark kept with a warning. Effect on the student's total recorded                        | NT     | P0  |
+| D-05 | Cleared cell: counts as not entered, with a warning; the value stays in the history                   | NT     | P0  |
 | D-06 | Rejected rows name tab and row: unknown student, duplicate, text, above 100, below 0                  | NT     | P0  |
 | D-07 | Odd cells: `abs`, `85`, `85%`, `8,5`, `1e2`, `TRUE`, dates, `#REF!`, `-0`, 100.0001, 4 decimals, NBSP | NT     | P0  |
 | D-08 | Student IDs: lower case, trailing space, NBSP, zero-width, inner space, 33 characters                 | NT     | P0  |
@@ -333,7 +337,8 @@ the built-in browser was not done; failure screenshots were reviewed instead (`q
 
 ## 8. Decisions needed before Phase 2
 
-Approved on 2026-10-31 with every default below. No answer was changed.
+Approved on 2026-10-31 with every default below. No answer was changed then. On 2026-11-01 Q7 was
+decided the other way: an erased mark counts as not entered (D32).
 
 | #   | Question                                                                                                                                                                                                                                                                    | Default if you just approve                                                                                         |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |

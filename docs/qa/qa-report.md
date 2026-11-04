@@ -5,13 +5,224 @@ Tested: 2026-10-31. Revision: commit `b62f43f`, branch `feature/implement_sync_g
 came from a clean clone on a separate local Docker stack (`ssrs-qa`). The real `.env`, your dev
 containers, Google and Sentry were not used.
 
-Contents: [issues to fix](#2-defects), [coverage](#3-coverage-by-area), [not tested](#4-what-i-could-not-test-and-what-i-need),
+Contents: [fixes applied](#fixes-applied-2026-11-01), [re-test](#independent-re-test-2026-11-01), [issues found](#2-defects), [coverage](#3-coverage-by-area), [not tested](#4-what-i-could-not-test-and-what-i-need),
 [decisions](#5-decisions-for-you), [re-running](#6-re-running-the-tests),
 [every case](#appendix-a-every-case). Saved results: [evidence/](evidence/README.md).
 
+## Fixes applied (2026-11-01)
+
+The sections below are the original QA record of 2026-10-31. After them, the 17 defects were fixed
+and re-tested on top of commit `66888b7`. The changes are not committed yet.
+
+**Release recommendation after the fixes: still NOT READY.** Every defect in this report is closed.
+Go-live still needs tasks T5-T7, the MVP features in section 5, and the blocked items in section 4.
+
+| ID     | Status | What changed                                                                                    |
+| ------ | ------ | ----------------------------------------------------------------------------------------------- |
+| QA-001 | Fixed  | PostgreSQL decides, including account status. A valid answer is cached in Redis for 5 s         |
+| QA-002 | Fixed  | A held lease delays the job until it expires, at no attempt cost. Lease release is retried      |
+| QA-003 | Fixed  | Confirm tab on a pending sheet writes only its mapping. The promoting sync applies the rest     |
+| QA-004 | Fixed  | `/auth/me` follows the refresh-once path                                                        |
+| QA-005 | Fixed  | Tabs take turns with the Web Locks API. Passed 10 runs in a row                                 |
+| QA-006 | Fixed  | A global pipe refuses `\u0000` in any body, query or path value with 400                        |
+| QA-007 | Fixed  | One 429 `RATE_LIMITED` for real and made-up IDs. `ACCOUNT_LOCKED` is gone                       |
+| QA-008 | Fixed  | Lockout is per ID and IP. See the limits below                                                  |
+| QA-009 | Fixed  | Discard, preview and confirm preview refuse an archived generation                              |
+| QA-010 | Fixed  | Body-parser errors keep their 4xx status, without their internal message                        |
+| QA-011 | Fixed  | `page` is at most 1,000,000                                                                     |
+| QA-012 | Fixed  | `className` refuses `%`, `_` and backslash, which are special in `LIKE`. Other names stay valid |
+| QA-013 | Fixed  | Database connection errors return 503 and are not reported as bugs                              |
+| QA-014 | Fixed  | Change password refuses an expired temporary password                                           |
+| QA-015 | Fixed  | The errors API returns `notListed`, and the job page shows it                                   |
+| QA-016 | Fixed  | Duplicate rows are not also reported as students who left                                       |
+| QA-017 | Fixed  | The three routes refuse unknown query parameters                                                |
+
+Decisions from section 5 and the defects, recorded as D32-D37 in `delivery-plan-2027.md`:
+
+- **Erased mark:** counts as not entered. Status `CLEARED`, the subject goes back to INCOMPLETE, and
+  the value stays in the history. This replaces the D-05 result in section 3.
+- **New subject after release:** stays hidden. The generation page already showed "4 of 5 released"
+  with Release scores available, so no code changed. D-18b now asserts it.
+- **Retry:** shares the limit of 10 sync requests per minute per admin.
+- **Failed job with some subjects saved:** stays FAILED, and its message says so.
+
+### Limits of these fixes
+
+- **QA-008:** people sharing one address, such as school Wi-Fi, can still block each other, and many
+  attacking addresses can still use up the 5-per-minute limit for an ID. One address can delay a
+  student by at most the rest of that minute.
+- **QA-001:** if the denylist write fails, a token already cached as valid lasts up to 5 s.
+- **Redis down:** the lock falls back to the account's `locked_until`, across all addresses.
+- **QA-013:** re-tested with sign-in on a separate API process with PostgreSQL stopped: 503, then
+  recovery. `live-check.mjs outage` passed in the re-test below.
+- **D-20:** ran on the `ssrs-qa` containers only.
+- **Not re-run:** G-15 and G-16 latency tables, and a live Google Sheet.
+
+### Test cases changed
+
+| Case        | Change                                                                                                |
+| ----------- | ----------------------------------------------------------------------------------------------------- |
+| A-10        | Now requires the same response. Name no longer says "recorded"                                        |
+| A-11        | Rewritten as the report asked. Added A-11b (budget) and A-11d (admin reset)                           |
+| A-19b       | Now requires 403 `TEMPORARY_PASSWORD_EXPIRED`                                                         |
+| D-05        | Now requires INCOMPLETE, a `CLEARED` history row, no repeat warning, and recovery on re-entry         |
+| D-15 retry  | Now requires 429 once the shared limit is reached                                                     |
+| D-18b       | Also asserts the counts the generation page shows                                                     |
+| D-20, D-20b | Skipped unless `QA_POSTGRES_CONTAINER` and `QA_REDIS_CONTAINER` are set                               |
+| E-09        | Now requires totals = listed + `notListed`                                                            |
+| G-02        | The 100 KB body expected 400; section 2 specifies 413, so the test was corrected                      |
+| G-11        | The two rows named in QA-011 now expect 400; added `page=1000000` gives 200                           |
+| New         | `sheet-change`: a subject only the new sheet has. `reject-nul.pipe.spec.ts`. Filter 4xx and 503 cases |
+
+### Re-test results
+
+| Suite                                       | Result                                                          |
+| ------------------------------------------- | --------------------------------------------------------------- |
+| `pnpm test`                                 | 338 passed: sheets 183, shared 96, api 53, sync 3, worker 3     |
+| `pnpm test:integration`                     | 349 passed, 2 skipped: api 278, sync 31, database 25, worker 15 |
+| Worker `test/qa` on `ssrs-qa`               | 14 of 14, including D-17b, D-20 and D-20b                       |
+| `e2e/qa/ui.spec.ts`                         | 22 of 22                                                        |
+| `e2e/qa/session.spec.ts`                    | 3 of 3, 10 runs in a row                                        |
+| `pnpm test:e2e`                             | 12 of 12                                                        |
+| `pnpm lint`, `pnpm typecheck`, `pnpm build` | Pass                                                            |
+| `prisma migrate diff`                       | No drift                                                        |
+
+Two new migrations: `20261101090000_score_cleared` and `20261101090100_pending_sheet_review`.
+`pnpm test:integration` is no longer red. Saved results: [evidence/fix-run.txt](evidence/fix-run.txt).
+
+## Independent re-test (2026-11-01)
+
+The fixes above were re-tested separately from a clean clone, then the 196 cases in
+`test-case.xlsx` were run in a browser. The workbook now holds the results.
+
+**Release recommendation: still NOT READY.** The fixes hold, with no regressions. The first run passed
+191 of 196 cases. The five new smaller issues (below) were then fixed and those five cases pass, so
+`test-case.xlsx` now records 196 passed. The other 191 cases were not run again after those fixes.
+Go-live still needs the MVP features in section 5, a live Google Sheet test, and the blocked items in
+section 4.
+
+| Check                   | Result                                                                           |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| `pnpm test`             | 338 passed                                                                       |
+| `pnpm test:integration` | 349 passed, 2 skipped (D-20 and D-20b, which need named containers)              |
+| Worker `test/qa`        | 13 of 14. D-20 recovered with every mark right, in 121.7 s against a 120 s limit |
+| QA UI, session, e2e     | 22 of 22, 3 of 3, 12 of 12                                                       |
+| `live-check.mjs`        | 46 of 46, including the outage checks, which G-19c now passes with 503           |
+| Lint, typecheck, build  | Pass                                                                             |
+| `test-case.xlsx`        | **191 passed, 5 failed**, then the 5 fixed and passing (see below)               |
+
+All 17 earlier defects stayed fixed. Test changes made during the fixes were reviewed: each is stricter
+or follows a recorded decision, and none was weakened to pass. D-20 passing 14 of 14 in the fix run and
+failing here by 1.7 s is timing around the 120 s lease; the job does finish on its own.
+
+How the 196 cases ran: real browser (Edge), web app, API, worker, PostgreSQL and Redis. **A local file
+stood in for Google Sheets**, so the 81 cases marked that way in the Remark column did not use real
+Google. Idle time (TC-034, TC-035) and some preconditions were simulated, as their remarks say. TC-164
+checked the file bytes, not Excel. TC-184 used 3 synthetic students, not 5. New tests:
+`e2e/qa/manual/`, with `file-reader.mjs`, `manual-api.mjs` and `manual-worker.mjs`.
+
+Evidence: [manual-cases.txt](evidence/manual-cases.txt),
+[retest-2026-11-01.txt](evidence/retest-2026-11-01.txt),
+[fixes-2026-11-01.txt](evidence/fixes-2026-11-01.txt).
+
+### New issues found
+
+All five are **fixed** and re-tested on 2026-11-01. Each entry below keeps the problem as found, with
+its fix at the end.
+
+| Order | ID     | Severity | Issue                                                          | Failing case |
+| ----- | ------ | -------- | -------------------------------------------------------------- | ------------ |
+| 1     | QA-022 | Medium   | Temporary password dialog closes without Done                  | TC-154       |
+| 2     | QA-019 | Low      | Sign-in shows raw "Internal Server Error" when the API is down | TC-191       |
+| 3     | QA-021 | Low      | Keyboard focus can leave the New generation dialog             | TC-193       |
+| 4     | QA-020 | Low      | Check sheet accepts the term's active sheet                    | TC-126       |
+| 5     | QA-018 | Low      | Empty Students page names the old Students tab                 | TC-156       |
+
+#### QA-018 Empty Students page names the old Students tab
+
+- **Severity:** Low. **Area:** H. **Failing case:** TC-156.
+- **Issue:** the help text describes the template removed by D14.
+- **Steps:** Open Students on a database with no students.
+- **Expected result:** the text says students come from the ALL tab of the term workbook.
+- **Actual result:** "Students are imported from the Students tab of a generation's spreadsheet."
+- **Evidence:** `e2e/qa/manual/a-fresh.spec.ts` TC-156.
+- **Cause:** `apps/web/src/app/admin/students/page.tsx:308`.
+- **Expected fix:** change the text to name the ALL tab of the term workbook.
+- **Done when:** TC-156 passes.
+- **Fixed:** the text now reads "Students are imported from the ALL tab of each term's workbook." TC-156
+  passes.
+
+#### QA-019 Sign-in shows raw "Internal Server Error" when the API is down
+
+- **Severity:** Low. **Area:** H. **Failing case:** TC-191.
+- **Issue:** a non-JSON error from the proxy reaches the user as its raw status text.
+- **Steps:** Stop the API. Try to sign in.
+- **Expected result:** a friendly message with no technical details.
+- **Actual result:** "Internal Server Error". After the API restarts, pages recover with no browser
+  restart, so that part of the case passes.
+- **Evidence:** `e2e/qa/manual/e-restart.spec.ts` TC-191, with the real API process stopped.
+- **Cause:** `toApiError` in `apps/web/src/lib/api.ts` uses `res.statusText` for a non-JSON body, and
+  `apps/web/src/app/login/login-form.tsx:71` shows it.
+- **Expected fix:** treat a non-JSON 5xx like an unreachable service, and show the existing "The service
+  is unreachable. Please try again." In production Caddy would answer instead; confirm its text on staging.
+- **Done when:** TC-191 passes.
+- **Fixed:** `toApiError` gives a non-JSON 5xx the "service is unreachable" message, so pages and forms
+  show it as well as sign-in. TC-191 passes with the real API stopped. Caddy's response on staging is
+  still to be confirmed.
+
+#### QA-020 Check sheet accepts the term's active sheet
+
+- **Severity:** Low. **Area:** E. **Failing case:** TC-126.
+- **Issue:** the same-sheet rule runs at Connect, not at Check.
+- **Steps:** Edit Term 1. Click Replace. Paste the active sheet's URL. Click Check sheet.
+- **Expected result:** refused: this is already the term's active sheet.
+- **Actual result:** Check sheet shows the name and tabs. The refusal only comes at Connect new sheet,
+  so no wrong change can happen.
+- **Evidence:** `e2e/qa/manual/c-sync.spec.ts` TC-126.
+- **Cause:** `SAME_SHEET` is raised in `changeSheet` in
+  `apps/api/src/sheets-sources/sheets-sources.service.ts`, not in the check path.
+- **Expected fix:** raise the same 409 `SAME_SHEET` from `POST /admin/terms/:id/sources/check`.
+- **Done when:** TC-126 passes.
+- **Fixed:** the check now returns 409 `SAME_SHEET`, and the API specification says so. TC-126 passes,
+  and `sheet-change.integration-spec.ts` has a new test for it.
+
+#### QA-021 Keyboard focus can leave the New generation dialog
+
+- **Severity:** Low. **Area:** H. **Failing case:** TC-193. **Intermittent:** 5 of 8 repeats.
+- **Issue:** pressing Tab can reach the page's skip link, behind the open dialog.
+- **Steps:** Open New generation. Press Tab repeatedly.
+- **Expected result:** focus stays inside the dialog.
+- **Actual result:** at Tab 10, focus can move to the skip link. Esc still closes the dialog.
+- **Evidence:** `d-people.spec.ts` TC-193, run with `--repeat-each=8`. The full run happened to pass.
+- **Cause:** first recorded as not found, with the date fields as the likely trigger. That guess was
+  wrong. Base UI wraps focus from a guard element one frame after Tab, so a second quick Tab lands behind
+  the dialog. On the old build, no wait between keys escaped in 6 of 6 runs, and 80 ms between keys in 0
+  of 6. A person can hit this by holding Tab down.
+- **Expected fix:** keep Tab inside the dialog, for example by marking the page behind it inert.
+- **Done when:** TC-193 passes 10 repeats in a row.
+- **Fixed:** `apps/web/src/lib/keep-tab-inside.ts` wraps Tab straight away at the popup's edges, in
+  dialogs, alert dialogs and the phone menu, which all had the same gap. TC-193 passes 10 of 10, and a
+  new test covers the other two popup types, 5 of 5.
+
+#### QA-022 Temporary password dialog closes without Done
+
+- **Severity:** Medium. **Area:** F. **Failing case:** TC-154.
+- **Issue:** the password is shown once, and an accidental click can lose it.
+- **Steps:** Reset a student's password. Click outside the dialog, or press Esc.
+- **Expected result:** the dialog closes only with Done.
+- **Actual result:** it closes, and the password cannot be seen again. The admin must reset the
+  password again, which also ends that attempt's temporary password.
+- **Evidence:** `d-people.spec.ts` TC-154: `Click outside closed it: true`. An earlier run closed it
+  with Esc.
+- **Cause:** `apps/web/src/app/admin/students/[id]/page.tsx:39` closes on every `onOpenChange`.
+- **Expected fix:** ignore outside clicks and Esc for this dialog, leaving Done as the only way out.
+- **Done when:** TC-154 passes.
+- **Fixed:** the dialog now has no close path except Done. TC-154 passes:
+  `Click outside closed it: false. Esc closed it: false`.
+
 ## 1. Summary
 
-**Release recommendation: NOT READY.**
+**Release recommendation on 2026-10-31: NOT READY.**
 
 The core is sound. Scores are calculated correctly, students cannot reach each other's data, and no
 failure lost a mark. It is not ready because of one security defect, two defects in syncing and
@@ -502,12 +713,8 @@ Also not built: creating or editing students, and a dead-letter queue.
 The test files are committed in `apps/api/test/qa/`, `apps/worker/test/qa/`, `e2e/qa/`,
 `packages/shared/src/grading/qa-grading.spec.ts` and `packages/sheets/src/template/qa-cells.spec.ts`.
 
-**`pnpm test:integration` picks them up automatically and fails while the defects are open, so CI's
-integration job is red until the fixes land.** That is expected: each failure belongs to a defect in
-section 2. Unit tests, lint and typecheck are not affected. `pnpm test:e2e` is not affected either,
-because it runs only `e2e/tests`. The worker suite's D-20 tests need Docker containers with the names
-below, so they also fail in CI, whatever the fixes, until those names are made configurable. Saved
-results are in [evidence/](evidence/README.md).
+`pnpm test:integration` picks them up automatically. It passes now that the defects are fixed. Unit tests, lint and typecheck are not affected. `pnpm test:e2e` is not affected either,
+because it runs only `e2e/tests`. Saved results are in [evidence/](evidence/README.md).
 
 Run from a checkout whose `TEST_*` settings point at a test database, after `pnpm build`:
 
@@ -527,8 +734,8 @@ E2E_CHANNEL=msedge pnpm --filter @ssrs/e2e exec playwright test --config qa/play
 E2E_CHANNEL=msedge pnpm --filter @ssrs/e2e exec playwright test --config qa/playwright.qa.config.ts qa/session
 ```
 
-- The worker suite takes about 12 minutes. Its D-20 tests restart the Docker containers named
-  `ssrs-qa-postgres-1` and `ssrs-qa-redis-1`, so run them only against that stack, or change the names.
+- The worker suite takes about 12 minutes. Its D-20 tests restart the Docker containers named in
+  `QA_POSTGRES_CONTAINER` and `QA_REDIS_CONTAINER`, and are skipped when those are unset.
 - `docs/qa/scripts/live-check.mjs` needs a running stack. Its header explains how.
 - Run `qa/ui` and `qa/session` separately, a minute apart: they share the limit of 10 sign-ins per minute.
 - Counts are from the last run of each suite, all on the final test files. The worker suite is the one

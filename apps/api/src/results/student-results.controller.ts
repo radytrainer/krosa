@@ -2,7 +2,7 @@ import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
 import { ApiCookieAuth, ApiTags } from '@nestjs/swagger';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CurrentUser, Roles } from '../auth/decorators.js';
-import { ResultsQueryDto } from './results.dto.js';
+import { NoQueryDto, ResultsQueryDto } from './results.dto.js';
 import { ResultsService } from './results.service.js';
 
 /** STU-01: the student is always the session's user; no route takes a student identifier. */
@@ -14,7 +14,7 @@ export class StudentResultsController {
   constructor(private readonly results: ResultsService) {}
 
   @Get()
-  profile(@CurrentUser() user: AuthUser) {
+  profile(@CurrentUser() user: AuthUser, @Query() _query: NoQueryDto) {
     return this.results.profile(user.userId);
   }
 
@@ -26,12 +26,12 @@ export class StudentResultsController {
   }
 
   @Get('summary')
-  summary(@CurrentUser() user: AuthUser) {
+  summary(@CurrentUser() user: AuthUser, @Query() _query: NoQueryDto) {
     return this.results.summary(user.userId);
   }
 
   @Get('courses')
-  courses(@CurrentUser() user: AuthUser) {
+  courses(@CurrentUser() user: AuthUser, @Query() _query: NoQueryDto) {
     return this.results.courses(user.userId);
   }
 

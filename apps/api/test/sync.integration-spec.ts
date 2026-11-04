@@ -279,8 +279,10 @@ describe('Synchronization API (integration)', () => {
   describe('job issues', () => {
     it('shows no rows and a zero total for a job with no issues', async () => {
       const job = await syncBroken((tabs) => {
-        tabs['BCU']![2]![1] = 'BOPHA'; // undo the fixture's swapped name
-        tabs['BCU']![2]![2] = 'CHAN';
+        // The fixture leaves PNC2027-003 out of three subjects everyone takes: list them there.
+        for (const tab of ['ENG', 'BCU', 'MsOffice']) {
+          tabs[tab]!.push(['PNC2027-003', 'RITHY', 'KEO', 'M', 'B']);
+        }
       });
       expect(job).toMatchObject({ status: 'SUCCEEDED', errorCount: 0, warningCount: 0 });
       const rows = await admin.get(`${V1}/sync/${job.id}/errors`).expect(200);
@@ -296,7 +298,8 @@ describe('Synchronization API (integration)', () => {
       expect(job.errorCount).toBe(2);
       const rows = await admin.get(`${V1}/sync/${job.id}/errors`).expect(200);
       expect(rows.body.meta.total).toBe(issues);
-      expect(rows.body.tabs).toEqual(['BCU', 'Logic']);
+      // Logic: the two bad marks. BCU, ENG, MsOffice: PNC2027-003 is missing from them.
+      expect(rows.body.tabs).toEqual(['BCU', 'ENG', 'Logic', 'MsOffice']);
       expect(rows.body.data[0]).toMatchObject({
         severity: 'ERROR',
         code: 'INVALID_MARK',
@@ -361,13 +364,19 @@ describe('Synchronization API (integration)', () => {
         tabs['Logic']![1]![6] = 130;
         tabs['Logic']![1]![7] = 140;
       });
-      const first = await admin.get(`${V1}/sync/${job.id}/errors?pageSize=2`).expect(200);
-      const second = await admin.get(`${V1}/sync/${job.id}/errors?pageSize=2&page=2`).expect(200);
-      expect(first.body.data).toHaveLength(2);
-      expect(first.body.meta.total).toBe(4);
-      expect(second.body.data).toHaveLength(2);
-      const ids = [...first.body.data, ...second.body.data].map((e: { id: string }) => e.id);
-      expect(new Set(ids).size).toBe(4);
+      // 3 bad marks, plus 3 warnings: PNC2027-003 is missing from ENG, BCU and MsOffice.
+      const total = job.errorCount + job.warningCount;
+      expect(total).toBe(6);
+      const ids: string[] = [];
+      for (let page = 1; page <= 3; page++) {
+        const res = await admin
+          .get(`${V1}/sync/${job.id}/errors?pageSize=2&page=${page}`)
+          .expect(200);
+        expect(res.body.meta.total).toBe(total);
+        expect(res.body.data).toHaveLength(2);
+        ids.push(...res.body.data.map((e: { id: string }) => e.id));
+      }
+      expect(new Set(ids).size).toBe(6);
     });
 
     it('counts a job-level skipped-workbook warning, labelled with no source', async () => {

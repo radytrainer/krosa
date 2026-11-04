@@ -65,7 +65,7 @@ export class AuthController {
   @ApiForbiddenResponse({
     description: 'ACCOUNT_DISABLED / ACCOUNT_PENDING / TEMPORARY_PASSWORD_EXPIRED',
   })
-  @ApiTooManyRequestsResponse({ description: 'RATE_LIMITED / ACCOUNT_LOCKED' })
+  @ApiTooManyRequestsResponse({ description: 'RATE_LIMITED' })
   async login(
     @Body() dto: LoginDto,
     @Req() req: Request,

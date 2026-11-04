@@ -8,6 +8,7 @@ import {
 import type { Prisma } from '@ssrs/database';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
+import { LoginLockout } from '../auth/login-lockout.js';
 import { checkPasswordPolicy } from '../auth/password-policy.js';
 import { PasswordService } from '../auth/password.service.js';
 import { SessionService } from '../auth/session.service.js';
@@ -38,6 +39,16 @@ const STUDENT_INCLUDE = {
     },
   },
   generation: { select: { id: true, code: true, name: true } },
+  program: { select: { code: true, name: true } },
+  terms: {
+    select: {
+      termId: true,
+      programSource: true,
+      term: { select: { number: true, name: true } },
+      program: { select: { code: true, name: true } },
+      class: { select: { name: true } },
+    },
+  },
 } satisfies Prisma.StudentInclude;
 
 type StudentRow = Prisma.StudentGetPayload<{ include: typeof STUDENT_INCLUDE }>;
@@ -47,8 +58,19 @@ export interface StudentView {
   studentCode: string;
   fullName: string;
   gender: 'FEMALE' | 'MALE' | 'OTHER' | 'UNSPECIFIED';
+  /** The latest term's class and program. */
   className: string | null;
+  program: { code: string; name: string } | null;
   generation: { id: string; code: string; name: string };
+  /** Program and class in each term, Term 1 first. ADMIN: set by an admin, kept by sync. */
+  terms: {
+    termId: string;
+    termNumber: number;
+    termName: string;
+    program: { code: string; name: string };
+    className: string;
+    programSource: 'SHEET' | 'ADMIN';
+  }[];
   account: {
     status: 'PENDING' | 'ACTIVE' | 'DISABLED';
     mustChangePassword: boolean;
@@ -73,7 +95,18 @@ function toView(s: StudentRow, now = new Date()): StudentView {
     fullName: s.fullName,
     gender: s.gender,
     className: s.className,
+    program: s.program,
     generation: s.generation,
+    terms: s.terms
+      .map((t) => ({
+        termId: t.termId,
+        termNumber: t.term.number,
+        termName: t.term.name,
+        program: t.program,
+        className: t.class.name,
+        programSource: t.programSource,
+      }))
+      .toSorted((a, b) => a.termNumber - b.termNumber),
     account: {
       status: s.user.status,
       mustChangePassword: s.user.mustChangePassword,
@@ -92,6 +125,7 @@ export class StudentsService {
     @Inject(API_ENV) private readonly env: ApiEnv,
     private readonly prisma: PrismaService,
     private readonly passwords: PasswordService,
+    private readonly lockout: LoginLockout,
     private readonly sessions: SessionService,
     private readonly audit: AuditService,
   ) {}
@@ -99,7 +133,20 @@ export class StudentsService {
   async list(query: ListStudentsQueryDto): Promise<Paginated<StudentView>> {
     const where: Prisma.StudentWhereInput = {
       ...(query.generationId ? { generationId: query.generationId } : {}),
-      ...(query.className ? { className: { equals: query.className, mode: 'insensitive' } } : {}),
+      // With a term or program, the class is the one of that term; alone, the latest class.
+      ...(query.termId || query.program
+        ? {
+            terms: {
+              some: {
+                ...(query.termId ? { termId: query.termId } : {}),
+                ...(query.program ? { program: { code: query.program } } : {}),
+                ...(query.className ? { class: { name: query.className } } : {}),
+              },
+            },
+          }
+        : query.className
+          ? { className: { equals: query.className, mode: 'insensitive' as const } }
+          : {}),
       ...(query.status ? { user: { status: query.status } } : {}),
       ...(query.q
         ? {
@@ -325,6 +372,7 @@ export class StudentsService {
         tx,
       );
     });
+    await this.lockout.clearAll(student.user.username);
     return {
       studentCode: student.studentCode,
       temporaryPassword,

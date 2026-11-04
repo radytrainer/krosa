@@ -9,6 +9,8 @@ import type { FakeSpreadsheet } from './in-memory-reader.js';
 export const TERM_FIXTURE_SPREADSHEET_ID = '1TermWorkbookFixture00000000000000000000';
 export const TERM_FIXTURE_GENERATION_CODE = 'GEN2027';
 export const TERM_FIXTURE_TERM = 1;
+/** Teacher comment of PNC2027-001 in Logic. */
+export const LOGIC_COMMENT = 'ពូកែណាស់ សូមបន្ត 👏🏽 <b>not bold</b>';
 /** A replacement workbook for the same term, for changing a term's sheet. */
 export const TERM_FIXTURE_REPLACEMENT_ID = '1TermWorkbookReplacement0000000000000000';
 
@@ -89,7 +91,8 @@ export function termWorkbookFixture(): FakeSpreadsheet {
           'Total',
           'COMMENTS',
         ],
-        [...profile(0), 90, 89, 90, 97, 60, 78, 78.9],
+        // Khmer, emoji and markup: the comment must reach the student as plain text.
+        [...profile(0), 90, 89, 90, 97, 60, 78, 78.9, LOGIC_COMMENT],
         [...profile(1), 80, 70, 80, 80, 50, 60, 64.5],
         [...profile(2), 70, 70, 70, 70, 70, 70, 70],
       ],

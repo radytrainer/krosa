@@ -1,6 +1,7 @@
-import { GraduationCap, LogIn } from 'lucide-react';
+import { LogIn } from 'lucide-react';
 import Link from 'next/link';
 import { HomeRedirect } from '@/components/app/home-redirect';
+import { PnLogo } from '@/components/app/pn-logo';
 import { buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { SystemStatus } from '@/components/system-status';
@@ -10,9 +11,7 @@ export default function Home() {
     <main className="flex flex-1 items-center justify-center px-4 py-16">
       <Card className="w-full max-w-md">
         <CardHeader className="gap-4">
-          <div className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <GraduationCap className="size-6" aria-hidden />
-          </div>
+          <PnLogo className="h-14" />
           <div className="space-y-1">
             <CardTitle className="text-2xl">Student Score Record System</CardTitle>
             <CardDescription>

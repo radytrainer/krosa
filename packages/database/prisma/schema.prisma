@@ -73,6 +73,7 @@ model User {
   previewsRun          SheetPreview[]            @relation("PreviewRunBy")
   previewsConfirmed    SheetPreview[]            @relation("PreviewConfirmedBy")
   gradeScalesConfirmed GradeScale[]
+  termIssuesResolved   StudentTermIssue[]
 
   @@index([role, status])
   @@map("users")
@@ -155,11 +156,14 @@ model Term {
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  generation Generation          @relation(fields: [generationId], references: [id])
-  offerings  CourseOffering[]
+  generation    Generation          @relation(fields: [generationId], references: [id])
+  offerings     CourseOffering[]
   /// Term workbooks: one spreadsheet per term.
-  sources    GoogleSheetSource[]
-  syncJobs   SyncJob[]
+  sources       GoogleSheetSource[]
+  syncJobs      SyncJob[]
+  programs      TermProgram[]
+  studentTerms  StudentTerm[]
+  studentIssues StudentTermIssue[]
 
   @@unique([generationId, number])
   /// Target of the composite FK that keeps course_offerings.generation_id consistent.
@@ -195,7 +199,8 @@ model CourseAlias {
   @@map("course_aliases")
 }
 
-/// Study program (SNA, WEP, …). Students join one from Term 2.
+/// Study program: GENERAL (Term 1), WEP (Web Programming), SNAC (System Network
+/// Administrators and Cybersecurity). Which programs a term has is `term_programs`.
 model Program {
   id        String   @id @default(uuid(7)) @db.Uuid
   code      String   @unique @db.Citext
@@ -204,10 +209,62 @@ model Program {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  students  Student[]
-  offerings OfferingProgram[]
+  students        Student[]
+  offerings       OfferingProgram[]
+  aliases         ProgramAlias[]
+  terms           TermProgram[]
+  tabAudiences    SheetTabMapping[]
+  enrollmentTerms StudentTerm[]
 
   @@map("programs")
+}
+
+/// Other names a sheet may use for a program, e.g. SNA for SNAC. Compared case-insensitively.
+model ProgramAlias {
+  alias     String   @id @db.Citext
+  programId String   @map("program_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  program Program @relation(fields: [programId], references: [id], onDelete: Cascade)
+
+  @@index([programId])
+  @@map("program_aliases")
+}
+
+/// The programs taught in a term (configuration). Default: Term 1 GENERAL, Terms 2–5 WEP and SNAC.
+model TermProgram {
+  termId    String   @map("term_id") @db.Uuid
+  programId String   @map("program_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  term         Term          @relation(fields: [termId], references: [id], onDelete: Cascade)
+  program      Program       @relation(fields: [programId], references: [id])
+  classes      TermClass[]
+  studentTerms StudentTerm[]
+
+  @@id([termId, programId])
+  @@index([programId])
+  @@map("term_programs")
+}
+
+/// A class of one program in one term (configuration, editable by admins).
+model TermClass {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  termId    String   @map("term_id") @db.Uuid
+  programId String   @map("program_id") @db.Uuid
+  /// Trimmed. Unique within the term across programs, so a class names its program.
+  name      String   @db.Citext
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  termProgram  TermProgram   @relation(fields: [termId, programId], references: [termId, programId], onDelete: Cascade)
+  studentTerms StudentTerm[]
+
+  @@unique([termId, name])
+  /// Target of the composite FK keeping a student term's class in its own term and program.
+  @@unique([id, termId, programId])
+  @@index([termId, programId])
+  @@map("term_classes")
 }
 
 /// Programs an offering is meant for. No rows = shared by every program (English, PL).
@@ -250,6 +307,8 @@ model CourseOffering {
   sourceId             String?           @map("source_id") @db.Uuid
   sheetTab             String?           @map("sheet_tab")
   status               OfferingStatus    @default(ACTIVE)
+  /// Set when its tab left the term's sheet and an admin confirmed the removal. Data is kept.
+  archivedAt           DateTime?         @map("archived_at") @db.Timestamptz(3)
   createdAt            DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt            DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
 
@@ -303,14 +362,15 @@ model GoogleSheetSource {
   createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  generation  Generation        @relation(fields: [generationId], references: [id])
-  term        Term              @relation(fields: [termId, generationId], references: [id, generationId], onDelete: Restrict)
-  createdBy   User              @relation(fields: [createdById], references: [id])
-  offerings   CourseOffering[]
-  students    Student[]
-  syncJobs    SyncJob[]
-  tabMappings SheetTabMapping[]
-  previews    SheetPreview[]
+  generation   Generation        @relation(fields: [generationId], references: [id])
+  term         Term              @relation(fields: [termId, generationId], references: [id, generationId], onDelete: Restrict)
+  createdBy    User              @relation(fields: [createdById], references: [id])
+  offerings    CourseOffering[]
+  students     Student[]
+  syncJobs     SyncJob[]
+  tabMappings  SheetTabMapping[]
+  previews     SheetPreview[]
+  studentTerms StudentTerm[]
 
   @@unique([termId], map: "google_sheet_sources_one_active_per_term", where: raw("status = 'ACTIVE'"))
   @@unique([termId], map: "google_sheet_sources_one_pending_per_term", where: raw("status = 'PENDING'"))
@@ -323,35 +383,44 @@ enum TabMappingStatus {
   DRAFT
   CONFIRMED
   IGNORED
+  /// The tab left the sheet and its subject was archived. Sync skips it; detection reopens it.
+  REMOVED
 }
 
 /// How one subject tab of a term workbook maps to an offering.
 model SheetTabMapping {
-  id              String           @id @default(uuid(7)) @db.Uuid
-  sourceId        String           @map("source_id") @db.Uuid
-  tabName         String           @map("tab_name")
+  id                String           @id @default(uuid(7)) @db.Uuid
+  sourceId          String           @map("source_id") @db.Uuid
+  tabName           String           @map("tab_name")
   /// Google's numeric sheetId: survives tab renames.
-  sheetTabId      Int?             @map("sheet_tab_id")
-  /// NULL while DRAFT or when IGNORED.
-  offeringId      String?          @map("offering_id") @db.Uuid
+  sheetTabId        Int?             @map("sheet_tab_id")
+  /// NULL while DRAFT, when IGNORED, or for a pending sheet's subject that does not exist yet.
+  offeringId        String?          @map("offering_id") @db.Uuid
+  /// Pending sheets: the confirmed subject name, applied by the sync that promotes the sheet.
+  proposedTitle     String?          @map("proposed_title")
+  /// Who takes the subject: every program of the term, or one. NULL until confirmed.
+  audience          TabAudience?     @map("audience")
+  /// audience = PROGRAM only (CHECK in migration).
+  audienceProgramId String?          @map("audience_program_id") @db.Uuid
   /// 1-based row holding the leaf column labels.
-  headerRow       Int              @map("header_row")
-  status          TabMappingStatus @default(DRAFT)
+  headerRow         Int              @map("header_row")
+  status            TabMappingStatus @default(DRAFT)
   /// Incremented on every confirmation; recorded by sync jobs.
-  version         Int              @default(0)
+  version           Int              @default(0)
   /// SHA-256 hex of the normalized header rows; a change means the tab must be re-mapped.
-  headerSignature String           @map("header_signature") @db.Char(64)
+  headerSignature   String           @map("header_signature") @db.Char(64)
   /// SHA-256 hex of the tab values last applied successfully; unchanged tabs are skipped.
-  lastContentHash String?          @map("last_content_hash") @db.Char(64)
-  confirmedById   String?          @map("confirmed_by") @db.Uuid
-  confirmedAt     DateTime?        @map("confirmed_at") @db.Timestamptz(3)
-  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  lastContentHash   String?          @map("last_content_hash") @db.Char(64)
+  confirmedById     String?          @map("confirmed_by") @db.Uuid
+  confirmedAt       DateTime?        @map("confirmed_at") @db.Timestamptz(3)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  source      GoogleSheetSource    @relation(fields: [sourceId], references: [id], onDelete: Cascade)
-  offering    CourseOffering?      @relation(fields: [offeringId], references: [id], onDelete: Restrict)
-  confirmedBy User?                @relation(fields: [confirmedById], references: [id])
-  columns     SheetColumnMapping[]
+  source          GoogleSheetSource    @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  offering        CourseOffering?      @relation(fields: [offeringId], references: [id], onDelete: Restrict)
+  confirmedBy     User?                @relation(fields: [confirmedById], references: [id])
+  audienceProgram Program?             @relation(fields: [audienceProgramId], references: [id], onDelete: Restrict)
+  columns         SheetColumnMapping[]
 
   @@unique([sourceId, tabName])
   /// A subject may be mapped once per sheet; an active and a pending sheet can share it.
@@ -385,6 +454,12 @@ model SheetPreview {
   @@map("sheet_previews")
 }
 
+/// Who takes a subject tab. SHARED: every program of the term (Term 1: General).
+enum TabAudience {
+  SHARED
+  PROGRAM
+}
+
 enum ColumnRole {
   STUDENT_ID
   FIRST_NAME
@@ -392,6 +467,10 @@ enum ColumnRole {
   FULL_NAME
   GENDER
   CLASS
+  /// MAJOR / PROGRAM: cross-checked against ALL, never decides enrollment.
+  PROGRAM
+  /// A row-number column (#N, #, No, or 1, 2, 3…): never a mark.
+  ROW_NUMBER
   CRITERION
   /// The sheet's own total: read for the weight cross-check only.
   REFERENCE_TOTAL
@@ -413,6 +492,8 @@ model SheetColumnMapping {
   /// Proposed criterion name and weight (DRAFT); the published scheme is authoritative.
   proposedName   String?    @map("proposed_name")
   proposedWeight Decimal?   @map("proposed_weight") @db.Decimal(6, 3)
+  /// Pending sheets: the criterion key the promoting sync uses.
+  proposedKey    String?    @map("proposed_key")
 
   tabMapping SheetTabMapping      @relation(fields: [tabMappingId], references: [id], onDelete: Cascade)
   criterion  AssessmentCriterion? @relation(fields: [criterionId], references: [id], onDelete: Restrict)
@@ -445,8 +526,9 @@ model Student {
   firstName         String?  @map("first_name")
   lastName          String?  @map("last_name")
   gender            Gender   @default(UNSPECIFIED)
+  /// The latest term's class: student_terms of the highest term number. Kept in step by sync.
   className         String?  @map("class_name")
-  /// Assigned by an admin, usually from Term 2. NULL = no program yet.
+  /// The latest term's program, kept in step with student_terms like `className`.
   programId         String?  @map("program_id") @db.Uuid
   /// Roster source that last updated the profile.
   sourceId          String?  @map("source_id") @db.Uuid
@@ -459,7 +541,11 @@ model Student {
   source      GoogleSheetSource? @relation(fields: [sourceId], references: [id])
   program     Program?           @relation(fields: [programId], references: [id])
   enrollments Enrollment[]
+  terms       StudentTerm[]
+  termIssues  StudentTermIssue[]
 
+  /// Target of the composite FK keeping a student term in the student's generation.
+  @@unique([id, generationId])
   @@index([generationId, className])
   @@index([generationId, programId, className])
   @@index([fullName(ops: raw("gin_trgm_ops"))], map: "students_full_name_trgm_idx", type: Gin)
@@ -471,20 +557,104 @@ enum EnrollmentStatus {
   WITHDRAWN
 }
 
+/// Why an enrollment was withdrawn by the system rather than by the sheet.
+enum EnrollmentEndReason {
+  /// An admin approved a program switch and the new program does not take this subject.
+  PROGRAM_SWITCH
+}
+
+/// Where a student term's program came from.
+enum ProgramSource {
+  /// The class in the roster tab, mapped through the term's class list.
+  SHEET
+  /// An admin assignment or override. Sync never changes it.
+  ADMIN
+}
+
+/// A student's enrollment in one term: program and class. One per student per term.
+model StudentTerm {
+  id                String        @id @default(uuid(7)) @db.Uuid
+  studentId         String        @map("student_id") @db.Uuid
+  termId            String        @map("term_id") @db.Uuid
+  generationId      String        @map("generation_id") @db.Uuid
+  programId         String        @map("program_id") @db.Uuid
+  classId           String        @map("class_id") @db.Uuid
+  programSource     ProgramSource @default(SHEET) @map("program_source")
+  /// The sheet that last set it; NULL when set by an admin or the backfill could not tell.
+  sourceId          String?       @map("source_id") @db.Uuid
+  lastSeenSyncJobId String?       @map("last_seen_sync_job_id") @db.Uuid
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  student     Student            @relation(fields: [studentId, generationId], references: [id, generationId])
+  term        Term               @relation(fields: [termId], references: [id])
+  termProgram TermProgram        @relation(fields: [termId, programId], references: [termId, programId])
+  class       TermClass          @relation(fields: [classId, termId, programId], references: [id, termId, programId])
+  program     Program            @relation(fields: [programId], references: [id])
+  source      GoogleSheetSource? @relation(fields: [sourceId], references: [id])
+
+  @@unique([studentId, termId])
+  @@index([termId, programId, classId])
+  @@index([classId])
+  @@map("student_terms")
+}
+
+enum StudentTermIssueKind {
+  /// No program could be decided: the student's program-specific rows are skipped.
+  UNDETERMINED_PROGRAM
+  /// The class and a cross-check (CLASS 2, MAJOR, program-only tabs) disagree.
+  PROGRAM_CONFLICT
+  /// A different program within the same term: waits for an admin.
+  PROGRAM_SWITCH
+  /// A class that is not in the term's class list.
+  UNKNOWN_CLASS
+  /// The ID appears more than once in the roster tab: every copy is rejected.
+  DUPLICATE_IN_ROSTER
+}
+
+/// A student-and-term problem an admin must look at. Rows are kept after they are resolved.
+model StudentTermIssue {
+  id           String               @id @default(uuid(7)) @db.Uuid
+  termId       String               @map("term_id") @db.Uuid
+  /// NULL when the ID belongs to no student yet (a duplicate in the roster of a new student).
+  studentId    String?              @map("student_id") @db.Uuid
+  studentCode  String               @map("student_code")
+  kind         StudentTermIssueKind
+  /// IDs, class and program codes only. Never names.
+  detail       Json                 @default("{}")
+  syncJobId    String?              @map("sync_job_id") @db.Uuid
+  createdAt    DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  resolvedAt   DateTime?            @map("resolved_at") @db.Timestamptz(3)
+  resolvedById String?              @map("resolved_by") @db.Uuid
+  /// e.g. APPROVED, REJECTED, REVERSED, FIXED_IN_SHEET.
+  resolution   String?
+
+  term       Term     @relation(fields: [termId], references: [id])
+  student    Student? @relation(fields: [studentId], references: [id])
+  resolvedBy User?    @relation(fields: [resolvedById], references: [id])
+
+  @@unique([termId, studentCode, kind], map: "student_term_issues_one_open", where: raw("resolved_at IS NULL"))
+  @@index([termId, resolvedAt])
+  @@index([studentId])
+  @@map("student_term_issues")
+}
+
 model Enrollment {
-  id                String           @id @default(uuid(7)) @db.Uuid
-  studentId         String           @map("student_id") @db.Uuid
-  offeringId        String           @map("offering_id") @db.Uuid
-  status            EnrollmentStatus @default(ENROLLED)
+  id                String               @id @default(uuid(7)) @db.Uuid
+  studentId         String               @map("student_id") @db.Uuid
+  offeringId        String               @map("offering_id") @db.Uuid
+  status            EnrollmentStatus     @default(ENROLLED)
   /// False when the student's row disappeared from the source sheet (never auto-deleted).
-  presentInSource   Boolean          @default(true) @map("present_in_source")
+  presentInSource   Boolean              @default(true) @map("present_in_source")
+  /// Set with status WITHDRAWN when the system ended it (CHECK in migration).
+  endedReason       EnrollmentEndReason? @map("ended_reason")
   /// Teacher's COMMENTS cell; shown to the student once the offering is visible.
-  teacherComment    String?          @map("teacher_comment")
+  teacherComment    String?              @map("teacher_comment")
   /// The sheet's own TOTAL cell, kept only to cross-check weights.
-  sheetTotal        Decimal?         @map("sheet_total") @db.Decimal(8, 3)
-  lastSeenSyncJobId String?          @map("last_seen_sync_job_id") @db.Uuid
-  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  sheetTotal        Decimal?             @map("sheet_total") @db.Decimal(8, 3)
+  lastSeenSyncJobId String?              @map("last_seen_sync_job_id") @db.Uuid
+  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   student  Student           @relation(fields: [studentId], references: [id])
   offering CourseOffering    @relation(fields: [offeringId], references: [id])
@@ -635,6 +805,8 @@ enum ScoreStatus {
   RECORDED
   /// Explicit zero ("ABS" in the sheet).
   ABSENT
+  /// Erased in the sheet: counts as not entered. `mark` keeps the last value for the history.
+  CLEARED
 }
 
 /// A missing mark is the absence of a row, never a zero.
@@ -729,6 +901,8 @@ model SyncJob {
   termNumber      Int?       @map("term_number") @db.SmallInt
   /// { tabMappingId: version } of the mappings this job applied.
   mappingVersions Json?      @map("mapping_versions")
+  /// The confirmed preview this job applies. Only a job with one can archive subjects.
+  previewId       String?    @map("preview_id") @db.Uuid
   /// Run lease: the worker currently executing the job. A second delivery of the same job
   /// cannot claim it until the lease is released or expires (crashed worker).
   leaseToken      String?    @map("lease_token") @db.Uuid

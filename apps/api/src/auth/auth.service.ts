@@ -14,6 +14,7 @@ import { PrismaService } from '../infra/prisma.service.js';
 import type { AuthUser } from './auth.types.js';
 import type { ChangePasswordDto, LoginDto, MeResponse } from './dto.js';
 import { lockedUntilAfterFailure } from './lockout.js';
+import { LoginLockout } from './login-lockout.js';
 import { LOGIN_LIMITS, RateLimiter } from './login-rate-limiter.js';
 import { checkPasswordPolicy, PASSWORD_POLICY_MESSAGES } from './password-policy.js';
 import { PasswordService } from './password.service.js';
@@ -27,6 +28,13 @@ const INVALID_CREDENTIALS = {
 
 const PASSWORD_CHANGE_LIMIT = { limit: 5, windowSeconds: 60 };
 
+const tooManyAttempts = (retryAfterSeconds: number) =>
+  new RateLimitedException(
+    retryAfterSeconds,
+    'RATE_LIMITED',
+    'Too many sign-in attempts. Try again later.',
+  );
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -34,6 +42,7 @@ export class AuthService {
     private readonly passwords: PasswordService,
     private readonly sessions: SessionService,
     private readonly limiter: RateLimiter,
+    private readonly lockout: LoginLockout,
     private readonly audit: AuditService,
     private readonly tokenService: TokenService,
   ) {}
@@ -45,24 +54,24 @@ export class AuthService {
     const identifier = dto.identifier.trim();
     if (identifier.length === 0) throw new UnauthorizedException(INVALID_CREDENTIALS);
 
-    const [byIp, byId] = await Promise.all([
-      this.limiter.hit('login:ip', meta.ip ?? 'unknown', LOGIN_LIMITS.perIp),
-      this.limiter.hit('login:id', identifier.toLowerCase(), LOGIN_LIMITS.perIdentifier),
-    ]);
-    for (const decision of [byIp, byId]) {
-      if (!decision.allowed) {
-        throw new RateLimitedException(
-          decision.retryAfterSeconds,
-          'RATE_LIMITED',
-          'Too many sign-in attempts. Try again later.',
-        );
-      }
-    }
+    const ip = meta.ip ?? 'unknown';
+    const byIp = await this.limiter.hit('login:ip', ip, LOGIN_LIMITS.perIp);
+    if (!byIp.allowed) throw tooManyAttempts(byIp.retryAfterSeconds);
+    // Before the identifier budget: a locked address must not use up the student's own attempts.
+    const lock = await this.lockout.check(identifier, ip);
+    if (lock.state === 'locked') throw tooManyAttempts(lock.retryAfterSeconds);
+    const byId = await this.limiter.hit(
+      'login:id',
+      identifier.toLowerCase(),
+      LOGIN_LIMITS.perIdentifier,
+    );
+    if (!byId.allowed) throw tooManyAttempts(byId.retryAfterSeconds);
 
     // `username` is citext: the lookup is case-insensitive.
     const user = await this.prisma.client.user.findUnique({ where: { username: identifier } });
     if (!user) {
       await this.passwords.verifyDummy(dto.password);
+      await this.lockout.recordFailure(identifier, ip, new Date());
       await this.audit.record({
         action: 'auth.login.failure',
         metadata: { reason: 'UNKNOWN_ACCOUNT' },
@@ -72,17 +81,14 @@ export class AuthService {
     }
 
     const now = new Date();
-    if (user.lockedUntil && user.lockedUntil > now) {
-      const retryAfter = Math.ceil((user.lockedUntil.getTime() - now.getTime()) / 1000);
-      throw new RateLimitedException(
-        retryAfter,
-        'ACCOUNT_LOCKED',
-        'Too many failed attempts. The account is temporarily locked.',
-      );
+    // Only while Redis is down, so accounts stay protected when the lockout above cannot answer.
+    if (lock.state === 'unavailable' && user.lockedUntil && user.lockedUntil > now) {
+      throw tooManyAttempts(Math.ceil((user.lockedUntil.getTime() - now.getTime()) / 1000));
     }
 
     const valid = await this.passwords.verify(user.passwordHash, dto.password);
     if (!valid) {
+      await this.lockout.recordFailure(identifier, ip, now);
       await this.recordFailedLogin(user, now, meta);
       throw new UnauthorizedException(INVALID_CREDENTIALS);
     }
@@ -147,6 +153,7 @@ export class AuthService {
       );
       return issued;
     });
+    await this.lockout.clear(identifier, ip);
 
     return { session, me: await this.me(user.id) };
   }
@@ -269,6 +276,13 @@ export class AuthService {
       });
     }
 
+    if (user.mustChangePassword && user.passwordExpiresAt && user.passwordExpiresAt <= new Date()) {
+      throw new ForbiddenException({
+        code: 'TEMPORARY_PASSWORD_EXPIRED',
+        message: 'Your temporary password has expired. Ask the administrator for a new one.',
+      });
+    }
+
     const problems = checkPasswordPolicy(dto.newPassword, user.username).map(
       (v) => PASSWORD_POLICY_MESSAGES[v],
     );
@@ -284,6 +298,7 @@ export class AuthService {
     }
 
     const passwordHash = await this.passwords.hash(dto.newPassword);
+    await this.lockout.clearAll(user.username);
     return this.prisma.client.$transaction(async (tx) => {
       const updated = await tx.user.update({
         where: { id: user.id },

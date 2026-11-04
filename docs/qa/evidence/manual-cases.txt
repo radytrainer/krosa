@@ -1,0 +1,203 @@
+test-case.xlsx, 196 cases, 2026-11-01. Commit 66888b7 plus the uncommitted QA fixes.
+Microsoft Edge, real web app, API, worker, PostgreSQL and Redis. A local file stood in for Google Sheets.
+Run: 'full run' is one run of all cases. 'fresh run' is a rerun on an empty database, for cases that
+needed a generation missing from a 100-row list after the full run created over 100 generations.
+TC-193 passed in the full run, but failed 5 of 8 repeats, so it is recorded as Fail.
+
+Case    Result Run        Spec              Title
+TC-001  Pass   full run   b-access.spec.ts  Login with correct data
+TC-002  Pass   full run   b-access.spec.ts  Admin signs in with username
+TC-003  Pass   full run   b-access.spec.ts  Student signs in with student ID
+TC-004  Pass   full run   b-access.spec.ts  Username is not case sensitive and spaces are trimmed
+TC-005  Pass   full run   b-access.spec.ts  Failed attempts reset after a correct sign-in
+TC-006  Pass   full run   b-access.spec.ts  Wrong password
+TC-007  Pass   full run   b-access.spec.ts  Unknown username or student ID
+TC-008  Pass   full run   b-access.spec.ts  Empty fields
+TC-009  Pass   full run   b-access.spec.ts  Lockout after 5 wrong passwords
+TC-010  Pass   full run   b-access.spec.ts  Lockout message is the same for a made-up ID
+TC-011  Pass   full run   b-access.spec.ts  Disabled account
+TC-012  Pass   full run   b-access.spec.ts  Pending account has no usable password
+TC-013  Pass   full run   b-access.spec.ts  Expired temporary password
+TC-014  Pass   full run   b-access.spec.ts  SQL and script text in the fields
+TC-015  Pass   full run   b-access.spec.ts  Sign-in page layout and field limits
+TC-016  Pass   full run   b-access.spec.ts  Keyboard-only sign-in
+TC-017  Pass   full run   b-access.spec.ts  Student changes the temporary password at first sign-in
+TC-018  Pass   full run   b-access.spec.ts  Sign out instead of changing the password
+TC-019  Pass   full run   b-access.spec.ts  Other pages are blocked until the password is changed
+TC-020  Pass   full run   b-access.spec.ts  New passwords do not match
+TC-021  Pass   full run   b-access.spec.ts  Wrong temporary password
+TC-022  Pass   full run   b-access.spec.ts  Forced change screen explains what to do
+TC-023  Pass   full run   b-access.spec.ts  Student changes password from Profile
+TC-024  Pass   full run   b-access.spec.ts  Admin changes password from Account
+TC-025  Pass   full run   b-access.spec.ts  Other devices are signed out
+TC-026  Pass   full run   b-access.spec.ts  Boundary: 10 and 128 character passwords
+TC-027  Pass   full run   b-access.spec.ts  Password of 9 characters
+TC-028  Pass   full run   b-access.spec.ts  Password contains the username or student ID
+TC-029  Pass   full run   b-access.spec.ts  Common password
+TC-030  Pass   full run   b-access.spec.ts  Single repeated character
+TC-031  Pass   full run   b-access.spec.ts  Wrong current password
+TC-032  Pass   full run   b-access.spec.ts  Password rule hint
+TC-033  Pass   full run   b-access.spec.ts  Sign out
+TC-034  Pass   full run   b-access.spec.ts  Session continues after 15 idle minutes
+TC-035  Pass   full run   b-access.spec.ts  Two tabs stay signed in
+TC-036  Pass   full run   b-access.spec.ts  Signed-out user opens a protected page
+TC-037  Pass   full run   b-access.spec.ts  Student opens an admin page
+TC-038  Pass   full run   b-access.spec.ts  Admin opens a student page
+TC-039  Pass   full run   b-access.spec.ts  Student opens another student's course
+TC-040  Pass   full run   b-access.spec.ts  Sign-in page rejects an outside redirect
+TC-041  Pass   full run   b-access.spec.ts  Signed-in user opens the Sign in page
+TC-042  Pass   full run   b-access.spec.ts  Dashboard shows current counts
+TC-043  Pass   full run   b-access.spec.ts  Failed sync appears on Dashboard
+TC-044  Pass   full run   a-fresh.spec.ts   Dashboard with no sync history
+TC-045  Pass   full run   b-access.spec.ts  Create a generation
+TC-046  Pass   full run   b-access.spec.ts  Edit a generation
+TC-047  Pass   full run   b-access.spec.ts  Search and filter generations
+TC-048  Pass   full run   b-access.spec.ts  Archive and activate
+TC-049  Pass   full run   b-access.spec.ts  Duplicate code
+TC-050  Pass   full run   b-access.spec.ts  Invalid code
+TC-051  Pass   full run   b-access.spec.ts  End date before start date
+TC-052  Pass   full run   b-access.spec.ts  Required fields empty
+TC-053  Pass   full run   b-access.spec.ts  Archived generation is read-only
+TC-054  Pass   full run   b-access.spec.ts  Archived generation keeps student access
+TC-055  Pass   full run   b-access.spec.ts  Generation has no delete option
+TC-056  Pass   full run   b-access.spec.ts  Empty search result
+TC-057  Pass   full run   b-access.spec.ts  Edit term name and dates
+TC-058  Pass   full run   b-access.spec.ts  Edit term shows the sheet URL
+TC-059  Pass   full run   b-access.spec.ts  Term end date before start date
+TC-060  Pass   full run   b-access.spec.ts  Term name left empty
+TC-061  Pass   full run   b-access.spec.ts  Each generation has exactly 5 terms
+TC-062  Pass   full run   b-access.spec.ts  Connect a Google Sheet to a term
+TC-063  Pass   full run   b-access.spec.ts  Rename the sheet label
+TC-064  Pass   full run   b-access.spec.ts  Sheet with a matching _meta tab
+TC-065  Pass   full run   b-access.spec.ts  URL that is not a link
+TC-066  Pass   full run   b-access.spec.ts  Link from another website
+TC-067  Pass   full run   b-access.spec.ts  Google link that is not a spreadsheet
+TC-068  Pass   full run   b-access.spec.ts  Sheet not shared with the service account
+TC-069  Pass   full run   b-access.spec.ts  Deleted or wrong spreadsheet ID
+TC-070  Pass   full run   b-access.spec.ts  Same spreadsheet connected twice
+TC-071  Pass   full run   b-access.spec.ts  _meta tab names another term
+TC-072  Pass   full run   b-access.spec.ts  _meta tab names another generation
+TC-073  Pass   full run   b-access.spec.ts  Dialog shows the sharing instruction
+TC-074  Pass   full run   c-sync.spec.ts    Detect tabs
+TC-075  Pass   full run   c-sync.spec.ts    Confirm a tab
+TC-076  Pass   full run   c-sync.spec.ts    Group weight is split equally
+TC-077  Pass   full run   c-sync.spec.ts    Mark a tab as Not a subject
+TC-078  Pass   full run   c-sync.spec.ts    Reopen a confirmed tab
+TC-079  Pass   full run   c-sync.spec.ts    Weights with decimals total 100
+TC-080  Pass   full run   c-sync.spec.ts    Weights total less or more than 100
+TC-081  Pass   full run   c-sync.spec.ts    Empty subject name
+TC-082  Pass   full run   c-sync.spec.ts    Invalid weight value
+TC-083  Pass   full run   c-sync.spec.ts    Workbook without an ALL tab
+TC-084  Pass   full run   c-sync.spec.ts    Sync with no confirmed tabs
+TC-085  Pass   full run   c-sync.spec.ts    Detect tabs imports nothing
+TC-086  Pass   full run   c-sync.spec.ts    Helper tabs are not treated as subjects
+TC-087  Pass   full run   c-sync.spec.ts    Sheet TOTAL and GRADE columns are not marks
+TC-088  Pass   full run   c-sync.spec.ts    First sync imports students and marks
+TC-089  Pass   full run   c-sync.spec.ts    Re-sync with no changes
+TC-090  Pass   full run   c-sync.spec.ts    Changed mark is updated
+TC-091  Pass   full run   c-sync.spec.ts    ABS mark
+TC-092  Pass   full run   c-sync.spec.ts    New student added to the sheet
+TC-093  Pass   full run   c-sync.spec.ts    Sync from Sync center by Generation and Term
+TC-094  Pass   full run   c-sync.spec.ts    Sync all workbooks of a generation
+TC-095  Pass   full run   c-sync.spec.ts    Second sync of the same term while one is running
+TC-096  Pass   full run   c-sync.spec.ts    Invalid marks in the sheet
+TC-097  Pass   full run   c-sync.spec.ts    Student in a subject tab but not in ALL
+TC-098  Pass   full run   c-sync.spec.ts    Same student twice in one tab
+TC-099  Pass   full run   c-sync.spec.ts    Student removed from a subject tab
+TC-100  Pass   full run   c-sync.spec.ts    Column header renamed
+TC-101  Pass   full run   c-sync.spec.ts    Confirmed tab deleted
+TC-102  Pass   full run   c-sync.spec.ts    New tab not yet confirmed
+TC-103  Pass   full run   c-sync.spec.ts    Student ID used by another generation
+TC-104  Pass   full run   c-sync.spec.ts    Sheet access removed before sync
+TC-105  Pass   full run   c-sync.spec.ts    Too many sync requests
+TC-106  Pass   full run   c-sync.spec.ts    Blank cell is not zero
+TC-107  Pass   full run   c-sync.spec.ts    Erased mark counts as not entered
+TC-108  Pass   full run   c-sync.spec.ts    Mark limits
+TC-109  Pass   full run   c-sync.spec.ts    Students can read during a sync
+TC-110  Pass   full run   c-sync.spec.ts    Sync never changes student passwords
+TC-111  Pass   full run   c-sync.spec.ts    Job progress updates by itself
+TC-112  Pass   full run   c-sync.spec.ts    Issues list and filters
+TC-113  Pass   full run   c-sync.spec.ts    Parent job shows all workbook issues
+TC-114  Pass   full run   c-sync.spec.ts    Retry a failed job
+TC-115  Pass   full run   c-sync.spec.ts    Sync center job filters
+TC-116  Pass   full run   c-sync.spec.ts    Unknown job address
+TC-117  Pass   full run   c-sync.spec.ts    Retry button on a successful job
+TC-118  Pass   full run   e-restart.spec.ts Failed job message is honest
+TC-119  Pass   full run   c-sync.spec.ts    Job with no issues
+TC-120  Pass   full run   c-sync.spec.ts    Connect a new sheet
+TC-121  Pass   full run   c-sync.spec.ts    Full replace with preview
+TC-122  Pass   full run   c-sync.spec.ts    Students see nothing new until the sync
+TC-123  Pass   full run   c-sync.spec.ts    Discard a new sheet
+TC-124  Pass   full run   c-sync.spec.ts    Go back to an earlier sheet
+TC-125  Pass   full run   c-sync.spec.ts    New subject stays hidden after release
+TC-126  Fail   full run   c-sync.spec.ts    Same sheet as the active one
+TC-127  Pass   full run   c-sync.spec.ts    Sync before the preview is confirmed
+TC-128  Pass   full run   c-sync.spec.ts    Sheet edited after the preview
+TC-129  Pass   full run   c-sync.spec.ts    New sheet has a bad mark
+TC-130  Pass   full run   c-sync.spec.ts    Replace during a running sync
+TC-131  Pass   full run   c-sync.spec.ts    Archived generation with a pending sheet
+TC-132  Pass   full run   c-sync.spec.ts    Blank cells are counted before they clear marks
+TC-133  Pass   full run   c-sync.spec.ts    Missing students keep their scores
+TC-134  Pass   full run   c-sync.spec.ts    Workbooks by term shows the review state
+TC-135  Pass   full run   c-sync.spec.ts    Remove a synced sheet
+TC-136  Pass   full run   c-sync.spec.ts    Remove a sheet that never synced
+TC-137  Pass   full run   c-sync.spec.ts    Remove while a new sheet is waiting
+TC-138  Pass   full run   c-sync.spec.ts    Removal asks for confirmation
+TC-139  Pass   full run   c-sync.spec.ts    Release a term
+TC-140  Pass   full run   c-sync.spec.ts    Hide a term
+TC-141  Pass   full run   c-sync.spec.ts    No release button on a term with no subjects
+TC-142  Pass   full run   c-sync.spec.ts    Hidden term by direct address
+TC-143  Pass   full run   c-sync.spec.ts    New sync does not release scores
+TC-144  Pass   fresh run  d-people.spec.ts  Search and filter students
+TC-145  Pass   full run   d-people.spec.ts  View a student
+TC-146  Pass   full run   d-people.spec.ts  Disable an account
+TC-147  Pass   full run   d-people.spec.ts  Enable an account
+TC-148  Pass   full run   d-people.spec.ts  Reset a password
+TC-149  Pass   full run   d-people.spec.ts  Issue a password to one pending student
+TC-150  Pass   full run   d-people.spec.ts  Search finds nothing
+TC-151  Pass   full run   d-people.spec.ts  Class filter with a special character
+TC-152  Pass   full run   d-people.spec.ts  Reset on a disabled account
+TC-153  Pass   full run   d-people.spec.ts  Unknown student address
+TC-154  Fail   fresh run  d-people.spec.ts  Temporary password is shown once
+TC-155  Pass   full run   d-people.spec.ts  No add or edit student option
+TC-156  Fail   full run   a-fresh.spec.ts   Empty list text names the right tab
+TC-157  Pass   fresh run  d-people.spec.ts  Repeated failed sign-ins notice
+TC-158  Pass   fresh run  d-people.spec.ts  Issue by generation
+TC-159  Pass   fresh run  d-people.spec.ts  Issue to selected students
+TC-160  Pass   fresh run  d-people.spec.ts  Issue by class
+TC-161  Pass   fresh run  d-people.spec.ts  Nobody needs credentials
+TC-162  Pass   fresh run  d-people.spec.ts  More than 500 students
+TC-163  Pass   fresh run  d-people.spec.ts  Unticked box signs out active students
+TC-164  Pass   fresh run  d-people.spec.ts  CSV opens safely
+TC-165  Pass   full run   d-people.spec.ts  Overview page
+TC-166  Pass   full run   d-people.spec.ts  View results by term
+TC-167  Pass   full run   d-people.spec.ts  View a course page
+TC-168  Pass   full run   d-people.spec.ts  View profile
+TC-169  Pass   full run   d-people.spec.ts  Student with no released results
+TC-170  Pass   full run   d-people.spec.ts  Invalid term in the address
+TC-171  Pass   full run   d-people.spec.ts  Invalid course address
+TC-172  Pass   full run   d-people.spec.ts  Hidden subject is not shown
+TC-173  Pass   full run   d-people.spec.ts  Phone layout
+TC-174  Pass   full run   d-people.spec.ts  Status is not shown by color alone
+TC-175  Pass   full run   d-people.spec.ts  Complete course final score
+TC-176  Pass   full run   d-people.spec.ts  Absent mark counts as 0
+TC-177  Pass   full run   d-people.spec.ts  Mark of 0 is complete
+TC-178  Pass   full run   d-people.spec.ts  Course with missing marks
+TC-179  Pass   full run   d-people.spec.ts  Course with no published weights
+TC-180  Pass   full run   d-people.spec.ts  Sheet total does not decide the score
+TC-181  Pass   full run   d-people.spec.ts  Rounding to 2 decimals
+TC-182  Pass   full run   d-people.spec.ts  Weight change keeps history
+TC-183  Pass   full run   d-people.spec.ts  Term average
+TC-184  Pass   full run   d-people.spec.ts  Spot check against the sheet
+TC-185  Pass   full run   d-people.spec.ts  Actions are recorded
+TC-186  Pass   full run   d-people.spec.ts  Filter the log
+TC-187  Pass   full run   d-people.spec.ts  From date after To date
+TC-188  Pass   full run   d-people.spec.ts  Student opens the audit log
+TC-189  Pass   full run   d-people.spec.ts  No secrets in the log
+TC-190  Pass   full run   d-people.spec.ts  Log cannot be edited
+TC-191  Fail   full run   e-restart.spec.ts Service down message
+TC-192  Pass   full run   d-people.spec.ts  Script text in a sheet shows as plain text
+TC-193  Fail   full run   d-people.spec.ts  Dialogs work by keyboard
+TC-194  Pass   full run   d-people.spec.ts  Admin pages on a phone
+TC-195  Pass   full run   d-people.spec.ts  No console errors
+TC-196  Pass   fresh run  d-people.spec.ts  Pagination

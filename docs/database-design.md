@@ -1,6 +1,6 @@
 # Database Design (PostgreSQL)
 
-Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+Last verified: 2026-11-01, commit 66888b7 plus uncommitted working tree.
 
 Conventions:
 
@@ -23,7 +23,10 @@ google_sheet_sources 1─* course_offerings (owner source)
 google_sheet_sources 1─* sheet_tab_mappings 1─* sheet_column_mappings
 google_sheet_sources 1─* sheet_previews
 courses 1─* course_aliases
-programs *─* course_offerings via offering_programs (unused)
+programs *─* course_offerings via offering_programs (tab audience; no rows = shared)
+programs 1─* program_aliases ; terms *─* programs via term_programs 1─* term_classes
+students 1─* student_terms *─1 terms (one per student per term: program + class)
+terms 1─* student_term_issues *─1 students (nullable)
 generations 1─1 grade_scales 1─* grade_bands (unused)
 generations 1─* students 1─1 users (role=STUDENT)
 course_offerings 1─* assessment_criteria
@@ -132,6 +135,7 @@ Index: `(user_id) WHERE revoked_at IS NULL`.
 | source_id                                                                                                   | uuid FK google_sheet_sources NULL     | owning source, set when a tab is confirmed. NULL only in demo seed data                                                                                               |
 | sheet_tab                                                                                                   | text NULL                             | worksheet title                                                                                                                                                       |
 | status                                                                                                      | enum (ACTIVE, ARCHIVED)               |                                                                                                                                                                       |
+| archived_at                                                                                                 | timestamptz NULL                      | Set when its tab left the sheet and an admin confirmed the removal (D38). Scores and history stay                                                                     |
 | created_at, updated_at                                                                                      |                                       |                                                                                                                                                                       |
 | UNIQUE `(term_id, course_id)`, UNIQUE `(generation_id, external_key)`. Index `(generation_id, visibility)`. |
 
@@ -165,8 +169,8 @@ Index: `(user_id) WHERE revoked_at IS NULL`.
 | full_name                                                                                                                         | text NOT NULL                           |                                                                                    |
 | first_name, last_name                                                                                                             | text NULL                               | from the term workbook                                                             |
 | gender                                                                                                                            | enum (FEMALE, MALE, OTHER, UNSPECIFIED) |                                                                                    |
-| class_name                                                                                                                        | text NULL                               |                                                                                    |
-| program_id                                                                                                                        | uuid FK programs NULL                   | unused until D8 is built                                                           |
+| class_name                                                                                                                        | text NULL                               | the latest term's class (highest term number in student_terms), same transaction   |
+| program_id                                                                                                                        | uuid FK programs NULL                   | the latest term's program, kept with class_name                                    |
 | source_id                                                                                                                         | uuid FK google_sheet_sources NULL       | roster source that last updated profile                                            |
 | last_seen_sync_job_id                                                                                                             | uuid NULL                               |                                                                                    |
 | created_at, updated_at                                                                                                            |                                         |                                                                                    |
@@ -174,17 +178,18 @@ Index: `(user_id) WHERE revoked_at IS NULL`.
 
 ### enrollments (student_courses)
 
-| column                                                     | type                       | notes                                                                 |
-| ---------------------------------------------------------- | -------------------------- | --------------------------------------------------------------------- |
-| id                                                         | uuid PK                    |                                                                       |
-| student_id                                                 | uuid FK students           |                                                                       |
-| offering_id                                                | uuid FK course_offerings   |                                                                       |
-| status                                                     | enum (ENROLLED, WITHDRAWN) |                                                                       |
-| present_in_source                                          | boolean default true       | false when the row disappears from the sheet                          |
-| teacher_comment                                            | text NULL                  | COMMENTS cell; stored, not returned to students yet (D6)              |
-| sheet_total                                                | numeric(8,3) NULL          | the sheet's TOTAL cell; stored, read by no API. CHECK `>= 0` when set |
-| last_seen_sync_job_id                                      | uuid NULL                  |                                                                       |
-| created_at, updated_at                                     |                            |                                                                       |
+| column                                                     | type                       | notes                                                                                                                             |
+| ---------------------------------------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| id                                                         | uuid PK                    |                                                                                                                                   |
+| student_id                                                 | uuid FK students           |                                                                                                                                   |
+| offering_id                                                | uuid FK course_offerings   |                                                                                                                                   |
+| status                                                     | enum (ENROLLED, WITHDRAWN) |                                                                                                                                   |
+| present_in_source                                          | boolean default true       | false when the row disappears from the sheet                                                                                      |
+| ended_reason                                               | enum NULL (PROGRAM_SWITCH) | set with WITHDRAWN when an approved program switch ends the subject. CHECK: only with WITHDRAWN. Marks are kept                   |
+| teacher_comment                                            | text NULL                  | COMMENTS cell, plain text. CHECK ≤ 4000 characters. Shown to the student on released subjects (D6). Never used in any calculation |
+| sheet_total                                                | numeric(8,3) NULL          | the sheet's TOTAL cell; stored, read by no API. CHECK `>= 0` when set                                                             |
+| last_seen_sync_job_id                                      | uuid NULL                  |                                                                                                                                   |
+| created_at, updated_at                                     |                            |                                                                                                                                   |
 | UNIQUE `(student_id, offering_id)`; index `(offering_id)`. |
 
 ### assessment_criteria
@@ -234,25 +239,26 @@ Index: `(user_id) WHERE revoked_at IS NULL`.
 
 ### assessment_scores
 
-| column                                                          | type                    | notes                                                                 |
-| --------------------------------------------------------------- | ----------------------- | --------------------------------------------------------------------- |
-| id                                                              | uuid PK                 |                                                                       |
-| enrollment_id                                                   | uuid FK                 |                                                                       |
-| offering_id                                                     | uuid                    | denormalized for composite FKs                                        |
-| criterion_id                                                    | uuid FK                 |                                                                       |
-| status                                                          | enum (RECORDED, ABSENT) |                                                                       |
-| mark                                                            | numeric(8,3) NOT NULL   | ABSENT ⇒ 0; CHECK `mark >= 0`; CHECK `status <> 'ABSENT' OR mark = 0` |
-| source_id                                                       | uuid NULL               |                                                                       |
-| source_tab                                                      | text NULL               |                                                                       |
-| source_row                                                      | int NULL                | 1-based sheet row                                                     |
-| sync_job_id                                                     | uuid NULL               | last job that changed the value                                       |
-| updated_by                                                      | uuid NULL               | admin, for manual corrections                                         |
-| created_at, updated_at                                          |                         |                                                                       |
+| column                                                          | type                             | notes                                                                 |
+| --------------------------------------------------------------- | -------------------------------- | --------------------------------------------------------------------- |
+| id                                                              | uuid PK                          |                                                                       |
+| enrollment_id                                                   | uuid FK                          |                                                                       |
+| offering_id                                                     | uuid                             | denormalized for composite FKs                                        |
+| criterion_id                                                    | uuid FK                          |                                                                       |
+| status                                                          | enum (RECORDED, ABSENT, CLEARED) |                                                                       |
+| mark                                                            | numeric(8,3) NOT NULL            | ABSENT ⇒ 0; CHECK `mark >= 0`; CHECK `status <> 'ABSENT' OR mark = 0` |
+| source_id                                                       | uuid NULL                        |                                                                       |
+| source_tab                                                      | text NULL                        |                                                                       |
+| source_row                                                      | int NULL                         | 1-based sheet row                                                     |
+| sync_job_id                                                     | uuid NULL                        | last job that changed the value                                       |
+| updated_by                                                      | uuid NULL                        | admin, for manual corrections                                         |
+| created_at, updated_at                                          |                                  |                                                                       |
 | UNIQUE `(enrollment_id, criterion_id)`; index `(criterion_id)`. |
 
-**Missing mark** = no row. A blank cell that previously had a value is not auto-deleted
-(policy: "never delete on disappearance"); the job reports `MARK_CLEARED_IN_SOURCE` as a warning and
-the admin decides. This prevents an accidental clear in the sheet from erasing a recorded mark.
+**Missing mark** = no row. A cell erased in the sheet sets `status` to `CLEARED`: `mark` keeps the
+last value, a revision records the change, and results treat it as not entered (D3, D32). The row
+stays because its revisions reference it and are append-only. The job reports
+`MARK_CLEARED_IN_SOURCE` as a warning.
 
 ### assessment_score_revisions
 
@@ -280,6 +286,7 @@ Append-only history.
 | generation_id                                                                                                                                                                                                                                                                                                                                                 | uuid NULL                                                                   | for GENERATION                                                                                                                                                                      |
 | term_number                                                                                                                                                                                                                                                                                                                                                   | smallint NULL                                                               | scope ALL only: limits the run to this term number. CHECK                                                                                                                           |
 | mapping_versions                                                                                                                                                                                                                                                                                                                                              | jsonb NULL                                                                  | `{ tabMappingId: version }` applied                                                                                                                                                 |
+| preview_id                                                                                                                                                                                                                                                                                                                                                    | uuid NULL                                                                   | The confirmed preview this job applies. Only a job with one archives subjects                                                                                                       |
 | status                                                                                                                                                                                                                                                                                                                                                        | enum (QUEUED, RUNNING, SUCCEEDED, SUCCEEDED_WITH_ERRORS, FAILED, CANCELLED) |                                                                                                                                                                                     |
 | phase                                                                                                                                                                                                                                                                                                                                                         | text NULL                                                                   | FETCH, WAITING_RETRY, APPLY, DONE                                                                                                                                                   |
 | progress_current, progress_total                                                                                                                                                                                                                                                                                                                              | int                                                                         |                                                                                                                                                                                     |
@@ -332,33 +339,34 @@ FK with ON DELETE CASCADE.
 
 How one subject tab maps to an offering.
 
-| column                                                                                    | type                             | notes                                           |
-| ----------------------------------------------------------------------------------------- | -------------------------------- | ----------------------------------------------- |
-| id                                                                                        | uuid PK                          |                                                 |
-| source_id                                                                                 | uuid FK google_sheet_sources     | ON DELETE CASCADE                               |
-| tab_name                                                                                  | text                             |                                                 |
-| sheet_tab_id                                                                              | int NULL                         | Google's numeric id; survives tab renames       |
-| offering_id                                                                               | uuid FK course_offerings NULL    | NULL while DRAFT or IGNORED; ON DELETE RESTRICT |
-| header_row                                                                                | int                              | 1-based                                         |
-| status                                                                                    | enum (DRAFT, CONFIRMED, IGNORED) | `TabMappingStatus`                              |
-| version                                                                                   | int default 0                    | incremented on every confirmation               |
-| header_signature                                                                          | char(64)                         | a change means the tab needs review             |
-| last_content_hash                                                                         | char(64) NULL                    | unused: no code reads or writes it              |
-| confirmed_by, confirmed_at                                                                | NULL                             |                                                 |
-| created_at, updated_at                                                                    |                                  |                                                 |
+| column                                                                                    | type                                      | notes                                                    |
+| ----------------------------------------------------------------------------------------- | ----------------------------------------- | -------------------------------------------------------- |
+| id                                                                                        | uuid PK                                   |                                                          |
+| source_id                                                                                 | uuid FK google_sheet_sources              | ON DELETE CASCADE                                        |
+| tab_name                                                                                  | text                                      |                                                          |
+| sheet_tab_id                                                                              | int NULL                                  | Google's numeric id; survives tab renames                |
+| offering_id                                                                               | uuid FK course_offerings NULL             | NULL while DRAFT, IGNORED or REMOVED; ON DELETE RESTRICT |
+| header_row                                                                                | int                                       | 1-based                                                  |
+| status                                                                                    | enum (DRAFT, CONFIRMED, IGNORED, REMOVED) | `TabMappingStatus`                                       |
+| version                                                                                   | int default 0                             | incremented on every confirmation                        |
+| header_signature                                                                          | char(64)                                  | a change means the tab needs review                      |
+| last_content_hash                                                                         | char(64) NULL                             | unused: no code reads or writes it                       |
+| confirmed_by, confirmed_at                                                                | NULL                                      |                                                          |
+| audience, audience_program_id                                                             | enum (SHARED, PROGRAM) NULL, uuid FK NULL | who takes the tab; a program only with PROGRAM (CHECK)   |
+| created_at, updated_at                                                                    |                                           |                                                          |
 | UNIQUE `(source_id, tab_name)`, UNIQUE `(source_id, offering_id)`. Index `(offering_id)`. |
 
 ### sheet_column_mappings
 
-| column                                                                                                    | type              | notes                                                                                                    |
-| --------------------------------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------- |
-| id                                                                                                        | uuid PK           |                                                                                                          |
-| tab_mapping_id                                                                                            | uuid FK           | ON DELETE CASCADE                                                                                        |
-| column_index                                                                                              | int               | 0-based                                                                                                  |
-| header_label, group_label                                                                                 | text NULL         |                                                                                                          |
-| role                                                                                                      | enum `ColumnRole` | STUDENT_ID, FIRST_NAME, LAST_NAME, FULL_NAME, GENDER, CLASS, CRITERION, REFERENCE_TOTAL, COMMENT, IGNORE |
-| criterion_id                                                                                              | uuid FK NULL      | role CRITERION only; ON DELETE RESTRICT                                                                  |
-| proposed_name, proposed_weight                                                                            | NULL              | shown while DRAFT                                                                                        |
+| column                                                                                                    | type              | notes                                                                                                                         |
+| --------------------------------------------------------------------------------------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| id                                                                                                        | uuid PK           |                                                                                                                               |
+| tab_mapping_id                                                                                            | uuid FK           | ON DELETE CASCADE                                                                                                             |
+| column_index                                                                                              | int               | 0-based                                                                                                                       |
+| header_label, group_label                                                                                 | text NULL         |                                                                                                                               |
+| role                                                                                                      | enum `ColumnRole` | STUDENT_ID, FIRST_NAME, LAST_NAME, FULL_NAME, GENDER, CLASS, PROGRAM, ROW_NUMBER, CRITERION, REFERENCE_TOTAL, COMMENT, IGNORE |
+| criterion_id                                                                                              | uuid FK NULL      | role CRITERION only; ON DELETE RESTRICT                                                                                       |
+| proposed_name, proposed_weight                                                                            | NULL              | shown while DRAFT                                                                                                             |
 | UNIQUE `(tab_mapping_id, column_index)`, UNIQUE `(tab_mapping_id, criterion_id)`. Index `(criterion_id)`. |
 
 ### sheet_previews
@@ -377,9 +385,35 @@ Impact previews of pending sheets. Only the newest one not invalidated can autho
 | invalidated_at                        | NULL     |                                        |
 | Index `(source_id, created_at DESC)`. |
 
-### programs, offering_programs, grade_scales, grade_bands
+### programs, program_aliases, term_programs, term_classes
 
-Tables exist for study programs (D8) and letter grades (D5). **No application code uses them yet.**
+Configuration, editable by admins. Defaults come from `ssrs_apply_term_defaults(term_id)` (migration
+`20261103090000_term_enrollments`), run for every new generation: Term 1 GENERAL with classes A–D;
+Terms 2–5 WEP (A, B, C) and SNAC (D). Validation reads these tables, never term numbers.
+
+- `programs`: GENERAL (General), WEP (Web Programming), SNAC (System Network Administrators and
+  Cybersecurity). `program_aliases`: other names in sheets, e.g. SNA → SNAC.
+- `term_programs (term_id, program_id)`: the programs taught in a term.
+- `term_classes (term_id, program_id, name)`: UNIQUE `(term_id, name)` across programs, so a
+  class names its program. Trimmed, compared case-insensitively.
+
+### student_terms
+
+A student's enrollment in a term: one per student per term (UNIQUE `(student_id, term_id)`).
+Composite FKs keep the class in the same term and program, the program in the term's programs,
+and the student in the term's generation. `program_source`: SHEET (the roster's class) or ADMIN
+(never changed by sync). A later term's sync never touches an earlier term's row.
+`ssrs_backfill_student_terms()` created the rows for existing data; it can be run again safely.
+
+### student_term_issues
+
+Problems for an admin: UNDETERMINED_PROGRAM, PROGRAM_CONFLICT, PROGRAM_SWITCH, UNKNOWN_CLASS,
+DUPLICATE_IN_ROSTER. `detail` holds IDs, class and program codes, never names. One open issue
+per `(term_id, student_code, kind)`; resolved rows are kept with who resolved them and how.
+
+### grade_scales, grade_bands
+
+Tables exist for letter grades (D5). **No application code uses them yet.**
 
 ### participation_records
 

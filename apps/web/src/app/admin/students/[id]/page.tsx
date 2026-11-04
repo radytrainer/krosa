@@ -3,6 +3,7 @@
 import { Check, Copy, KeyRound, Power, ShieldAlert } from 'lucide-react';
 import { useParams } from 'next/navigation';
 import { useState } from 'react';
+import { StudentTerms } from '@/components/admin/student-terms';
 import { Confirm } from '@/components/app/confirm';
 import { PageHeader, Section } from '@/components/app/page-header';
 import { AccountStatusPill } from '@/components/app/status';
@@ -24,7 +25,10 @@ import { formatDateTime, humanize } from '@/lib/format';
 import { json, useApi, useApiMutation } from '@/lib/query';
 import type { IssuedCredential, Student, StudentResultsView } from '@/lib/types';
 
-/** Shows a just-issued temporary password once. It is not kept anywhere after closing. */
+/**
+ * Shows a just-issued temporary password once. It is not kept anywhere after closing, so only
+ * Done closes it: an outside click or Esc would lose the password.
+ */
 function CredentialDialog({
   credential,
   onClose,
@@ -34,15 +38,7 @@ function CredentialDialog({
 }) {
   const [copied, setCopied] = useState(false);
   return (
-    <Dialog
-      open={credential !== null}
-      onOpenChange={(open) => {
-        if (!open) {
-          setCopied(false);
-          onClose();
-        }
-      }}
-    >
+    <Dialog open={credential !== null}>
       <DialogContent showCloseButton={false}>
         <DialogHeader>
           <DialogTitle>Temporary password</DialogTitle>
@@ -120,7 +116,7 @@ export default function StudentDetailPage() {
         description={
           <>
             <span className="font-mono">{s.studentCode}</span> · {s.generation.code} ·{' '}
-            {s.className ?? 'no class'}
+            {s.className ? `${s.program?.code ?? ''} ${s.className}`.trim() : 'no class'}
           </>
         }
         actions={
@@ -188,8 +184,8 @@ export default function StudentDetailPage() {
                   <dd>{s.generation.name}</dd>
                 </div>
                 <div>
-                  <dt className="text-muted-foreground">Class</dt>
-                  <dd>{s.className ?? '—'}</dd>
+                  <dt className="text-muted-foreground">Program and class (latest term)</dt>
+                  <dd>{s.className ? `${s.program?.code ?? ''} ${s.className}`.trim() : '—'}</dd>
                 </div>
                 <div>
                   <dt className="text-muted-foreground">Imported</dt>
@@ -224,15 +220,23 @@ export default function StudentDetailPage() {
               {account.locked ? (
                 <Alert variant="destructive">
                   <ShieldAlert aria-hidden />
-                  <AlertTitle>Temporarily locked</AlertTitle>
+                  <AlertTitle>Repeated failed sign-ins</AlertTitle>
                   <AlertDescription>
-                    Too many failed sign-in attempts. The lock lifts automatically.
+                    Sign-in is paused for the address these attempts came from. The pause lifts
+                    automatically, and resetting the password clears it.
                   </AlertDescription>
                 </Alert>
               ) : null}
             </CardContent>
           </Card>
         </div>
+
+        <Section
+          title="Program and class by term"
+          description="From each term's ALL tab. Earlier terms never change when a later term is synced."
+        >
+          <StudentTerms student={s} readOnly={false} />
+        </Section>
 
         <Section
           title="Results"

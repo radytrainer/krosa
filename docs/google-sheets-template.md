@@ -1,6 +1,6 @@
 # Google Sheets Workbooks
 
-Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+Last verified: 2026-11-01, commit 66888b7 plus uncommitted working tree.
 
 The system reads the school's own term workbooks. Teachers keep their sheets as they are, and an
 admin confirms once per term how each tab maps to a subject.
@@ -9,12 +9,12 @@ admin confirms once per term how each tab maps to a subject.
 
 One Google Sheet per term, for example `TERM1- GEN 2027 Scoring`.
 
-| Tab                 | Required | Purpose                                                                                                                         |
-| ------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `ALL`               | Yes      | Master student list: `STUDENT ID` and `FIRST NAME` + `LAST NAME` (or `NAME`). `GENDER`, `CLASS` optional. Never read for scores |
-| `_meta`             | No       | `generation_code` and `education_term`. When present they must match the term the workbook is connected to                      |
-| One tab per subject | Yes      | Student rows and marks                                                                                                          |
-| Other tabs          | No       | Tabs starting with `_` are always skipped. Tabs with a `STUDENT ID` header can be marked "Not a subject"; others keep a warning |
+| Tab                 | Required | Purpose                                                                                                                                                                            |
+| ------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ALL`               | Yes      | The roster and the authority: `STUDENT ID`, `FIRST NAME` + `LAST NAME` (or `NAME`), `GENDER`, `CLASS`, and in Terms 2–5 `CLASS 2` ("WEP A", "SNAC"). Its score columns are ignored |
+| `_meta`             | No       | Ignored, except `education_term`: when present it must match the term the workbook is connected to                                                                                 |
+| One tab per subject | Yes      | Student rows and marks                                                                                                                                                             |
+| Other tabs          | No       | Tabs starting with `_` are always skipped. Tabs with a `STUDENT ID` header can be marked "Not a subject"; others keep a warning                                                    |
 
 An uploaded `.xlsx` must be saved as a Google Sheet (File → Save as Google Sheets) before it can be
 read.
@@ -28,17 +28,72 @@ read.
 - A column with no weight of its own shares what is left of its group's weight equally:
   `Projects (15%)` over two columns gives 7.5 + 7.5.
 - Every mark is out of 100.
+- Profile columns in a subject tab never decide anything; `ALL` does (§3):
+  - `CLASS`, and `MAJOR` / `PROGRAM`: a value that differs from `ALL` is a `PROFILE_MISMATCH`
+    warning, and the marks still import.
+  - Names are compared ignoring case, extra spaces and first/last order, so a swapped first and
+    last name is the same name (no warning). A name nobody in `ALL` has is a warning; the row
+    imports under its ID.
+  - A name that belongs to a **different** student in `ALL` is `IDENTITY_MISMATCH`: the row is
+    rejected and both IDs are shown, so no mark is stored under the wrong student. When more than
+    20% of a tab's rows do this (IDs and names shifted), the whole tab is blocked with one
+    `IDENTITY_MISMATCH_TAB` error.
+  - A row-number column (`#`, `#N`, `No`, or a generic header such as `Column 1` over 1, 2, 3…)
+    is recognised and never read as a mark.
 - `TOTAL` is used to check the weights at detection and is stored for reference. It is never used for
-  results. `GRADE` is ignored. `COMMENTS` is stored as the teacher's comment.
+  results. `GRADE` is ignored.
+- `COMMENTS` (also `COMMENT`, `REMARK(S)`, `FEEDBACK`, any case) is the teacher's comment for that
+  student in that subject. It is text, never a mark: it does not change totals, grades or whether
+  a subject is Incomplete. The student sees it on the subject once the term is released, also when
+  the subject is Incomplete. It follows the sheet:
+  - A new or changed comment replaces the stored one and is counted in the preview.
+  - A blank cell, or one with only spaces, clears the stored comment.
+  - Khmer and emoji are kept exactly. The limit is 4000 characters (not bytes). A longer comment
+    is not imported: the stored one is kept, the row's marks still import, and `COMMENT_TOO_LONG`
+    names the tab, row and length.
 
-| Cell  | Meaning                                                                          |
-| ----- | -------------------------------------------------------------------------------- |
-| 0–100 | Recorded mark (up to 3 decimals)                                                 |
-| Blank | Not entered yet, never zero. If a mark existed before, it is kept with a warning |
-| `ABS` | Absent, counts as 0                                                              |
-| Other | `INVALID_MARK`: that cell is skipped, the rest of the row still applies          |
+| Cell  | Meaning                                                                                                                                                                  |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0–100 | Recorded mark (up to 3 decimals)                                                                                                                                         |
+| Blank | Not entered, never zero. An erased mark also counts as not entered: the subject goes back to Incomplete, the admin gets a warning, and the old mark stays in the history |
+| `ABS` | Absent, counts as 0                                                                                                                                                      |
+| Other | `INVALID_MARK`: that cell is skipped, the rest of the row still applies                                                                                                  |
 
-## 3. Admin flow
+## 3. Classes, programs and who takes a subject
+
+Glossary: **General** is the Term 1 program. **WEP** = Web Programming. **SNAC** = System Network
+Administrators and Cybersecurity (`SNA` in a sheet means SNAC).
+
+- Every term has its programs and a class list per program, editable by admins. Defaults: Term 1
+  General with classes A, B, C, D; Terms 2–5 WEP (A, B, C) and SNAC (D). A class name is unique
+  within a term.
+- Each student has one enrollment per term: program and class. **`ALL`'s `CLASS` decides it**,
+  through the term's class list. An admin assignment overrides the program. `CLASS 2` is a
+  cross-check: when it names another program or class, the student is reported as
+  `PROGRAM_CONFLICT` and nothing is guessed.
+- A later term never changes an earlier one: Term 1's class and marks stay as they were.
+- Within a term, a new class in the same program is applied and audited. A new program is not:
+  it waits for an admin (`PROGRAM_SWITCH_PENDING`), and meanwhile only shared subjects import for
+  that student.
+- An unknown class (`UNKNOWN_CLASS`), no class (`PROGRAM_UNDETERMINED`), a conflict or a student
+  listed twice in `ALL` blocks only that student: no enrollment is created or changed, their
+  rows are skipped (`NO_TERM_ENROLLMENT`), and the admin issue list shows the ID and the values.
+- **Audience:** a Terms 2–5 tab is Shared (every program, like ENG and PL) or for one program
+  (Algorithm: WEP; CCNA1: SNAC). Term 1 tabs are General. A tab without one gets it guessed by
+  the first sync from who it lists: only WEP students → WEP only, only SNAC → SNAC only, both →
+  Shared. The guess is saved and reported (`AUDIENCE_GUESSED`), so a student added to the wrong
+  tab later is still caught; an admin can change it. `AUDIENCE_REQUIRED` only when no listed
+  student has a known class.
+  - A student of another program in a program's tab is rejected (`PROGRAM_NOT_IN_AUDIENCE`).
+  - A student missing from a tab their program takes is warned (`STUDENT_MISSING_FROM_TAB`);
+    stored marks stay. Missing from another program's tab is normal: no warning.
+- The preview shows new enrollments, class changes, students who need an admin, and the list of
+  program changes.
+- **Where to manage it:** Generations → the generation → **Classes and students** on a term: the
+  class lists, and the student issues (approve or reverse a program switch). A student's page
+  shows program and class per term, and an admin can set them there.
+
+## 4. Admin flow
 
 1. **Generations → GEN2027 → Terms → Connect workbook.** Share the file with the service account
    as Viewer first; the dialog shows the address.
@@ -53,7 +108,7 @@ read.
 5. **Release scores** on the generation page. Students see nothing from a term until then, and it
    can be hidden again.
 
-## 4. When a sheet changes
+## 5. When a sheet changes
 
 This table is for an active sheet. On a new sheet waiting to replace it, any error refuses the whole
 sync (section 5).
@@ -71,7 +126,7 @@ sync (section 5).
 | Mapped column deleted                  | Scores kept (`CRITERION_REMOVED_IN_SOURCE`)                                                                                                            |
 | Weights changed on the review screen   | The next sync publishes a new weight version; older versions stay on record                                                                            |
 
-## 5. Changing a term's sheet
+## 6. Changing a term's sheet
 
 On the generation page, choose **Edit** on the term. The dialog shows the sheet's URL with
 **Replace** and **Remove**. Student scores do not change until the new sheet's sync completes.
@@ -91,56 +146,63 @@ sheet, or Detect tabs, Reopen, Confirm tab or Not a subject on the new one. If t
 **Sync now** starts a job that fails with `PREVIEW_STALE`. Going back to an earlier sheet is the same
 flow. A pending sheet can be discarded at any time except during a sync of the term.
 
-**Known deviation:** Confirm tab on a new sheet changes subject and column names at once, so students
-can see them before the sync. Marks do not change. A fix is planned
-([delivery-plan-2027.md](delivery-plan-2027.md)).
+Confirming a tab on a new sheet saves only that sheet's review. Subject and column names change when
+the sync succeeds, and a subject that only the new sheet has is created then. Discard leaves nothing
+behind. A blank cell in the new sheet clears a stored mark, and the preview counts these.
 
 **Remove** disconnects the sheet and stops its syncs. Students keep their current scores, and the
 sheet stays in the term's history. A term with synced scores then connects a new sheet through the
 same reviewed steps; a term that never synced connects one straight away, including the same sheet.
 
-## 6. Common errors
+## 7. Common errors
 
-| Code                                                         | Meaning / fix                                                          |
-| ------------------------------------------------------------ | ---------------------------------------------------------------------- |
-| `INVALID_URL` / `UNSUPPORTED_HOST` / `NOT_A_SPREADSHEET_URL` | Copy the URL from the address bar of the open spreadsheet              |
-| `SHEET_NOT_SHARED`                                           | Share the file with the service-account address (Viewer)               |
-| `SHEET_NOT_FOUND`                                            | The URL is wrong or the file was deleted                               |
-| `ROSTER_TAB_MISSING`                                         | The `ALL` tab is missing                                               |
-| `GENERATION_MISMATCH` / `TERM_MISMATCH`                      | `_meta` names another generation or term. Connect it to the right term |
-| `TERM_SOURCE_EXISTS`                                         | The term already has an active workbook. Use Replace, or Remove first  |
-| `SOURCE_EXISTS`                                              | This spreadsheet is already connected                                  |
-| `NO_CONFIRMED_TABS`                                          | Confirm at least one tab before syncing                                |
-| `GOOGLE_NOT_CONFIGURED`                                      | The server has no service-account credentials. See `.env.example`      |
-| `RATE_LIMITED` / `GOOGLE_UNAVAILABLE`                        | Temporary. Requests are already retried; try again later               |
+| Code                                                         | Meaning / fix                                                         |
+| ------------------------------------------------------------ | --------------------------------------------------------------------- |
+| `INVALID_URL` / `UNSUPPORTED_HOST` / `NOT_A_SPREADSHEET_URL` | Copy the URL from the address bar of the open spreadsheet             |
+| `SHEET_NOT_SHARED`                                           | Share the file with the service-account address (Viewer)              |
+| `SHEET_NOT_FOUND`                                            | The URL is wrong or the file was deleted                              |
+| `ROSTER_TAB_MISSING`                                         | The `ALL` tab is missing                                              |
+| `TERM_MISMATCH`                                              | `_meta` names another term. Connect it to the right term              |
+| `TERM_SOURCE_EXISTS`                                         | The term already has an active workbook. Use Replace, or Remove first |
+| `SOURCE_EXISTS`                                              | This spreadsheet is already connected                                 |
+| `NO_CONFIRMED_TABS`                                          | Confirm at least one tab before syncing                               |
+| `GOOGLE_NOT_CONFIGURED`                                      | The server has no service-account credentials. See `.env.example`     |
+| `RATE_LIMITED` / `GOOGLE_UNAVAILABLE`                        | Temporary. Requests are already retried; try again later              |
 
 ### More codes
 
-| Code                                                                                                     | Meaning / fix                                                                                               |
-| -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `USE_CHANGE_SHEET`                                                                                       | The term has synced scores. Use Edit → Replace on the term                                                  |
-| `SAME_SHEET`                                                                                             | This is already the term's active sheet                                                                     |
-| `PENDING_SHEET_EXISTS`                                                                                   | A new sheet is waiting. Discard or sync it before removing the active sheet                                 |
-| `SYNC_IN_PROGRESS`                                                                                       | A sync of this term is running. Wait until it finishes                                                      |
-| `NOT_PENDING`                                                                                            | This action applies only to a sheet waiting to replace the active one                                       |
-| `PREVIEW_REQUIRED` / `PREVIEW_STALE`                                                                     | Run and confirm the preview again                                                                           |
-| `PREVIEW_HAS_ERRORS`                                                                                     | Fix the sheet; a preview with errors cannot be confirmed                                                    |
-| `SHEET_CHANGE_REJECTED`                                                                                  | The new sheet's sync had errors. Nothing was imported and the old sheet stays active                        |
-| `NEEDS_REMAP`                                                                                            | Reopen the tab, detect again, confirm                                                                       |
-| `WORKSHEET_NOT_FOUND`                                                                                    | A confirmed tab is gone from the sheet. Other tabs still sync                                               |
-| `CRITERION_REMOVED_IN_SOURCE`                                                                            | A mapped column is gone. Stored scores are kept                                                             |
-| `MARK_CLEARED_IN_SOURCE`                                                                                 | A cell with a stored mark is blank. The mark is kept                                                        |
-| `MISSING_COLUMN`, `DUPLICATE_COLUMN`, `TAB_TOO_LARGE`, `MISSING_STUDENT_ID_COLUMN`, `NO_CRITERIA`        | The tab's layout cannot be used. Fix the sheet                                                              |
-| `MISSING_WEIGHT`, `WEIGHTS_NOT_100`, `GROUP_WEIGHT_MISMATCH`, `WEIGHTS_DISAGREE_WITH_SHEET_TOTAL`        | Check the weights on the review screen                                                                      |
-| `INVALID_STUDENT_ID`, `MISSING_STUDENT_ID`, `MISSING_STUDENT_NAME`, `DUPLICATE_STUDENT`, `DUPLICATE_ROW` | Fix that row                                                                                                |
-| `UNKNOWN_GENDER`, `UNRECOGNIZED_COLUMN`                                                                  | Warnings. Check the sheet                                                                                   |
-| `STUDENT_ID_CONFLICT`, `STUDENT_IN_OTHER_GENERATION`                                                     | The ID already belongs to someone else or to another generation                                             |
-| `SOURCE_BUSY`                                                                                            | A workbook was already syncing and was skipped in a bulk sync                                               |
-| `GOOGLE_AUTH_FAILED` / `GOOGLE_ERROR`                                                                    | Check the service-account key. An uploaded `.xlsx` not saved as a Google Sheet may also give `GOOGLE_ERROR` |
+| Code                                                                                                        | Meaning / fix                                                                                               |
+| ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `USE_CHANGE_SHEET`                                                                                          | The term has synced scores. Use Edit → Replace on the term                                                  |
+| `SAME_SHEET`                                                                                                | This is already the term's active sheet                                                                     |
+| `PENDING_SHEET_EXISTS`                                                                                      | A new sheet is waiting. Discard or sync it before removing the active sheet                                 |
+| `SYNC_IN_PROGRESS`                                                                                          | A sync of this term is running. Wait until it finishes                                                      |
+| `NOT_PENDING`                                                                                               | This action applies only to a sheet waiting to replace the active one                                       |
+| `PREVIEW_REQUIRED` / `PREVIEW_STALE`                                                                        | Run and confirm the preview again                                                                           |
+| `PREVIEW_HAS_ERRORS`                                                                                        | Fix the sheet; a preview with errors cannot be confirmed                                                    |
+| `REMOVALS_CHANGED`                                                                                          | The subjects to remove changed after the preview. Nothing changed. Choose Sync now again                    |
+| `REMOVAL_REJECTED`                                                                                          | A sync that removes subjects needs zero errors. Fix them. Nothing was imported or removed                   |
+| `SHEET_CHANGE_REJECTED`                                                                                     | The new sheet's sync had errors. Nothing was imported and the old sheet stays active                        |
+| `NEEDS_REMAP`                                                                                               | Reopen the tab, detect again, confirm                                                                       |
+| `WORKSHEET_NOT_FOUND`                                                                                       | A confirmed tab is gone from the sheet. Other tabs still sync                                               |
+| `CRITERION_REMOVED_IN_SOURCE`                                                                               | A mapped column is gone. Stored scores are kept                                                             |
+| `MARK_CLEARED_IN_SOURCE`                                                                                    | A cell with a stored mark is blank. The mark no longer counts; it stays in the history                      |
+| `MISSING_COLUMN`, `DUPLICATE_COLUMN`, `TAB_TOO_LARGE`, `MISSING_STUDENT_ID_COLUMN`, `NO_CRITERIA`           | The tab's layout cannot be used. Fix the sheet                                                              |
+| `MISSING_WEIGHT`, `WEIGHTS_NOT_100`, `GROUP_WEIGHT_MISMATCH`, `WEIGHTS_DISAGREE_WITH_SHEET_TOTAL`           | Check the weights on the review screen                                                                      |
+| `INVALID_STUDENT_ID`, `MISSING_STUDENT_ID`, `MISSING_STUDENT_NAME`, `DUPLICATE_STUDENT`, `DUPLICATE_ROW`    | Fix that row                                                                                                |
+| `UNKNOWN_GENDER`, `UNRECOGNIZED_COLUMN`                                                                     | Warnings. Check the sheet                                                                                   |
+| `COMMENT_TOO_LONG`                                                                                          | Warning. Shorten the comment to 4000 characters. The old comment is kept until then                         |
+| `IDENTITY_MISMATCH`, `IDENTITY_MISMATCH_TAB`                                                                | The row's name belongs to another student. Fix the IDs or names; over 20% of rows blocks the tab            |
+| `AUDIENCE_GUESSED`, `AUDIENCE_REQUIRED`, `PROGRAM_NOT_IN_AUDIENCE`                                          | Check or set who takes the tab; a student of another program in it is rejected                              |
+| `UNKNOWN_CLASS`, `PROGRAM_UNDETERMINED`, `PROGRAM_CONFLICT`, `PROGRAM_SWITCH_PENDING`, `NO_TERM_ENROLLMENT` | Fix the student's class in `ALL`, or decide in the admin issue list                                         |
+| `STUDENT_MISSING_FROM_TAB`, `NO_CLASS_LIST`                                                                 | Warnings. Add the student to the tab; set up the term's class list                                          |
+| `STUDENT_ID_CONFLICT`, `STUDENT_IN_OTHER_GENERATION`                                                        | The ID already belongs to someone else or to another generation                                             |
+| `SOURCE_BUSY`                                                                                               | A workbook was already syncing and was skipped in a bulk sync                                               |
+| `GOOGLE_AUTH_FAILED` / `GOOGLE_ERROR`                                                                       | Check the service-account key. An uploaded `.xlsx` not saved as a Google Sheet may also give `GOOGLE_ERROR` |
 
 Other job failures are listed in [api-specification.md](api-specification.md).
 
-## 7. Service account setup
+## 8. Service account setup
 
 1. In Google Cloud Console, create a project and enable the **Google Sheets API**.
 2. Create a service account (no roles needed) and a JSON key. Store it as described in

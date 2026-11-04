@@ -9,7 +9,7 @@ import {
 import type { DetectedColumn } from './layout.js';
 import { checkTermWorkbook, detectTermWorkbook, type TermWorkbookOptions } from './read.js';
 import { parseRoster } from './roster.js';
-import { parseSubjectRows, type SubjectTabMapping } from './subject-rows.js';
+import { MAX_COMMENT_LENGTH, parseSubjectRows, type SubjectTabMapping } from './subject-rows.js';
 
 const ID = TERM_FIXTURE_SPREADSHEET_ID;
 const OPTIONS: TermWorkbookOptions = {
@@ -25,6 +25,30 @@ async function detect(sheet: FakeSpreadsheet = termWorkbookFixture(), options = 
 
 const forTab = (issues: TemplateIssue[], tab: string) =>
   issues.filter((i) => i.sheetTab === tab).map((i) => i.code);
+
+/** PL rows parsed after putting `comment` in the first student's COMMENTS cell. */
+async function plRows(comment: unknown) {
+  const { result } = await detect();
+  const pl = result.tabs.find((t) => t.tabName === 'PL')!.layout!;
+  const grid = termWorkbookFixture().tabs['PL']!;
+  grid[1]![10] = comment as string;
+  const log = new IssueLog();
+  const rows = parseSubjectRows(
+    grid,
+    {
+      tabName: 'PL',
+      headerRow: pl.headerRow,
+      columns: pl.columns.map((c) => ({
+        columnIndex: c.columnIndex,
+        role: c.role,
+        criterionKey: c.criterion?.key ?? null,
+      })),
+    },
+    new Map(result.roster.map((s) => [s.studentCode, s])),
+    log,
+  )!;
+  return { row: rows[0]!, issues: log.items };
+}
 
 const criteria = (columns: DetectedColumn[]) =>
   columns
@@ -60,6 +84,7 @@ describe('detectTermWorkbook – real header shapes', () => {
         fullName: 'DARA SOK',
         gender: 'MALE',
         className: 'A',
+        programText: null,
         rowNumber: 4,
       },
       expect.objectContaining({ studentCode: 'PNC2027-002', gender: 'FEMALE' }),
@@ -224,12 +249,13 @@ describe('detectTermWorkbook – problems', () => {
     expect(eng.totalWeight).toBe('100');
   });
 
-  it('rejects _meta for another generation or term (FILE)', async () => {
+  it('rejects _meta for another term (FILE) and ignores its generation code', async () => {
     const { result } = await detect(termWorkbookFixture(), { ...OPTIONS, termNumber: 2 });
     expect(result.fatal).toBe(true);
     expect(result.issues.map((i) => i.code)).toContain('TERM_MISMATCH');
     const other = await detect(termWorkbookFixture(), { ...OPTIONS, generationCode: 'GEN2026' });
-    expect(other.result.issues.map((i) => i.code)).toContain('GENERATION_MISMATCH');
+    expect(other.result.fatal).toBe(false);
+    expect(other.result.issues.map((i) => i.code)).not.toContain('GENERATION_MISMATCH');
   });
 
   it('works without _meta', async () => {
@@ -332,10 +358,9 @@ describe('parseSubjectRows', () => {
     expect(rows[0]!.marks.get('FINAL')).toEqual({ status: 'RECORDED', mark: '75' });
     expect(rows[0]!.marks.get('QUIZ_1')).toBe('BLANK');
     expect(rows[0]!.sheetTotal).toBe(26.25);
-    // BCU's name column is ignored (mistyped header), but LAST NAME "BOPHA" ≠ roster "CHAN".
-    expect(log.items.map((i) => [i.code, i.studentCode])).toEqual([
-      ['PROFILE_MISMATCH', 'PNC2027-002'],
-    ]);
+    // BCU's first-name column is ignored (mistyped header). LAST NAME "BOPHA" is the roster's
+    // first name: first and last swapped count as the same name, so nothing is reported.
+    expect(log.items).toEqual([]);
   });
 
   it('rejects unknown students, duplicates and invalid marks', async () => {
@@ -348,7 +373,6 @@ describe('parseSubjectRows', () => {
     const rows = parseSubjectRows(grid, mapping, roster, log)!;
     expect(rows.map((r) => r.studentCode)).toEqual(['PNC2027-002']);
     expect(log.items.map((i) => i.code)).toEqual([
-      'PROFILE_MISMATCH',
       'UNKNOWN_STUDENT',
       'INVALID_MARK',
       'INVALID_MARK',
@@ -376,6 +400,52 @@ describe('parseSubjectRows', () => {
       new IssueLog(),
     )!;
     expect(rows.map((r) => r.comment)).toEqual(['Works well in a team.', null, null]);
+  });
+
+  describe('teacher comments', () => {
+    it('keeps Khmer, emoji and markup exactly, trimming only the ends', async () => {
+      const text = 'ពូកែណាស់ សូមបន្ត 👏🏽\nLine two <b>x</b><script>alert(1)</script>';
+      const { row, issues } = await plRows(`  ${text}  `);
+      expect(row.comment).toBe(text);
+      expect(row.commentRejected).toBe(false);
+      expect(issues).toEqual([]);
+    });
+
+    it('treats a blank or whitespace-only cell as blank, which clears the comment', async () => {
+      for (const blank of [null, '', '   ', '\n\t', '\u200B \u200B']) {
+        const { row } = await plRows(blank);
+        expect(row.comment).toBeNull();
+        expect(row.commentRejected).toBe(false);
+      }
+    });
+
+    it('drops NUL characters, which PostgreSQL cannot store', async () => {
+      expect((await plRows('Good\u0000 work')).row.comment).toBe('Good work');
+    });
+
+    it('counts the limit in characters, so 4000 emoji are accepted', async () => {
+      const text = '😀'.repeat(MAX_COMMENT_LENGTH); // 8000 UTF-16 units
+      const { row, issues } = await plRows(text);
+      expect(row.comment).toBe(text);
+      expect(issues).toEqual([]);
+    });
+
+    it('rejects a comment over the limit with a warning, and still reads the marks', async () => {
+      const { row, issues } = await plRows('ក'.repeat(MAX_COMMENT_LENGTH + 1));
+      expect(row.comment).toBeNull();
+      expect(row.commentRejected).toBe(true);
+      expect(row.marks.size).toBe(4);
+      expect(issues).toEqual([
+        expect.objectContaining({
+          severity: 'WARNING',
+          code: 'COMMENT_TOO_LONG',
+          sheetTab: 'PL',
+          rowNumber: 2,
+          studentCode: 'PNC2027-001',
+          message: expect.stringContaining('4001 characters'),
+        }),
+      ]);
+    });
   });
 });
 

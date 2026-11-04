@@ -40,6 +40,19 @@ describe('QA A-25: no hash or token in any response', () => {
     });
     const source = await ctx.prisma.googleSheetSource.findFirstOrThrow();
     const job = await ctx.prisma.syncJob.findFirstOrThrow();
+    const term = await ctx.prisma.term.findFirstOrThrow({
+      where: { generationId: h.generationId },
+    });
+    const admin = await ctx.prisma.user.findFirstOrThrow({ where: { role: 'ADMIN' } });
+    const preview = await ctx.prisma.sheetPreview.create({
+      data: {
+        sourceId: source.id,
+        fingerprint: '0'.repeat(64),
+        mappingVersions: {},
+        summary: { issues: [] },
+        runById: admin.id,
+      },
+    });
     const offering = await ctx.prisma.courseOffering.findFirstOrThrow({
       where: { title: 'Logic' },
     });
@@ -49,7 +62,9 @@ describe('QA A-25: no hash or token in any response', () => {
         .replace('generations/:id', `generations/${h.generationId}`)
         .replace('students/:id', `students/${row.id}`)
         .replace('sources/:id', `sources/${source.id}`)
+        .replace('preview/:previewId', `preview/${preview.id}`)
         .replace('sync/:jobId', `sync/${job.id}`)
+        .replace('terms/:id', `terms/${term.id}`)
         .replace('courses/:offeringId', `courses/${offering.id}`);
 
     let checked = 0;
@@ -112,10 +127,11 @@ describe('QA E-09: the 20,000 issue cap', () => {
       }),
     );
     const job = await h.sync(source);
-    const listed = (await h.admin.get(`${ADMIN_V1}/sync/${job.id}/errors`).expect(200)).body.meta
-      .total;
+    const page = (await h.admin.get(`${ADMIN_V1}/sync/${job.id}/errors`).expect(200)).body;
+    const listed = page.meta.total;
     console.log(`[E-09] job ${job.status}: errorCount ${job.errorCount}, listed ${listed}`);
-    expect(job.errorCount + job.warningCount).toBe(listed);
+    expect(job.errorCount + job.warningCount).toBe(listed + page.notListed);
+    expect(page.notListed).toBeGreaterThan(0);
   }, 120_000);
 });
 

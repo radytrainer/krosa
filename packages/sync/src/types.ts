@@ -4,6 +4,8 @@ import type { IssueScope, IssueSeverity, SheetsReader } from '@ssrs/sheets';
 /** Counts persisted in `sync_jobs.counts` (docs/requirements.md SYNC-03). */
 export interface SyncCounts {
   students: { created: number; updated: number; unchanged: number; rejected: number };
+  /** Enrollments in the synced term: program and class (student_terms). */
+  termEnrollments: { created: number; classChanged: number; unchanged: number; blocked: number };
   offerings: {
     created: number;
     updated: number;
@@ -13,7 +15,13 @@ export interface SyncCounts {
   };
   criteria: { created: number; updated: number; unchanged: number };
   schemes: { published: number; drafted: number; unchanged: number; skipped: number };
-  enrollments: { created: number; unchanged: number; missingInSource: number };
+  enrollments: {
+    created: number;
+    unchanged: number;
+    missingInSource: number;
+    /** Existing enrollments whose teacher comment was set, changed or cleared. */
+    commentsUpdated: number;
+  };
   scores: {
     created: number;
     updated: number;
@@ -26,10 +34,11 @@ export interface SyncCounts {
 export function emptyCounts(): SyncCounts {
   return {
     students: { created: 0, updated: 0, unchanged: 0, rejected: 0 },
+    termEnrollments: { created: 0, classChanged: 0, unchanged: 0, blocked: 0 },
     offerings: { created: 0, updated: 0, unchanged: 0, rejected: 0, failed: 0 },
     criteria: { created: 0, updated: 0, unchanged: 0 },
     schemes: { published: 0, drafted: 0, unchanged: 0, skipped: 0 },
-    enrollments: { created: 0, unchanged: 0, missingInSource: 0 },
+    enrollments: { created: 0, unchanged: 0, missingInSource: 0, commentsUpdated: 0 },
     scores: { created: 0, updated: 0, unchanged: 0, rejected: 0, clearedInSource: 0 },
   };
 }
@@ -54,7 +63,8 @@ export type ApplyIssueCode =
   | 'APPLY_FAILED'
   | 'MARK_CLEARED_IN_SOURCE'
   | 'ENROLLMENT_MISSING_IN_SOURCE'
-  | 'CRITERION_REMOVED_IN_SOURCE';
+  | 'CRITERION_REMOVED_IN_SOURCE'
+  | 'SUBJECT_ARCHIVED';
 
 export interface SyncIssue {
   severity: IssueSeverity;
@@ -101,5 +111,5 @@ export type RunOutcome =
   | { kind: 'finished'; status: 'SUCCEEDED' | 'SUCCEEDED_WITH_ERRORS' | 'FAILED' | 'CANCELLED' }
   /** Transient failure before any write: the caller should let the queue retry. */
   | { kind: 'retry'; code: string; message: string }
-  /** Another delivery of this job is running right now; nothing was done. */
-  | { kind: 'busy' };
+  /** Another run holds the job's lease until `retryAt`; nothing was done. */
+  | { kind: 'busy'; retryAt: Date };

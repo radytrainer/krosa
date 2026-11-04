@@ -10,6 +10,8 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 /** 401 codes that a refresh can fix. Others (e.g. revoked sessions) mean signing in again. */
 const REFRESHABLE_CODES = new Set(['ACCESS_TOKEN_EXPIRED', 'UNAUTHENTICATED']);
 
+export const UNREACHABLE = 'The service is unreachable. Please try again.';
+
 export interface ApiErrorBody {
   error: {
     code: string;
@@ -68,6 +70,8 @@ function toApiError(res: Response, body: unknown): ApiError {
     const { code, message, details, requestId } = body.error;
     return new ApiError(res.status, code, message, details, requestId, body.error);
   }
+  // Not our API's answer: a proxy could not reach it. Its status text means nothing to a user.
+  if (res.status >= 500) return new ApiError(res.status, `HTTP_${res.status}`, UNREACHABLE);
   return new ApiError(res.status, `HTTP_${res.status}`, res.statusText || 'Request failed');
 }
 
@@ -88,9 +92,21 @@ async function send(path: string, init: RequestInit): Promise<Response> {
 /** Single in-flight refresh shared by concurrent requests (reuse would revoke the session). */
 let refreshing: Promise<boolean> | null = null;
 
+/** Tabs take turns: the next one then sends the new token from the shared cookie jar. */
+function acrossTabs<T>(work: () => Promise<T>): Promise<T> {
+  return typeof navigator !== 'undefined' && navigator.locks
+    ? navigator.locks.request('ssrs-session-refresh', work)
+    : work();
+}
+
 export function refreshSession(): Promise<boolean> {
-  refreshing ??= send('/auth/refresh', { method: 'POST' })
-    .then((res) => res.ok)
+  // No CSRF cookie means no session: a signed-out visitor has nothing to refresh.
+  if (!readCookie(CSRF_COOKIE)) return Promise.resolve(false);
+  refreshing ??= acrossTabs(() => send('/auth/refresh', { method: 'POST' }))
+    .then(async (res) => {
+      await res.body?.cancel(); // an unread body would keep the request open
+      return res.ok;
+    })
     .catch(() => false)
     .finally(() => {
       refreshing = null;
@@ -98,10 +114,13 @@ export function refreshSession(): Promise<boolean> {
   return refreshing;
 }
 
+/** These calls settle the session themselves, so a 401 from them is final. */
+const NO_REFRESH_PATHS = new Set(['/auth/login', '/auth/refresh', '/auth/logout']);
+
 /** Sends the request, refreshing the session once on an expired access token. */
 async function request(path: string, init: RequestInit): Promise<Response> {
   const res = await send(path, init);
-  if (res.status !== 401 || path.startsWith('/auth/')) return res;
+  if (res.status !== 401 || NO_REFRESH_PATHS.has(path)) return res;
   const body = await parseBody(res.clone());
   if (isErrorBody(body) && REFRESHABLE_CODES.has(body.error.code) && (await refreshSession())) {
     return send(path, init);

@@ -16,7 +16,7 @@ import {
 } from '@ssrs/shared';
 import { reportError } from '@ssrs/shared/node';
 import { failJob, runSourceSync, type SyncLogger } from '@ssrs/sync';
-import { Queue, Worker, type Job } from 'bullmq';
+import { DelayedError, Queue, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
 import { WORKER_ENV, type WorkerEnv } from '../config/env.js';
 import { PrismaService } from '../infra/prisma.service.js';
@@ -31,6 +31,7 @@ const LIVE_STATES = new Set(['waiting', 'delayed', 'active', 'prioritized', 'wai
  * and a job caught between the two must not be touched.
  */
 export const SWEEP_GRACE_MS = 2 * 60_000;
+const LEASE_RETRY_MARGIN_MS = 1_000;
 
 /**
  * Consumes `sync.source` jobs. Transient Google failures are retried by BullMQ with backoff;
@@ -68,13 +69,17 @@ export class SyncProcessor implements OnApplicationBootstrap, OnApplicationShutd
     });
     this.connection = connection;
     await this.recoverOrphans(connection);
-    this.worker = new Worker<SyncSourceJobData>(SYNC_QUEUE, (job) => this.process(job), {
-      connection,
-      prefix: QUEUE_PREFIX,
-      concurrency: this.env.WORKER_CONCURRENCY,
-      limiter: { max: this.env.SYNC_JOBS_PER_MINUTE, duration: 60_000 },
-      lockDuration: 120_000,
-    });
+    this.worker = new Worker<SyncSourceJobData>(
+      SYNC_QUEUE,
+      (job, token) => this.process(job, token),
+      {
+        connection,
+        prefix: QUEUE_PREFIX,
+        concurrency: this.env.WORKER_CONCURRENCY,
+        limiter: { max: this.env.SYNC_JOBS_PER_MINUTE, duration: 60_000 },
+        lockDuration: 120_000,
+      },
+    );
     this.worker.on('failed', (job, err) => void this.onFailed(job, err));
     this.worker.on('error', (err) => this.logger.error(`Queue worker error: ${err.message}`));
     this.logger.log(`Consuming queue "${SYNC_QUEUE}" (concurrency ${this.env.WORKER_CONCURRENCY})`);
@@ -99,7 +104,7 @@ export class SyncProcessor implements OnApplicationBootstrap, OnApplicationShutd
     await this.connection?.quit().catch(() => this.connection?.disconnect());
   }
 
-  async process(job: Job<SyncSourceJobData>): Promise<string> {
+  async process(job: Job<SyncSourceJobData>, token?: string): Promise<string> {
     const { syncJobId } = job.data;
     const outcome = await runSourceSync(
       { prisma: this.prisma.client, reader: this.reader, logger: this.syncLogger(syncJobId) },
@@ -111,10 +116,13 @@ export class SyncProcessor implements OnApplicationBootstrap, OnApplicationShutd
       throw new Error(`${outcome.code}: ${outcome.message}`);
     }
     if (outcome.kind === 'busy') {
-      // A duplicate delivery while another run holds the job's lease. That run owns the outcome;
-      // if it has in fact died, the orphan sweep marks the job WORKER_LOST.
-      this.logger.warn({ msg: 'Duplicate delivery ignored; job is running elsewhere', syncJobId });
-      return 'BUSY';
+      // Another run holds the lease, or a dead one left it behind. Come back when it expires, so
+      // the job is either finished by then or taken over. Finishing here would strand it, and
+      // this costs no attempt.
+      this.logger.warn({ msg: 'Job lease is held; trying again when it expires', syncJobId });
+      if (!token) return 'BUSY';
+      await job.moveToDelayed(outcome.retryAt.getTime() + LEASE_RETRY_MARGIN_MS, token);
+      throw new DelayedError();
     }
     return outcome.status;
   }

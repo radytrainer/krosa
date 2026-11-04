@@ -4,7 +4,8 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import type { Generation, Prisma, Term } from '@ssrs/database';
+import { applyTermDefaults, type Generation, type Prisma, type Term } from '@ssrs/database';
+import { TERMS_PER_GENERATION } from '@ssrs/shared';
 import { AcademicGuardService } from '../academic/academic-guard.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
@@ -19,9 +20,6 @@ import type {
   UpdateGenerationDto,
   UpdateTermDto,
 } from './generations.dto.js';
-
-/** Every generation has exactly five terms (ACAD-02, docs/requirements.md A4). */
-export const TERMS_PER_GENERATION = 5;
 
 export interface TermView {
   id: string;
@@ -122,9 +120,15 @@ export class GenerationsService {
       include: {
         terms: {
           orderBy: { number: 'asc' },
-          include: { offerings: { select: { visibility: true } } },
+          include: { offerings: { where: { status: 'ACTIVE' }, select: { visibility: true } } },
         },
-        _count: { select: { students: true, offerings: true, sources: true } },
+        _count: {
+          select: {
+            students: true,
+            offerings: { where: { status: 'ACTIVE' } },
+            sources: true,
+          },
+        },
       },
     });
     if (!generation)
@@ -205,6 +209,7 @@ export class GenerationsService {
             },
           },
         });
+        await applyTermDefaults(tx, generation.id);
         await this.audit.record(
           {
             action: 'generation.created',

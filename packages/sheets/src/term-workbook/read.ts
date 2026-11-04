@@ -41,6 +41,8 @@ export interface TabProposal {
   layout: TabLayout | null;
   /** Rows whose student ID is not in the roster. */
   unknownStudents: number;
+  /** Roster class of each listed student, counted: the API proposes the tab's audience from it. */
+  rosterClasses: Record<string, number>;
 }
 
 export interface TermWorkbookDetection {
@@ -54,7 +56,10 @@ export interface TermWorkbookDetection {
   issues: TemplateIssue[];
 }
 
-/** Optional `_meta` tab (key/value). Present values must match the source (decision A2). */
+/**
+ * Optional `_meta` tab (key/value). Only the term is checked: `education_term`, when present,
+ * must match the source. `generation_code` is read for display and otherwise ignored.
+ */
 export function parseTermMeta(grid: Grid, options: TermWorkbookOptions, log: IssueLog): TermMeta {
   const values = new Map<string, Grid[number][number]>();
   for (const row of grid) {
@@ -64,14 +69,6 @@ export function parseTermMeta(grid: Grid, options: TermWorkbookOptions, log: Iss
   const generationCode = cellText(values.get('generation_code'));
   const termCell = values.get('education_term') ?? values.get('term');
   const termNumber = termCell === undefined ? null : parseIntegerCell(termCell, 1, 99);
-  if (generationCode && generationCode.toUpperCase() !== options.generationCode.toUpperCase()) {
-    log.error(
-      'FILE',
-      'GENERATION_MISMATCH',
-      `_meta says generation ${generationCode}, but this source belongs to ${options.generationCode}.`,
-      { sheetTab: TERM_META_TAB, rawValue: generationCode },
-    );
-  }
   if (termCell !== undefined && termNumber !== options.termNumber) {
     log.error(
       'FILE',
@@ -135,7 +132,9 @@ export async function detectTermWorkbook(
       roster = parseRoster(grid, rosterTab.title, log) ?? [];
     }
   }
-  const known = new Set(roster.map((s) => s.studentCode));
+  const classOf = new Map(
+    roster.map((s) => [s.studentCode, s.className?.trim().toUpperCase() ?? '']),
+  );
 
   const tabs: TabProposal[] = subjects.map((tab) => {
     const grid = grids[next++] ?? [];
@@ -143,18 +142,28 @@ export async function detectTermWorkbook(
       log.error('COURSE', 'TAB_TOO_LARGE', `Tab "${tab.title}" is too large.`, {
         sheetTab: tab.title,
       });
-      return { tabName: tab.title, sheetTabId: tab.sheetId, layout: null, unknownStudents: 0 };
+      return {
+        tabName: tab.title,
+        sheetTabId: tab.sheetId,
+        layout: null,
+        unknownStudents: 0,
+        rosterClasses: {},
+      };
     }
     const layout = detectTabLayout(grid, tab.title, log);
     let unknownStudents = 0;
+    const rosterClasses: Record<string, number> = {};
     if (layout && rosterTab) {
       const idColumn = layout.columns.find((c) => c.role === 'STUDENT_ID')?.columnIndex ?? 0;
       for (const row of grid.slice(layout.headerRow)) {
         const id = cellText(row[idColumn])?.toUpperCase();
-        if (id && !known.has(id)) unknownStudents++;
+        if (!id) continue;
+        const cls = classOf.get(id);
+        if (cls === undefined) unknownStudents++;
+        else rosterClasses[cls] = (rosterClasses[cls] ?? 0) + 1;
       }
     }
-    return { tabName: tab.title, sheetTabId: tab.sheetId, layout, unknownStudents };
+    return { tabName: tab.title, sheetTabId: tab.sheetId, layout, unknownStudents, rosterClasses };
   });
 
   return {
@@ -232,9 +241,15 @@ export interface TermWorkbookRead {
   fatal: boolean;
   rosterTab: string | null;
   roster: RosterStudent[];
+  /** Every copy of each student ID found more than once in the roster (all rejected). */
+  rosterDuplicates: RosterStudent[][];
   courses: ParsedCourse[];
   issues: TemplateIssue[];
-  /** SHA-256 hex of every tab read, so a reviewed sheet can be told from an edited one. */
+  /** Confirmed tabs that are not in the workbook. */
+  missingTabs: string[];
+  /** Tabs in the workbook that are not confirmed, ignored or metadata. */
+  unmappedTabs: string[];
+  /** SHA-256 hex of the tab list and every tab read, so a reviewed sheet can be told from an edited one. */
   fingerprint: string;
 }
 
@@ -255,7 +270,10 @@ export async function readTermWorkbook(
   const metaTab = byTitle.get(normalizeTitle(TERM_META_TAB));
   const rosterName = options.rosterTab ?? DEFAULT_ROSTER_TAB;
   const rosterTab = byTitle.get(normalizeTitle(rosterName));
-  const fingerprint = new Map<string, Grid>();
+  const fingerprint = new Map<string, Grid>([['', [metadata.tabs.map((t) => t.title).toSorted()]]]);
+  const missingTabs: string[] = [];
+  const unmappedTabs: string[] = [];
+  const rosterDuplicates = new Map<string, RosterStudent[]>();
   const result = (fatal: boolean, roster: RosterStudent[], courses: ParsedCourse[]) => ({
     fingerprint: createHash('sha256')
       .update(JSON.stringify([...fingerprint].toSorted(([a], [b]) => a.localeCompare(b))))
@@ -264,8 +282,11 @@ export async function readTermWorkbook(
     fatal,
     rosterTab: rosterTab?.title ?? null,
     roster,
+    rosterDuplicates: [...rosterDuplicates.values()],
     courses,
     issues: log.items,
+    missingTabs,
+    unmappedTabs,
   });
 
   if (!rosterTab) {
@@ -282,6 +303,7 @@ export async function readTermWorkbook(
       metadata.tabs.find((t) => t.sheetId === tab.sheetTabId) ??
       byTitle.get(normalizeTitle(tab.tabName));
     if (found) return [{ tab, title: found.title }];
+    missingTabs.push(tab.tabName);
     log.error(
       'COURSE',
       'WORKSHEET_NOT_FOUND',
@@ -300,6 +322,7 @@ export async function readTermWorkbook(
     if (tab === rosterTab || title.startsWith('_') || ignored.has(title) || used.has(title)) {
       continue;
     }
+    unmappedTabs.push(tab.title);
     log.warn('UNMAPPED_TAB', `Tab "${tab.title}" is not confirmed yet, so it was skipped.`, {
       sheetTab: tab.title,
     });
@@ -323,7 +346,7 @@ export async function readTermWorkbook(
         sheetTab: rosterTab.title,
       });
     } else {
-      roster = parseRoster(grid, rosterTab.title, log) ?? [];
+      roster = parseRoster(grid, rosterTab.title, log, rosterDuplicates) ?? [];
     }
   }
   if (log.hasFileError) return result(true, roster, []);
@@ -346,6 +369,7 @@ export async function readTermWorkbook(
       );
       continue;
     }
+    const duplicates = new Set<string>();
     const rows = parseSubjectRows(
       grid,
       {
@@ -359,6 +383,7 @@ export async function readTermWorkbook(
       },
       rosterByCode,
       log,
+      duplicates,
     );
     if (!rows) continue;
     courses.push({
@@ -370,6 +395,7 @@ export async function readTermWorkbook(
         c.criterion ? [{ ...c.criterion, maxMark: TERM_WORKBOOK_MAX_MARK }] : [],
       ),
       rows,
+      duplicateStudents: [...duplicates],
     });
   }
   return result(false, roster, courses);
