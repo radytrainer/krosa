@@ -14,6 +14,7 @@ packages/database/src/generated/
 .env
 .env.*
 !.env.example
+!.env.production.example
 secrets/
 *.pem
 *service-account*.json
@@ -29,3 +30,4 @@ Thumbs.db
 !.vscode/extensions.json
 .idea/
 *.log
+backups/
