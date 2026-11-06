@@ -10,7 +10,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Pull requests: a new push cancels the old run. Branch pushes queue instead, so a newer
+  # commit never cuts off a deploy halfway.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   NODE_VERSION: '22.17.0'
@@ -105,21 +107,91 @@ jobs:
             e2e/test-results
           retention-days: 7
 
+  # Pull requests: build only. Pushes to main/development: also publish to GitHub Container
+  # Registry as ghcr.io/<owner>/<repo>-<target>:<commit sha> (docs/deployment.md §7).
   images:
     name: Build production images
     runs-on: ubuntu-24.04
     needs: [checks]
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         target: [api, worker, web, migrate]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      - name: Image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
+      - if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
         with:
           context: .
           target: ${{ matrix.target }}
-          push: false
-          tags: ssrs-${{ matrix.target }}:ci
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=ssrs
           cache-to: type=gha,mode=max,scope=ssrs
+
+  # Runs only when every check passed. development → `staging` environment, main → `production`.
+  # Each GitHub environment holds its own server's secrets (docs/deployment.md §8.7); until they
+  # are set, this job reports "not configured" and does nothing.
+  deploy:
+    name: Deploy (${{ github.ref_name == 'main' && 'production' || 'staging' }})
+    if: github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'development')
+    needs: [checks, integration, e2e, images]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+      url: ${{ vars.SITE_URL }}
+    concurrency:
+      group: deploy-${{ github.ref_name }}
+      cancel-in-progress: false
+    steps:
+      - name: Check configuration
+        id: config
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          if [ -n "$DEPLOY_HOST" ] && [ -n "$DEPLOY_SSH_KEY" ] && [ -n "$DEPLOY_KNOWN_HOSTS" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Deploy not configured for this environment (DEPLOY_HOST, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS); skipped."
+          fi
+      - name: Deploy over SSH
+        if: steps.config.outputs.ready == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER || 'ubuntu' }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # The server pins this key to scripts/deploy.sh; the token (valid for this job only)
+          # goes on stdin so it never appears in a command line or log.
+          printf '%s\n' "$REGISTRY_TOKEN" | ssh -i ~/.ssh/deploy_key \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $GITHUB_SHA"
+      - name: Smoke test
+        if: steps.config.outputs.ready == 'true' && vars.SITE_URL != ''
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: curl -fsS --retry 6 --retry-delay 5 --retry-all-errors "$SITE_URL/api/v1/health/ready"

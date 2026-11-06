@@ -84,6 +84,9 @@ passwords, and test mode is refused in production builds (the test fakes are not
 
 ## 5. Updating
 
+With CI/CD set up (§8.7), releases are automatic: merge into the branch and the pipeline deploys
+it (§8.8). Without it, update by hand on the server:
+
 ```bash
 cd /opt/ssrs
 git pull
@@ -123,80 +126,236 @@ refuses to start in production without `https` and secure cookies.
 | `LOG_LEVEL`                                          | no (`info`)                     | Log level of the API and worker                                         |
 | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`                   | no                              | Error reporting (scrubbed; see [security.md §8](security.md))           |
 | `BACKUP_TIME`, `BACKUP_RETENTION_DAYS`, `BACKUP_DIR` | no                              | Nightly backups (02:30 UTC, 14 days, `./backups`)                       |
-| `IMAGE_PREFIX`, `IMAGE_TAG`                          | no                              | Use prebuilt images from a registry instead of building on the server   |
+| `IMAGE_PREFIX`, `IMAGE_TAG`                          | no                              | Prebuilt images; kept in `.env.deploy` by `deploy.sh` (§8.6)            |
 
-## 7. Continuous integration
+## 7. Continuous integration and delivery
 
-`.github/workflows/ci.yml` runs on pushes to `main` and `development` and on pull requests: lint, typecheck, format and unit
-tests; integration tests and the Playwright end-to-end scenario against PostgreSQL and Redis
-service containers; and a build of all four production images. Images are built but not pushed:
-publishing to a registry is a per-school decision (set `IMAGE_PREFIX` / `IMAGE_TAG` to pull instead
-of building on the server).
+`.github/workflows/ci.yml` runs on every pull request and on pushes to `main` and `development`:
 
-## 8. Hosting on AWS
+```text
+push / PR ─▶ checks (lint, typecheck, format, unit) ─▶ images (build api, worker, web, migrate)
+          ├▶ integration (PostgreSQL + Redis)                │ push only: publish to GHCR
+          └▶ e2e (Playwright)                                ▼
+                         all green + push to development ─▶ deploy → staging server
+                         all green + push to main        ─▶ deploy → production server
+```
 
-One EC2 instance runs the whole stack above; nothing else in AWS is required. Region: the closest
-to Cambodia is **ap-southeast-1 (Singapore)**.
+- **Pull requests** build the images but never publish or deploy.
+- **Pushes** publish `ghcr.io/<owner>/<repo>-<target>:<commit sha>` to GitHub Container Registry,
+  then the `deploy` job connects to the server over SSH and runs
+  [`scripts/deploy.sh`](../scripts/deploy.sh) with that sha. Images are tagged by commit only, so
+  any release can be redeployed exactly.
+- Branch pushes queue instead of cancelling each other, so a deploy is never cut off halfway.
+- Until a GitHub environment has its `DEPLOY_*` secrets (§8.7), `deploy` reports "not configured"
+  and does nothing.
 
-### 8.1 Create the server
+## 8. Hosting on AWS EC2
 
-| Setting        | Value                                                                                  |
-| -------------- | -------------------------------------------------------------------------------------- |
-| AMI            | Ubuntu Server 24.04 LTS (64-bit x86)                                                   |
-| Instance type  | `t3.medium` (2 vCPU, 4 GB) — the minimum in §2                                         |
-| Storage        | 40 GB `gp3` EBS root volume; tick **delete on termination = no**                       |
-| Key pair       | A new SSH key pair, kept by the IT admin only                                          |
-| Security group | Inbound `80/tcp`, `443/tcp`, `443/udp` from anywhere; `22/tcp` from the office IP only |
-| Elastic IP     | Allocate one and associate it, so the address survives a stop/start                    |
+One EC2 instance runs the whole stack of §1; nothing else in AWS is required. The closest region to
+Cambodia is **ap-southeast-1 (Singapore)**. Do every step once per server: a **staging** server for
+`development` and a **production** server for `main` (§8.11).
 
-Do **not** open 5432 or 6379: PostgreSQL and Redis stay on the Docker network.
+```text
+ Developer ──git push──▶ GitHub ──CI green──▶ GHCR (images :sha)
+                            │                      │ docker pull
+                            └──SSH (CI key)─────▶ EC2: /opt/ssrs/scripts/deploy.sh <sha>
+                                                     ├ git checkout <sha>  (compose file, Caddyfile)
+                                                     ├ backup → pull → migrate → restart
+                                                     └ healthy? keep it : put previous sha back
+ Users ──HTTPS 443──▶ Elastic IP ──▶ caddy ──▶ web / api ──▶ postgres, redis  (Docker network only)
+```
 
-### 8.2 DNS
+### 8.1 Launch the instance
 
-Point an A record for `SITE_ADDRESS` (for example `krosa.<school-domain>`) at the Elastic IP, in
-Route 53 or at the current DNS provider. Wait until `dig +short <SITE_ADDRESS>` returns the IP
-before the first start: Caddy needs it to get the certificate.
+AWS console → EC2 → **Launch instance**:
+
+| Setting                | Value                                                                                     |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| Name                   | `krosa-staging` or `krosa-production`                                                     |
+| AMI                    | Ubuntu Server 24.04 LTS, 64-bit (x86); the images are built for x86                       |
+| Instance type          | `t3.medium` (2 vCPU, 4 GB), the minimum in §2                                             |
+| Key pair               | Create one (`krosa-admin`, ED25519, `.pem`), kept by the IT admin only                    |
+| Security group         | New, `krosa-web-ssh` (rules below)                                                        |
+| Storage                | 40 GB `gp3`; under Advanced: **Delete on termination: No**, **Encrypted: Yes**            |
+| Termination protection | Advanced details → Enable                                                                 |
+| User data              | Advanced details → paste [`scripts/ec2-bootstrap.sh`](../scripts/ec2-bootstrap.sh) (§8.3) |
+
+Security group inbound rules:
+
+| Type       | Port | Source      | Why                                                                |
+| ---------- | ---- | ----------- | ------------------------------------------------------------------ |
+| HTTP       | 80   | `0.0.0.0/0` | Certificate issuance; Caddy redirects to HTTPS                     |
+| HTTPS      | 443  | `0.0.0.0/0` | The site                                                           |
+| Custom UDP | 443  | `0.0.0.0/0` | HTTP/3 (optional)                                                  |
+| SSH        | 22   | `0.0.0.0/0` | GitHub's runners deploy from changing addresses; keys only (below) |
+
+Never open 5432 (PostgreSQL) or 6379 (Redis). Open SSH is acceptable here because password login is
+off, fail2ban bans repeated failures, and the CI key can run only the deploy script (§8.7). If you
+want SSH from the office only, restrict port 22 and deploy by hand (§8.8), or run a self-hosted
+GitHub runner on the server.
+
+### 8.2 Elastic IP and DNS
+
+1. EC2 → **Elastic IPs** → Allocate → Associate with the instance. The address now survives a
+   stop and start.
+2. At the DNS provider (or Route 53), add an **A record**: `krosa.<school-domain>` (production) or
+   `krosa-staging.<school-domain>` → the Elastic IP.
+3. Wait until `dig +short krosa.<school-domain>` returns the Elastic IP. Caddy needs it before the
+   first start to obtain the certificate.
 
 ### 8.3 Prepare Ubuntu
 
-```bash
-ssh -i krosa.pem ubuntu@<elastic-ip>
-sudo apt update && sudo apt -y upgrade
-sudo apt -y install ca-certificates curl git unattended-upgrades
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker ubuntu && exit     # log in again for the group to apply
-```
-
-Then follow §3 with the `development` (test server) or `main` (live) branch:
+If you pasted the bootstrap script as user data, it has already run: check that
+`/var/log/cloud-init-output.log` ends with `ec2-bootstrap: done`. Otherwise run it by hand:
 
 ```bash
-sudo install -d -o ubuntu /opt/ssrs
-git clone -b development <repository-url> /opt/ssrs && cd /opt/ssrs
-cp .env.production.example .env.production && chmod 600 .env.production && nano .env.production
+ssh -i krosa-admin.pem ubuntu@<elastic-ip>
+git clone --depth 1 https://github.com/<owner>/<repo>.git /tmp/krosa   # private repo: copy the file with scp instead
+sudo bash /tmp/krosa/scripts/ec2-bootstrap.sh
+exit   # log in again so the docker group applies
 ```
 
-Run `install -d -m 700 secrets` on the server, then copy the Google key from your computer with
-`scp -i krosa.pem google-sa.json ubuntu@<elastic-ip>:/opt/ssrs/secrets/google-sa.json`, then
-`chmod 600 secrets/google-sa.json` and continue with the `docker compose ... up -d --build` step.
+It installs Docker Engine and Compose, git, automatic security updates and fail2ban; adds 2 GB of
+swap; caps container logs at 60 MB each; turns off SSH passwords; and creates `/opt/ssrs`. Check
+that `docker compose version` works without `sudo`.
 
-### 8.4 Backups off the server
+### 8.4 Get the code onto the server
+
+Public repository: `git clone -b development https://github.com/<owner>/<repo>.git /opt/ssrs`
+(`-b main` on production).
+
+Private repository: give the server a read-only **deploy key** first.
+
+```bash
+ssh-keygen -t ed25519 -N '' -C krosa-server-read -f ~/.ssh/github_read
+cat ~/.ssh/github_read.pub   # GitHub → repo → Settings → Deploy keys → Add key (leave write off)
+printf 'Host github.com\n  IdentityFile ~/.ssh/github_read\n  IdentitiesOnly yes\n' >> ~/.ssh/config
+ssh-keyscan github.com >> ~/.ssh/known_hosts
+git clone -b development git@github.com:<owner>/<repo>.git /opt/ssrs
+```
+
+Never edit tracked files in `/opt/ssrs`: every deploy checks out the released commit, and a local
+change would block it.
+
+### 8.5 Settings and the Google key
+
+```bash
+cd /opt/ssrs
+cp .env.production.example .env.production && chmod 600 .env.production
+nano .env.production   # SITE_ADDRESS, ACME_EMAIL; three secrets from `openssl rand -hex 32`
+install -d -m 700 secrets
+```
+
+From your own computer: `scp -i krosa-admin.pem google-sa.json ubuntu@<elastic-ip>:/opt/ssrs/secrets/`;
+then on the server `chmod 600 /opt/ssrs/secrets/google-sa.json`. Share each term sheet with the
+service account's address ([google-sheets-template.md §8](google-sheets-template.md)).
+
+### 8.6 Point the server at the published images
+
+```bash
+cd /opt/ssrs
+echo 'IMAGE_PREFIX=ghcr.io/<owner>/<repo>' > .env.deploy   # lower case, e.g. ghcr.io/radytrainer/krosa
+echo "alias ssrs='cd /opt/ssrs && docker compose -f docker-compose.prod.yml --env-file .env.production --env-file .env.deploy'" >> ~/.bashrc
+source ~/.bashrc
+```
+
+`deploy.sh` writes `IMAGE_TAG=<sha>` into `.env.deploy` on each release, so `ssrs ps`, `ssrs logs`
+and a reboot always use the live release. (Without `.env.deploy`, §3 still works: the server builds
+the images itself, which is slow on a `t3.medium`.)
+
+### 8.7 Connect GitHub Actions (CD)
+
+**1. A CI key**, made on your own computer, one per server:
+
+```bash
+ssh-keygen -t ed25519 -N '' -C krosa-ci-staging -f krosa-ci-staging
+```
+
+**2. Allow that key to run only the deploy script.** On the server, add one line to
+`~/.ssh/authorized_keys` (leave the admin key's line as it is):
+
+```text
+command="bash /opt/ssrs/scripts/deploy.sh",restrict ssh-ed25519 AAAA…(contents of krosa-ci-staging.pub)… krosa-ci-staging
+```
+
+`restrict` turns off shells, terminals and forwarding for that key. Whatever the client asks for,
+the server runs `deploy.sh`, which accepts only `deploy <40-character commit sha>`.
+
+**3. The server's host key**, so CI refuses an impostor: run `ssh-keyscan -t ed25519 <elastic-ip>`
+on your computer and compare its fingerprint with
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server.
+
+**4. GitHub environments.** Repo → Settings → Environments → create `staging` and `production`, each
+with:
+
+| Kind     | Name                 | Value                                                      |
+| -------- | -------------------- | ---------------------------------------------------------- |
+| Secret   | `DEPLOY_HOST`        | The Elastic IP (or host name)                              |
+| Secret   | `DEPLOY_SSH_KEY`     | The whole **private** key file (`krosa-ci-staging`)        |
+| Secret   | `DEPLOY_KNOWN_HOSTS` | The line printed by `ssh-keyscan` in step 3                |
+| Variable | `SITE_URL`           | `https://krosa-staging.<school-domain>` (smoke test, link) |
+| Variable | `DEPLOY_USER`        | Optional; default `ubuntu`                                 |
+
+On `production`, also tick **Required reviewers** (the IT admin) and limit **Deployment branches**
+to `main`: each production release then waits for an approval in the Actions tab.
+
+Delete the private key from your computer once it is stored in GitHub. To revoke it, remove its line
+from `authorized_keys`.
+
+**5. First release.** Push or merge to `development`. When CI is green, `deploy` pulls the images,
+runs migrations, starts everything and checks `/api/v1/health/ready`. Then create the first
+administrator, once:
+
+```bash
+ssrs run --rm api node dist/cli/create-admin.js --username registrar --display-name "Registrar"
+```
+
+and run the checks in §4.
+
+### 8.8 Releasing, rolling back, looking around
+
+| Task                          | How                                                                                        |
+| ----------------------------- | ------------------------------------------------------------------------------------------ |
+| Release to staging            | Merge into `development`                                                                   |
+| Release to production         | Merge `development` into `main`, then approve the `production` deployment in Actions       |
+| Redeploy an earlier commit    | Actions → the run of that commit → **Re-run all jobs**                                     |
+| Roll back to the last release | On the server: `bash /opt/ssrs/scripts/deploy.sh --rollback`                               |
+| Deploy by hand                | `docker login ghcr.io` (a token with `read:packages`), then `bash scripts/deploy.sh <sha>` |
+| Which release is live         | `grep IMAGE_TAG /opt/ssrs/.env.deploy`; history in `/opt/ssrs/.deploy-history`             |
+| Status and logs               | `ssrs ps -a`; `ssrs logs -f --tail 100 api worker`                                         |
+
+Every deploy takes a backup first. If `api` or `web` is not healthy within 3 minutes, or `migrate`
+fails, it starts the previous release again by itself. Migrations are forward-only: if a failed
+release had already migrated and the old release cannot start, restore the backup taken just before
+([operations.md §2](operations.md#2-backups-and-restore)).
+
+### 8.9 Backups off the server
 
 The nightly backups land in `BACKUP_DIR` on the same disk. Also keep copies elsewhere:
 
-- **EBS snapshots:** an Amazon Data Lifecycle Manager policy on the volume, daily, kept 7 days.
-- **S3 (optional):** a private bucket with versioning; give the instance an IAM role allowed only
-  `s3:PutObject` on that bucket, install the AWS CLI, and add a daily cron job:
-  `aws s3 sync /opt/ssrs/backups s3://<bucket>/ssrs-backups/`.
+- **EBS snapshots:** EC2 → Lifecycle Manager → a policy on the instance's volume, daily, kept 7 days.
+- **S3:** a private bucket with versioning and Block Public Access; an IAM role on the instance that
+  allows only `s3:PutObject` on that bucket; `sudo snap install aws-cli --classic`; and a cron job
+  (`crontab -e`): `15 3 * * * aws s3 sync /opt/ssrs/backups s3://<bucket>/ssrs-backups/ --only-show-errors`.
 
 Run the restore drill once on the new server ([operations.md §2](operations.md#2-backups-and-restore)).
 
-### 8.5 Branches and servers
+### 8.10 Monitoring
 
-| Branch        | Server                                  | Updated by                        |
-| ------------- | --------------------------------------- | --------------------------------- |
-| `development` | Test server (its own EC2 and host name) | `git pull` + `ssrs up -d --build` |
-| `main`        | Live server                             | The same, after a backup (§5)     |
+- **Instance:** CloudWatch alarm on `StatusCheckFailed_System` with the **Recover** action and an
+  e-mail notification (SNS).
+- **Disk:** `df -h /` monthly, or the CloudWatch agent with an alarm at 80 %.
+- **Site:** any uptime checker on `https://<SITE_ADDRESS>/api/v1/health/ready`.
+- **Errors:** `SENTRY_DSN` in `.env.production` ([security.md §8](security.md)).
+- **Cost:** Billing → Budgets → a monthly budget with an e-mail alert.
 
-A test server uses its own database and its own copy of the term sheets; never point it at the
-live server's data. Cost guide: one `t3.medium` with 40 GB gp3 and an Elastic IP is roughly
-US$35–40 a month in Singapore (check the AWS pricing calculator).
+### 8.11 Branches and servers
+
+| Branch        | GitHub environment | Server                          | Released by                   |
+| ------------- | ------------------ | ------------------------------- | ----------------------------- |
+| `development` | `staging`          | Its own EC2, host name and data | CI, on every green push       |
+| `main`        | `production`       | The live EC2                    | CI, after a reviewer approves |
+
+A staging server has its own database and its own copies of the term sheets; never point it at live
+data. Cost guide: one `t3.medium` with 40 GB gp3 and an Elastic IP is roughly US$35–40 a month in
+Singapore; GHCR is free at this size (check the AWS pricing calculator).
