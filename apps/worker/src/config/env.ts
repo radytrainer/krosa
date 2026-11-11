@@ -21,7 +21,7 @@ export const workerEnvSchema = z
       .max(60 * 60_000)
       .default(5 * 60_000),
     /** Error reporting. Unset: Sentry is disabled. */
-    SENTRY_DSN: z.string().url().optional(),
+    SENTRY_DSN: envFields.optionalUrl,
     SENTRY_ENVIRONMENT: z.string().min(1).max(64).optional(),
     // Google service account — same settings as the API (see .env.example).
     GOOGLE_APPLICATION_CREDENTIALS: z.string().min(1).optional(),

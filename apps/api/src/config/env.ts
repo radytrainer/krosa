@@ -38,7 +38,7 @@ export const apiEnvSchema = z
         return list;
       }),
     /** Error reporting. Unset: Sentry is disabled. */
-    SENTRY_DSN: z.string().url().optional(),
+    SENTRY_DSN: envFields.optionalUrl,
     SENTRY_ENVIRONMENT: z.string().min(1).max(64).optional(),
 
     /** HS256 key for access tokens; also derives CSRF tokens. ≥ 32 characters of randomness. */
