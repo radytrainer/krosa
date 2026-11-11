@@ -8,14 +8,14 @@ The deployment guide describes one Linux server with Docker Engine running Caddy
 
 The documented minimum is set for "a school of a few thousand students", which is well above 50–100 test users. The research team estimates the stack uses **about 0.6–1.0 GB of RAM at low traffic**. This figure comes from typical per-process numbers, not from measuring Krosa. On that basis, a 2 GB VM is workable if the images are built elsewhere. A 1 GB VM (Oracle E2.1.Micro, GCP e2-micro, Azure's free B-series) would depend on swap and caps on Node's heap. It would also slow down during syncs, so 1 GB is fit only for demos. Building the images on the server is the heaviest step, because `next build` usually needs 2 GB or more. Run `docker stats` locally during a sync to replace this estimate with real numbers before you choose a VM size.
 
-| Option | Resources | How long it is free | Card / approval | Fit |
-|---|---|---|---|---|
-| Oracle Always Free A1 | 2 OCPU / 12 GB Arm, 200 GB disk, 10 TB egress | No time limit | Card check at sign-up; capacity and idle reclaim risks | Meets minimum |
-| AWS Free plan, t4g.small | 2 vCPU / 2 GB Arm | 6 months or $200 credit | Card | Workable if images are prebuilt |
-| Azure free account | B1s / B2pts v2 / B2ats v2, about 1 GB RAM | 12 months | Card; must move to pay-as-you-go within 30 days | Too small |
-| Google Cloud e2-micro | 1 GB, 30 GB disk, 1 GB egress | No time limit | Card | US regions only; too small |
-| DigitalOcean for Nonprofits | $2,500 credit (2 vCPU / 4 GB is about $24/mo) | 1 year | Application via Percent | Meets minimum if approved |
-| Paid VPS, Singapore | 2 GB about $12/mo; 4 GB about $24–28/mo | n/a | Card | Meets minimum |
+| Option                      | Resources                                     | How long it is free     | Card / approval                                        | Fit                             |
+| --------------------------- | --------------------------------------------- | ----------------------- | ------------------------------------------------------ | ------------------------------- |
+| Oracle Always Free A1       | 2 OCPU / 12 GB Arm, 200 GB disk, 10 TB egress | No time limit           | Card check at sign-up; capacity and idle reclaim risks | Meets minimum                   |
+| AWS Free plan, t4g.small    | 2 vCPU / 2 GB Arm                             | 6 months or $200 credit | Card                                                   | Workable if images are prebuilt |
+| Azure free account          | B1s / B2pts v2 / B2ats v2, about 1 GB RAM     | 12 months               | Card; must move to pay-as-you-go within 30 days        | Too small                       |
+| Google Cloud e2-micro       | 1 GB, 30 GB disk, 1 GB egress                 | No time limit           | Card                                                   | US regions only; too small      |
+| DigitalOcean for Nonprofits | $2,500 credit (2 vCPU / 4 GB is about $24/mo) | 1 year                  | Application via Percent                                | Meets minimum if approved       |
+| Paid VPS, Singapore         | 2 GB about $12/mo; 4 GB about $24–28/mo       | n/a                     | Card                                                   | Meets minimum                   |
 
 ## Oracle fits on paper; the risks are sign-up, capacity and idle reclaim
 
@@ -29,7 +29,7 @@ Four practical risks remain.
 
 **Capacity.** Free compute must run in the home region, which cannot be changed after sign-up. Oracle documents "out of host capacity" errors when free shapes are temporarily unavailable ([Oracle docs](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)). One user with a Singapore home region reports never being able to create an instance ([LowEndTalk](https://lowendtalk.com/discussion/comment/3711352/)). This is a single anecdote, and there is no data on Singapore capacity in late 2026.
 
-**Idle reclaim.** Oracle can reclaim an A1 instance when, over 7 days, its 95th-percentile CPU, network *and* memory use are all below 20% ([Oracle docs](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)). A quiet test server using under 2.4 GB of 12 GB could meet all three. Memory is the easiest condition to break: give Postgres a larger `shared_buffers` so steady memory use stays above 20%. Upgrading the account to pay-as-you-go is commonly said to stop reclamation, but Oracle's documentation does not confirm this.
+**Idle reclaim.** Oracle can reclaim an A1 instance when, over 7 days, its 95th-percentile CPU, network _and_ memory use are all below 20% ([Oracle docs](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)). A quiet test server using under 2.4 GB of 12 GB could meet all three. Memory is the easiest condition to break: give Postgres a larger `shared_buffers` so steady memory use stays above 20%. Upgrading the account to pay-as-you-go is commonly said to stop reclamation, but Oracle's documentation does not confirm this.
 
 **Arm64.** Build the `web`, `api`, `worker` and `migrate` targets for `linux/arm64`. With 12 GB of RAM you can simply build on the VM, as the guide already says. Then check native dependencies such as the Prisma engines on arm64. The official Postgres, Redis, Node and Caddy images are multi-arch, which the research team knew but did not re-verify in this research.
 
