@@ -49,4 +49,9 @@ export const envFields = {
       const u = new URL(v);
       return u.origin === v.replace(/\/$/, '');
     }, 'must be an origin (scheme://host[:port]) without a path'),
+  /** An optional URL where blank means "not set" (Compose passes `${X:-}` as an empty string). */
+  optionalUrl: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.string().url().optional(),
+  ),
 };

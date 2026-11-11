@@ -17,6 +17,12 @@ describe('loadApiEnv', () => {
     expect(loadApiEnv({ ...base, COOKIE_SECURE: 'true' }).COOKIE_SECURE).toBe(true);
   });
 
+  it('treats a blank SENTRY_DSN as not set', () => {
+    expect(loadApiEnv({ ...base, SENTRY_DSN: '' }).SENTRY_DSN).toBeUndefined();
+    expect(loadApiEnv({ ...base, SENTRY_DSN: '  ' }).SENTRY_DSN).toBeUndefined();
+    expect(() => loadApiEnv({ ...base, SENTRY_DSN: 'not a url' })).toThrow(EnvValidationError);
+  });
+
   it('rejects short JWT secrets', () => {
     expect(() => loadApiEnv({ ...base, JWT_ACCESS_SECRET: 'short' })).toThrow(EnvValidationError);
   });
