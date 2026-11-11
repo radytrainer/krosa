@@ -7,7 +7,6 @@ import {
   FileSpreadsheet,
   Pencil,
   Plus,
-  RefreshCw,
   Users,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -19,7 +18,7 @@ import { PageHeader, Section } from '@/components/app/page-header';
 import { StatusPill } from '@/components/app/status';
 import { ErrorState, PageLoading } from '@/components/app/states';
 import { TermSheet } from '@/components/admin/term-sheet';
-import { useStartSync } from '@/components/admin/use-start-sync';
+import { SyncPlanButton } from '@/components/admin/sync-confirm';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -355,7 +354,6 @@ export default function GenerationDetailPage() {
     refetch,
   } = useApi<GenerationDetail>(`/admin/generations/${id}`);
   const sources = useApi<Source[]>(`/admin/generations/${id}/sources`);
-  const startSync = useStartSync();
   const setStatus = useApiMutation(
     (action: 'archive' | 'activate') =>
       apiFetch(`/admin/generations/${id}/${action}`, { method: 'POST' }),
@@ -414,13 +412,11 @@ export default function GenerationDetailPage() {
                 onConfirm={() => setStatus.mutateAsync('archive')}
               />
             )}
-            <Button
-              disabled={archived || activeSources === 0 || startSync.isPending}
-              onClick={() => startSync.mutate({ scope: 'GENERATION', generationId: g.id })}
-            >
-              <RefreshCw aria-hidden />
-              Sync all workbooks
-            </Button>
+            <SyncPlanButton
+              target={{ scope: 'GENERATION', generationId: g.id }}
+              disabled={archived || activeSources === 0}
+              label="Sync all workbooks"
+            />
           </>
         }
       />

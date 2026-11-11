@@ -113,6 +113,7 @@ test.describe('Students', () => {
     await page.getByRole('button', { name: 'Reset password' }).click();
     await page.getByRole('alertdialog').getByRole('button', { name: 'Reset password' }).click();
     const shown = page.getByRole('dialog').locator('code');
+    await page.getByRole('dialog').getByRole('button', { name: 'Show password' }).click();
     const temp = (await shown.textContent())!.trim();
     await page.getByRole('button', { name: 'Done' }).click();
     await student.page.goto('/student/results');

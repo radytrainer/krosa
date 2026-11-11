@@ -1,6 +1,6 @@
 'use client';
 
-import { Check, Copy, KeyRound, Power, ShieldAlert } from 'lucide-react';
+import { Check, Copy, Eye, EyeOff, KeyRound, Power, ShieldAlert } from 'lucide-react';
 import { useParams } from 'next/navigation';
 import { useState } from 'react';
 import { StudentTerms } from '@/components/admin/student-terms';
@@ -37,6 +37,9 @@ function CredentialDialog({
   onClose(): void;
 }) {
   const [copied, setCopied] = useState(false);
+  // Hidden by default, like every password field; Copy works either way.
+  const [shown, setShown] = useState(false);
+  const password = credential?.temporaryPassword ?? '';
   return (
     <Dialog open={credential !== null}>
       <DialogContent showCloseButton={false}>
@@ -54,15 +57,32 @@ function CredentialDialog({
           </div>
           <div>
             <dt className="text-xs text-muted-foreground">Temporary password</dt>
-            <dd className="flex items-center gap-2">
-              <code className="text-lg font-semibold break-all">
-                {credential?.temporaryPassword}
+            <dd className="flex flex-wrap items-center gap-2">
+              <code
+                id="temporary-password"
+                data-slot="temporary-password"
+                className="text-lg font-semibold break-all"
+                aria-hidden={!shown}
+              >
+                {shown ? password : '•'.repeat(password.length)}
               </code>
+              {shown ? null : <span className="sr-only">Hidden</span>}
+              <Button
+                variant="outline"
+                size="sm"
+                aria-controls="temporary-password"
+                aria-pressed={shown}
+                aria-label={shown ? 'Hide password' : 'Show password'}
+                onClick={() => setShown((v) => !v)}
+              >
+                {shown ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
+                {shown ? 'Hide' : 'Show'}
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={async () => {
-                  await navigator.clipboard.writeText(credential?.temporaryPassword ?? '');
+                  await navigator.clipboard.writeText(password);
                   setCopied(true);
                 }}
               >
@@ -76,6 +96,7 @@ function CredentialDialog({
           <Button
             onClick={() => {
               setCopied(false);
+              setShown(false);
               onClose();
             }}
           >

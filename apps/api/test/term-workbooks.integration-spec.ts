@@ -445,6 +445,20 @@ describe('Term workbooks (integration)', () => {
         .expect(200);
       expect(released.body).toEqual({ termId: termIds[1], visible: true, subjects: 1 });
       expect(await ctx.prisma.auditLog.count({ where: { action: 'term.released' } })).toBe(1);
+      // Every subject of the term: VISIBLE and marked as set by an admin; one audit entry.
+      const offerings = await ctx.prisma.courseOffering.findMany({ where: { termId: termIds[1] } });
+      expect(offerings.map((o) => [o.visibility, o.visibilityOverridden])).toEqual([
+        ['VISIBLE', true],
+      ]);
+      const entry = await ctx.prisma.auditLog.findFirstOrThrow({
+        where: { action: 'term.released' },
+      });
+      expect(entry).toMatchObject({
+        actorType: 'USER',
+        entityType: 'term',
+        entityId: termIds[1],
+        metadata: expect.objectContaining({ termNumber: 1, subjects: 1 }),
+      });
 
       const shown = await session.get('/api/v1/student/me/results?term=1').expect(200);
       expect(shown.body.terms[0].courses[0]).toMatchObject({
@@ -453,6 +467,12 @@ describe('Term workbooks (integration)', () => {
       });
 
       await admin.post(`${V1}/terms/${termIds[1]}/release`, { visible: false }).expect(200);
+      expect(
+        await ctx.prisma.courseOffering.count({
+          where: { termId: termIds[1], visibility: 'HIDDEN', visibilityOverridden: true },
+        }),
+      ).toBe(1);
+      expect(await ctx.prisma.auditLog.count({ where: { action: 'term.hidden' } })).toBe(1);
       const again = await session.get('/api/v1/student/me/results?term=1').expect(200);
       expect(again.body.terms[0].courses).toEqual([]);
     });

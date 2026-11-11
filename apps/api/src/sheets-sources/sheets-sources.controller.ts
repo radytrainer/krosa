@@ -8,6 +8,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Req,
 } from '@nestjs/common';
 import { ApiCookieAuth, ApiTags } from '@nestjs/swagger';
@@ -19,16 +20,35 @@ import {
   ChangeSheetDto,
   CheckSheetDto,
   CreateTermSourceDto,
+  SetSourceReleaseDto,
+  SourceReleaseQueryDto,
   UpdateSourceDto,
 } from './sheets-sources.dto.js';
 import { SheetsSourcesService } from './sheets-sources.service.js';
+import { SourceReleaseService } from './source-release.service.js';
 
 @ApiTags('admin: spreadsheet sources')
 @ApiCookieAuth()
 @Roles('ADMIN')
 @Controller('admin')
 export class SheetsSourcesController {
-  constructor(private readonly sources: SheetsSourcesService) {}
+  constructor(
+    private readonly sources: SheetsSourcesService,
+    private readonly release: SourceReleaseService,
+  ) {}
+
+  /** Release state per source (its term): Released, Hidden or Partly released, with counts. */
+  @Get('sources/release')
+  releaseStatus(@Query() query: SourceReleaseQueryDto) {
+    return this.release.status(query.ids);
+  }
+
+  /** Hides or releases the scores of the given sources' terms. Nothing is deleted. */
+  @Post('sources/release')
+  @HttpCode(HttpStatus.OK)
+  setRelease(@Body() dto: SetSourceReleaseDto, @CurrentUser() user: AuthUser, @Req() req: Request) {
+    return this.release.setReleased(dto.sourceIds, dto.visible, user, requestMeta(req));
+  }
 
   /** The email administrators must share spreadsheets with (Viewer access). */
   @Get('sources/service-account')

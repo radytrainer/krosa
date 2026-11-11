@@ -57,6 +57,11 @@ describe('QA A-25: no hash or token in any response', () => {
       where: { title: 'Logic' },
     });
 
+    // Routes whose query is required: called with a valid one.
+    const queries: Record<string, string> = {
+      '/api/v1/admin/sources/release': `?ids=${source.id}`,
+      '/api/v1/admin/sync/plan': `?scope=GENERATION&generationId=${h.generationId}`,
+    };
     const fill = (path: string) =>
       path
         .replace('generations/:id', `generations/${h.generationId}`)
@@ -75,7 +80,7 @@ describe('QA A-25: no hash or token in any response', () => {
       studentSession.cookies.get('ssrs_rt')!.value,
     ];
     for (const route of liveRoutes(ctx).filter((r) => r.method === 'get')) {
-      const path = fill(route.path);
+      const path = fill(route.path) + (queries[route.path] ?? '');
       expect(path, 'an id was not filled in').not.toContain(':');
       const agent = route.path.startsWith('/api/v1/student')
         ? studentSession.agent

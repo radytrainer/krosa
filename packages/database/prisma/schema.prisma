@@ -879,38 +879,40 @@ enum SyncStatus {
 }
 
 model SyncJob {
-  id              String     @id @default(uuid(7)) @db.Uuid
-  parentId        String?    @map("parent_id") @db.Uuid
-  scope           SyncScope
-  sourceId        String?    @map("source_id") @db.Uuid
+  id               String     @id @default(uuid(7)) @db.Uuid
+  parentId         String?    @map("parent_id") @db.Uuid
+  scope            SyncScope
+  sourceId         String?    @map("source_id") @db.Uuid
   /// Scope SOURCE: the term of its source, for the one-running-sync-per-term rule.
-  termId          String?    @map("term_id") @db.Uuid
-  generationId    String?    @map("generation_id") @db.Uuid
-  status          SyncStatus @default(QUEUED)
-  phase           String?
-  progressCurrent Int        @default(0) @map("progress_current")
-  progressTotal   Int        @default(0) @map("progress_total")
+  termId           String?    @map("term_id") @db.Uuid
+  generationId     String?    @map("generation_id") @db.Uuid
+  status           SyncStatus @default(QUEUED)
+  phase            String?
+  progressCurrent  Int        @default(0) @map("progress_current")
+  progressTotal    Int        @default(0) @map("progress_total")
   /// Report summary: per-entity created/updated/unchanged/skipped/rejected counts.
-  counts          Json       @default("{}")
-  errorCount      Int        @default(0) @map("error_count")
-  warningCount    Int        @default(0) @map("warning_count")
-  failureCode     String?    @map("failure_code")
-  failureMessage  String?    @map("failure_message")
-  retryOfId       String?    @map("retry_of_id") @db.Uuid
+  counts           Json       @default("{}")
+  errorCount       Int        @default(0) @map("error_count")
+  warningCount     Int        @default(0) @map("warning_count")
+  failureCode      String?    @map("failure_code")
+  failureMessage   String?    @map("failure_message")
+  retryOfId        String?    @map("retry_of_id") @db.Uuid
   /// Scope ALL only: restricts the run to this term number in every active generation.
-  termNumber      Int?       @map("term_number") @db.SmallInt
+  termNumber       Int?       @map("term_number") @db.SmallInt
   /// { tabMappingId: version } of the mappings this job applied.
-  mappingVersions Json?      @map("mapping_versions")
+  mappingVersions  Json?      @map("mapping_versions")
   /// The confirmed preview this job applies. Only a job with one can archive subjects.
-  previewId       String?    @map("preview_id") @db.Uuid
+  previewId        String?    @map("preview_id") @db.Uuid
+  /// The admin ticked "Release scores after sync": a successful run releases the term.
+  releaseAfterSync Boolean    @default(false) @map("release_after_sync")
   /// Run lease: the worker currently executing the job. A second delivery of the same job
   /// cannot claim it until the lease is released or expires (crashed worker).
-  leaseToken      String?    @map("lease_token") @db.Uuid
-  leaseExpiresAt  DateTime?  @map("lease_expires_at") @db.Timestamptz(3)
-  requestedById   String     @map("requested_by") @db.Uuid
-  queuedAt        DateTime   @default(now()) @map("queued_at") @db.Timestamptz(3)
-  startedAt       DateTime?  @map("started_at") @db.Timestamptz(3)
-  finishedAt      DateTime?  @map("finished_at") @db.Timestamptz(3)
+  leaseToken       String?    @map("lease_token") @db.Uuid
+  leaseExpiresAt   DateTime?  @map("lease_expires_at") @db.Timestamptz(3)
+  requestedById    String     @map("requested_by") @db.Uuid
+  queuedAt         DateTime   @default(now()) @map("queued_at") @db.Timestamptz(3)
+  startedAt        DateTime?  @map("started_at") @db.Timestamptz(3)
+  finishedAt       DateTime?  @map("finished_at") @db.Timestamptz(3)
 
   parent      SyncJob?           @relation("SyncJobChildren", fields: [parentId], references: [id])
   children    SyncJob[]          @relation("SyncJobChildren")

@@ -4,7 +4,7 @@ import { Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import { Field, onSubmit } from '@/components/app/form';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/app/password-input';
 import { ApiError, apiFetch } from '@/lib/api';
 import { json } from '@/lib/query';
 
@@ -61,10 +61,9 @@ export function ChangePasswordForm({
     <form onSubmit={submit} className="space-y-4">
       <Field label={currentLabel} required error={errors.currentPassword}>
         {(p) => (
-          <Input
+          <PasswordInput
             {...p}
             name="currentPassword"
-            type="password"
             autoComplete="current-password"
             maxLength={128}
           />
@@ -77,10 +76,9 @@ export function ChangePasswordForm({
         error={errors.newPassword?.join(' ')}
       >
         {(p) => (
-          <Input
+          <PasswordInput
             {...p}
             name="newPassword"
-            type="password"
             autoComplete="new-password"
             minLength={10}
             maxLength={128}
@@ -88,15 +86,7 @@ export function ChangePasswordForm({
         )}
       </Field>
       <Field label="Confirm new password" required error={errors.confirm}>
-        {(p) => (
-          <Input
-            {...p}
-            name="confirm"
-            type="password"
-            autoComplete="new-password"
-            maxLength={128}
-          />
-        )}
+        {(p) => <PasswordInput {...p} name="confirm" autoComplete="new-password" maxLength={128} />}
       </Field>
       {errors.form ? (
         <p className="text-sm text-destructive" role="alert">

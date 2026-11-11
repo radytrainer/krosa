@@ -5,6 +5,7 @@ import { AlertCircle, Loader2 } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { Field, onSubmit } from '@/components/app/form';
+import { PasswordInput } from '@/components/app/password-input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -95,13 +96,7 @@ export function LoginForm() {
       </Field>
       <Field label="Password" required>
         {(p) => (
-          <Input
-            {...p}
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            maxLength={128}
-          />
+          <PasswordInput {...p} name="password" autoComplete="current-password" maxLength={128} />
         )}
       </Field>
       <Button type="submit" className="w-full" size="lg" disabled={busy}>

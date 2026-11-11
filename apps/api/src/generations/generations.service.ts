@@ -4,8 +4,15 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { applyTermDefaults, type Generation, type Prisma, type Term } from '@ssrs/database';
+import {
+  applyGradeDefaults,
+  applyTermDefaults,
+  type Generation,
+  type Prisma,
+  type Term,
+} from '@ssrs/database';
 import { TERMS_PER_GENERATION } from '@ssrs/shared';
+import { setTermVisibility } from '@ssrs/sync';
 import { AcademicGuardService } from '../academic/academic-guard.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
@@ -155,30 +162,33 @@ export class GenerationsService {
     if (!term) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Term not found' });
     await this.guard.assertGenerationEditable(term.generationId);
 
+    // Same logic as Hide / Release on the Sync Center's per-source list (setTermVisibility).
     const subjects = await this.prisma.client.$transaction(async (tx) => {
-      const updated = await tx.courseOffering.updateMany({
-        where: { termId },
-        data: { visibility: visible ? 'VISIBLE' : 'HIDDEN', visibilityOverridden: true },
-      });
-      if (updated.count === 0) {
+      const change = await setTermVisibility(tx, termId, visible);
+      if (!change) {
         throw new UnprocessableEntityException({
           code: 'NOTHING_TO_RELEASE',
           message: 'This term has no synced subjects yet.',
         });
       }
-      await this.guard.bumpCacheVersion(term.generationId, tx);
       await this.audit.record(
         {
           action: visible ? 'term.released' : 'term.hidden',
           actorUserId: actor.userId,
           entityType: 'term',
           entityId: termId,
-          metadata: { termNumber: term.number, subjects: updated.count },
+          metadata: {
+            termNumber: term.number,
+            subjects: change.subjects,
+            oldState: change.oldState,
+            newState: change.newState,
+            students: change.students,
+          },
           context: meta,
         },
         tx,
       );
-      return updated.count;
+      return change.subjects;
     });
     return { termId, visible, subjects };
   }
@@ -210,6 +220,7 @@ export class GenerationsService {
           },
         });
         await applyTermDefaults(tx, generation.id);
+        await applyGradeDefaults(tx, generation.id);
         await this.audit.record(
           {
             action: 'generation.created',

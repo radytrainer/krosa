@@ -360,6 +360,7 @@ test.describe('Sync', () => {
     ]);
     await term.selectOption({ label: 'Term 1' });
     await page.getByRole('button', { name: 'Start sync' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Start sync' }).click();
     await expect(page).toHaveURL(/\/admin\/sync\/[0-9a-f-]+$/);
     await expect(main(page)).toContainText(/Term 1|Test Sheet A/);
   });
@@ -374,8 +375,7 @@ test.describe('Sync', () => {
     const page = admin.page;
     await page.goto(`/admin/generations/${s.generationId}`);
     await page.getByRole('button', { name: 'Sync all workbooks' }).click();
-    const confirm = page.getByRole('alertdialog').getByRole('button', { name: /Sync/ });
-    if (await confirm.count()) await confirm.click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Start sync' }).click();
     await expect(page).toHaveURL(/\/admin\/sync\/[0-9a-f-]+$/);
     await expect(page.getByText('Per-source jobs')).toBeVisible();
     await expect(page.getByRole('row')).not.toHaveCount(1);
@@ -821,6 +821,7 @@ test.describe('Replace Sheet', () => {
     await page.getByRole('button', { name: 'Confirm preview' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Confirm' }).click();
     await page.getByRole('button', { name: 'Sync now' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Sync now' }).click();
     await expect(page).toHaveURL(/\/admin\/sync\//);
     await expect(page.getByText('Succeeded', { exact: true }).first()).toBeVisible({
       timeout: 20_000,
@@ -1039,6 +1040,7 @@ test.describe('Replace Sheet', () => {
     await page.getByRole('button', { name: 'Confirm preview' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Confirm' }).click();
     await page.getByRole('button', { name: 'Sync now' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Sync now' }).click();
     await expect(page).toHaveURL(/\/admin\/sync\//);
     await expect(page.getByText('Succeeded', { exact: true }).first()).toBeVisible({
       timeout: 20_000,

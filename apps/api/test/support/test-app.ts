@@ -2,7 +2,12 @@ import 'reflect-metadata';
 import type { INestApplication } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
-import type { PrismaClient, UserRole, UserStatus } from '@ssrs/database';
+import {
+  applyGradeDefaults,
+  type PrismaClient,
+  type UserRole,
+  type UserStatus,
+} from '@ssrs/database';
 import { truncateAllTables } from '@ssrs/database/testing';
 import type { SheetsReader } from '@ssrs/sheets';
 import { InMemorySheetsReader } from '@ssrs/sheets/testing';
@@ -120,11 +125,15 @@ export async function seedUser(ctx: TestContext, options: SeedUserOptions) {
     },
   });
   if (role === 'STUDENT') {
-    const generation =
-      (await ctx.prisma.generation.findFirst({ where: { code: 'GEN2026' } })) ??
-      (await ctx.prisma.generation.create({
+    let generation = await ctx.prisma.generation.findFirst({ where: { code: 'GEN2026' } });
+    if (!generation) {
+      // Like GenerationsService.create: a new generation gets the official grade scale.
+      const created = await ctx.prisma.generation.create({
         data: { code: 'GEN2026', name: 'Generation 2026', startDate: new Date('2026-01-01') },
-      }));
+      });
+      await applyGradeDefaults(ctx.prisma, created.id);
+      generation = await ctx.prisma.generation.findUniqueOrThrow({ where: { id: created.id } });
+    }
     await ctx.prisma.student.create({
       data: {
         studentCode: options.username.toUpperCase(),

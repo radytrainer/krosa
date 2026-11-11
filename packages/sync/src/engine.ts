@@ -20,6 +20,7 @@ import {
   TAB_MAPPINGS_INCLUDE,
 } from './confirmed.js';
 import { refreshParentJob } from './parent.js';
+import { setTermVisibility } from './release.js';
 import { linkCriteria, prepareSubjects } from './promote.js';
 import { archiveSubjects, compareSheet, sameRemovals, type RemovedSubject } from './removals.js';
 import {
@@ -42,6 +43,7 @@ import {
   type SyncCounts,
   type SyncDeps,
   type SyncIssue,
+  type SyncLogger,
 } from './types.js';
 
 const TERMINAL: readonly SyncStatus[] = [
@@ -192,6 +194,54 @@ async function releaseLease(deps: SyncDeps, syncJobId: string, token: string): P
   }
 }
 
+/**
+ * "Release scores after sync" (decisions.md R4): releases the job's term once its data is in,
+ * audited for the admin who asked, with the source and job. False when it could not be done.
+ */
+async function releaseAfterSync(
+  prisma: PrismaClient,
+  job: { id: string; sourceId: string | null; requestedById: string },
+  termId: string,
+  logger: SyncLogger,
+): Promise<boolean> {
+  try {
+    await prisma.$transaction(async (tx) => {
+      const change = await setTermVisibility(tx, termId, true);
+      if (!change) return;
+      const term = await tx.term.findUniqueOrThrow({
+        where: { id: termId },
+        select: { number: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorType: 'USER',
+          actorUserId: job.requestedById,
+          action: 'source.released',
+          entityType: 'source',
+          entityId: job.sourceId,
+          metadata: {
+            sourceId: job.sourceId,
+            termId,
+            termNumber: term.number,
+            oldState: change.oldState,
+            newState: change.newState,
+            subjects: change.subjects,
+            students: change.students,
+            syncJobId: job.id,
+          },
+        },
+      });
+    });
+    return true;
+  } catch (err) {
+    logger.error('Release after sync failed', {
+      syncJobId: job.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
 /** The run itself; only called while holding the job's lease. */
 async function execute(
   deps: SyncDeps,
@@ -226,7 +276,19 @@ async function execute(
       issues?: SyncIssue[];
     } = {},
   ): Promise<RunOutcome> => {
-    const issues = extra.issues ?? [];
+    const issues = [...(extra.issues ?? [])];
+    if (status !== 'FAILED' && job.releaseAfterSync && job.source) {
+      const released = await releaseAfterSync(prisma, job, job.source.termId, logger);
+      if (!released) {
+        issues.push({
+          severity: 'WARNING',
+          scope: 'FILE',
+          code: 'RELEASE_FAILED',
+          message:
+            'The scores were imported but could not be released. Release them from the list.',
+        });
+      }
+    }
     await persistIssues(prisma, job.id, issues);
     const finishedAt = now();
     await prisma.syncJob.update({

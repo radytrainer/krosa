@@ -9,3 +9,4 @@ export * from './preview.js';
 export * from './removals.js';
 export * from './student-terms.js';
 export { termVisibility } from './promote.js';
+export * from './release.js';

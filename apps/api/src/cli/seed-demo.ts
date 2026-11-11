@@ -10,7 +10,12 @@
  * "issue credentials" flow can be tried. Only inserts: it refuses to run if GEN2026 exists.
  */
 import { parseArgs } from 'node:util';
-import { applyTermDefaults, createPrismaClient, type Prisma } from '@ssrs/database';
+import {
+  applyGradeDefaults,
+  applyTermDefaults,
+  createPrismaClient,
+  type Prisma,
+} from '@ssrs/database';
 import { envFields, parseEnv } from '@ssrs/shared';
 import { loadRootEnv, lockedPasswordHash } from '@ssrs/shared/node';
 import { z } from 'zod';
@@ -121,6 +126,7 @@ async function main(): Promise<void> {
           include: { terms: true },
         });
         await applyTermDefaults(tx, generation.id);
+        await applyGradeDefaults(tx, generation.id);
 
         // offering id and criterion ids per course code
         const offerings = new Map<string, { id: string; criteria: Map<string, string> }>();

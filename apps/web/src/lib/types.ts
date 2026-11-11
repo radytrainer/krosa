@@ -349,6 +349,8 @@ export interface SyncJob {
   } | null;
   generation: { id: string; code: string; name: string } | null;
   termNumber: number | null;
+  /** "Release scores after sync" was ticked for this run. */
+  releaseAfterSync: boolean;
   requestedBy: { id: string; username: string };
   parentId: string | null;
   retryOfId: string | null;
@@ -401,4 +403,20 @@ export interface Dashboard {
   offerings: { total: number; visible: number; withoutPublishedScheme: number };
   jobs: { active: number; failedRecently: number; failedWindowDays: number };
   recentJobs: SyncJob[];
+}
+
+/** Release state of a source's term (decisions.md R1–R5). EMPTY: nothing synced yet. */
+export type ReleaseState = 'RELEASED' | 'HIDDEN' | 'PARTLY_RELEASED' | 'EMPTY';
+
+/** GET /admin/sources/release and GET /admin/sync/plan. */
+export interface SourceReleaseView {
+  sourceId: string;
+  label: string;
+  status: 'ACTIVE' | 'PENDING' | 'DISABLED';
+  generation: { id: string; name: string };
+  term: { id: string; number: number; name: string };
+  state: ReleaseState;
+  subjects: number;
+  visibleSubjects: number;
+  students: number;
 }

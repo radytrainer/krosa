@@ -1,9 +1,9 @@
 'use client';
 
-import { RefreshCw } from 'lucide-react';
 import { Suspense, useState } from 'react';
 import { SyncJobsTable } from '@/components/admin/sync-jobs-table';
-import { useStartSync } from '@/components/admin/use-start-sync';
+import { SyncPlanButton } from '@/components/admin/sync-confirm';
+import type { SyncTarget } from '@/components/admin/use-start-sync';
 import { useUrlState } from '@/components/admin/use-url-state';
 import { WorkbooksByTerm } from '@/components/admin/workbooks-by-term';
 import { Field, NativeSelect } from '@/components/app/form';
@@ -11,7 +11,6 @@ import { PageHeader, Section } from '@/components/app/page-header';
 import { Pagination } from '@/components/app/pagination';
 import { isActiveJob } from '@/components/app/status';
 import { EmptyState, ErrorState, LoadingRows, PageLoading } from '@/components/app/states';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { humanize } from '@/lib/format';
 import { qs, useApi } from '@/lib/query';
@@ -32,7 +31,6 @@ function StartSyncCard() {
   const targets = useApi<SyncTargetOption[]>('/admin/sync/targets');
   const [generationId, setGenerationId] = useState(ALL);
   const [term, setTerm] = useState(ALL);
-  const startSync = useStartSync();
   const generations = targets.data ?? [];
   const selected = generations.find((g) => g.id === generationId);
   // With every generation selected, a term means that term number in each of them.
@@ -42,19 +40,13 @@ function StartSyncCard() {
         .toSorted((a, b) => a - b)
         .map((n) => ({ value: String(n), label: `Term ${n}` }));
 
-  const start = () => {
-    if (selected) {
-      startSync.mutate(
-        term === ALL
-          ? { scope: 'GENERATION', generationId: selected.id }
-          : { scope: 'TERM', generationId: selected.id, termId: term },
-      );
-    } else {
-      startSync.mutate(
-        term === ALL ? { scope: 'ALL' } : { scope: 'ALL', termNumber: Number(term) },
-      );
-    }
-  };
+  const target: SyncTarget = selected
+    ? term === ALL
+      ? { scope: 'GENERATION', generationId: selected.id }
+      : { scope: 'TERM', generationId: selected.id, termId: term }
+    : term === ALL
+      ? { scope: 'ALL' }
+      : { scope: 'ALL', termNumber: Number(term) };
 
   return (
     <Card>
@@ -96,10 +88,7 @@ function StartSyncCard() {
             </NativeSelect>
           )}
         </Field>
-        <Button disabled={startSync.isPending || !targets.data} onClick={start}>
-          <RefreshCw aria-hidden className={startSync.isPending ? 'animate-spin' : undefined} />
-          Start sync
-        </Button>
+        <SyncPlanButton target={target} disabled={!targets.data} />
       </CardContent>
     </Card>
   );

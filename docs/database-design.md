@@ -27,7 +27,7 @@ programs *─* course_offerings via offering_programs (tab audience; no rows = s
 programs 1─* program_aliases ; terms *─* programs via term_programs 1─* term_classes
 students 1─* student_terms *─1 terms (one per student per term: program + class)
 terms 1─* student_term_issues *─1 students (nullable)
-generations 1─1 grade_scales 1─* grade_bands (unused)
+generations 1─1 grade_scales 1─* grade_bands
 generations 1─* students 1─1 users (role=STUDENT)
 course_offerings 1─* assessment_criteria
 course_offerings 1─* grading_schemes 1─* grading_scheme_items *─1 assessment_criteria
@@ -287,6 +287,7 @@ Append-only history.
 | term_number                                                                                                                                                                                                                                                                                                                                                   | smallint NULL                                                               | scope ALL only: limits the run to this term number. CHECK                                                                                                                           |
 | mapping_versions                                                                                                                                                                                                                                                                                                                                              | jsonb NULL                                                                  | `{ tabMappingId: version }` applied                                                                                                                                                 |
 | preview_id                                                                                                                                                                                                                                                                                                                                                    | uuid NULL                                                                   | The confirmed preview this job applies. Only a job with one archives subjects                                                                                                       |
+| release_after_sync                                                                                                                                                                                                                                                                                                                                            | bool NOT NULL default false                                                 | "Release scores after sync": a successful run releases the term (decisions.md R4)                                                                                                   |
 | status                                                                                                                                                                                                                                                                                                                                                        | enum (QUEUED, RUNNING, SUCCEEDED, SUCCEEDED_WITH_ERRORS, FAILED, CANCELLED) |                                                                                                                                                                                     |
 | phase                                                                                                                                                                                                                                                                                                                                                         | text NULL                                                                   | FETCH, WAITING_RETRY, APPLY, DONE                                                                                                                                                   |
 | progress_current, progress_total                                                                                                                                                                                                                                                                                                                              | int                                                                         |                                                                                                                                                                                     |
@@ -413,7 +414,11 @@ per `(term_id, student_code, kind)`; resolved rows are kept with who resolved th
 
 ### grade_scales, grade_bands
 
-Tables exist for letter grades (D5). **No application code uses them yet.**
+Letter grades (D5, decisions.md G1–G4). Every generation has one scale, filled with the official
+bands A 90 / B 80 / C 70 / D 60 / E 50 / F 0 (`is_pass` false only for F) and marked confirmed by
+`ssrs_apply_grade_defaults(generation_id)` (migration `20261110090000_grade_scale`; called when a
+generation is created). It leaves a scale that already has bands alone. The letter is computed on
+read (`gradeFor` in `packages/shared`), never stored. No admin editor yet.
 
 ### participation_records
 

@@ -1,5 +1,16 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsOptional, IsString, Length } from 'class-validator';
+import { Transform } from 'class-transformer';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Length,
+} from 'class-validator';
 import { Trim } from '../common/validation.js';
 
 export class CreateTermSourceDto {
@@ -58,4 +69,32 @@ export class UpdateSourceDto {
   @IsOptional()
   @IsEnum(['ACTIVE', 'DISABLED'])
   status?: 'ACTIVE' | 'DISABLED';
+}
+
+/** Hide or Release the scores of one or more sources (their terms) for students. */
+export class SetSourceReleaseDto {
+  @ApiProperty({ type: [String], description: '1–50 source ids' })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @IsUUID('all', { each: true })
+  sourceIds!: string[];
+
+  @ApiProperty({ description: 'true releases, false hides' })
+  @IsBoolean()
+  visible!: boolean;
+}
+
+export class SourceReleaseQueryDto {
+  @ApiProperty({ type: [String], description: 'Source ids, comma separated or repeated (1–50)' })
+  @Transform(({ value }: { value: unknown }) =>
+    (Array.isArray(value) ? value : String(value ?? '').split(','))
+      .map((v) => String(v).trim())
+      .filter(Boolean),
+  )
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @IsUUID('all', { each: true })
+  ids!: string[];
 }

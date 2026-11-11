@@ -16,7 +16,12 @@ import type { AuthUser } from '../auth/auth.types.js';
 import { CurrentUser, Roles } from '../auth/decorators.js';
 import { PaginationQueryDto } from '../common/pagination.js';
 import { requestMeta } from '../common/request-meta.js';
-import { ListSyncErrorsQueryDto, ListSyncJobsQueryDto, RequestSyncDto } from './sync.dto.js';
+import {
+  ListSyncErrorsQueryDto,
+  ListSyncJobsQueryDto,
+  RequestSyncDto,
+  SyncPlanQueryDto,
+} from './sync.dto.js';
 import { SyncService } from './sync.service.js';
 
 @ApiTags('admin: synchronization')
@@ -42,6 +47,12 @@ export class SyncController {
   @Get('sync/targets')
   targets() {
     return this.sync.targets();
+  }
+
+  /** The workbooks a Sync Center sync would cover, with their release state. Changes nothing. */
+  @Get('sync/plan')
+  plan(@Query() query: SyncPlanQueryDto) {
+    return this.sync.plan(query);
   }
 
   @Get('sync/:jobId')

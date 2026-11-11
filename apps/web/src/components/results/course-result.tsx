@@ -64,6 +64,26 @@ function TeacherComment({ text }: { text: string }) {
   );
 }
 
+/**
+ * The letter beside a COMPLETE subject's final score, as text ("Grade E"), never color alone.
+ * Nothing else (marks, progress, averages) ever shows a grade.
+ */
+export function FinalGrade({
+  course,
+}: {
+  course: Pick<CourseResultView, 'status' | 'finalScore' | 'finalGrade'>;
+}) {
+  if (course.status !== 'COMPLETE' || !course.finalScore || !course.finalGrade) return null;
+  return (
+    <span
+      data-slot="final-grade"
+      className="ml-2 inline-flex h-6 items-center rounded-md bg-muted px-2 align-middle text-sm font-semibold text-foreground ring-1 ring-foreground/15 ring-inset"
+    >
+      Grade {course.finalGrade}
+    </span>
+  );
+}
+
 /** Score summary: the final score when complete, otherwise progress so far. */
 export function ScoreSummary({ course, compact }: { course: CourseResultView; compact?: boolean }) {
   if (course.status === 'COMPLETE') {
@@ -72,6 +92,7 @@ export function ScoreSummary({ course, compact }: { course: CourseResultView; co
         <span className={cn('block font-semibold tabular-nums', compact ? 'text-lg' : 'text-2xl')}>
           {course.finalScore}
           <span className="text-sm font-normal text-muted-foreground"> / 100</span>
+          <FinalGrade course={course} />
         </span>
         {compact ? null : <span className="block text-xs text-muted-foreground">Final score</span>}
       </span>

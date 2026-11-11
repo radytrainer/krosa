@@ -47,21 +47,21 @@ of solo work, which leaves UAT and a buffer before 1 January.
 
 Decisions **D1–D29** were confirmed on 2026-10-30. **A1–A3** are working assumptions.
 
-| #   | Decision                                                                                                                                                                                                                                                                                                     |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| D1  | **Login ID = full student ID** exactly as in the sheet (`PNC2027-001`), case-insensitive. No short-ID alias.                                                                                                                                                                                                 |
-| D2  | **Each teacher edits their own subject tab.** Headers can change mid-term, so header-change detection (`NEEDS_REMAP`) is a must-have.                                                                                                                                                                        |
-| D3  | **Blank cell = not entered yet** (subject shows INCOMPLETE), never zero. The BCU tab's own `Total` counts blanks as 0, so it will differ from the system total. Expected; explain it in UAT.                                                                                                                 |
-| D4  | **Group weights are split equally** across their columns (ENG `Projects (15%)` → Role Play 7.5 + English for IT 7.5). The admin can override on the mapping screen; the cross-check against the sheet `TOTAL` flags a wrong split.                                                                           |
-| D5  | **Letter grades are in the MVP (not built yet).** One editable grade scale per intake. Placeholder bands until the school confirms: A ≥ 85, B ≥ 70, C ≥ 50, F < 50. Students see letters only once the admin marks the scale **confirmed**.                                                                  |
-| D6  | **Teacher `COMMENTS` are shown to students**, on the subject detail page, once the term is released. Built 2026-11-03 (rules: `google-sheets-template.md` §2).                                                                                                                                               |
-| D7  | **Scores are hidden until an admin releases** them. Superseded by D16: release is per term.                                                                                                                                                                                                                  |
-| D8  | **Program per term comes from `ALL`'s class** through the term's class list (WEP: A, B, C; SNAC: D); an admin can override it. Changed 2026-11-03 (was: admins assign SNAC/WEP by hand). Rules: `google-sheets-template.md` §3.                                                                              |
-| D9  | **`ALL` is the master roster** (IDs, first/last name, gender, class, `CLASS 2`). Subject tabs only add enrollments and scores; a name that differs from `ALL` is a warning, a name of another student rejects the row. A student in a subject tab but missing from `ALL` → row rejected (`UNKNOWN_STUDENT`). |
-| D10 | **5 terms per intake** (matches the current default, so no `term_count` column was added; terms stay fixed at 5).                                                                                                                                                                                            |
-| D11 | **GEN2027 only** on 1 January. GEN2026 (no student IDs in its sheet) is post-launch.                                                                                                                                                                                                                         |
-| D12 | **Production on one cloud VPS** with Docker Compose + Caddy (already prepared in `docker-compose.prod.yml`).                                                                                                                                                                                                 |
-| D13 | **All 5 admins have equal rights** (single ADMIN role, everything audited). **First passwords are printed on paper per class** from the existing CSV export.                                                                                                                                                 |
+| #   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | **Login ID = full student ID** exactly as in the sheet (`PNC2027-001`), case-insensitive. No short-ID alias.                                                                                                                                                                                                                                                                                                            |
+| D2  | **Each teacher edits their own subject tab.** Headers can change mid-term, so header-change detection (`NEEDS_REMAP`) is a must-have.                                                                                                                                                                                                                                                                                   |
+| D3  | **Blank cell = not entered yet** (subject shows INCOMPLETE), never zero. The BCU tab's own `Total` counts blanks as 0, so it will differ from the system total. Expected; explain it in UAT.                                                                                                                                                                                                                            |
+| D4  | **Group weights are split equally** across their columns (ENG `Projects (15%)` → Role Play 7.5 + English for IT 7.5). The admin can override on the mapping screen; the cross-check against the sheet `TOTAL` flags a wrong split.                                                                                                                                                                                      |
+| D5  | **Letter grades are in the MVP.** One grade scale per intake (`grade_bands`), the official scale since 2026-11-10: A ≥ 90, B ≥ 80, C ≥ 70, D ≥ 60, E ≥ 50, F < 50 ([decisions.md](decisions.md) G1–G4). It replaced the placeholder (A ≥ 85, B ≥ 70, C ≥ 50, F < 50), which was never stored. A letter is shown only beside a COMPLETE subject's final score, and only from a **confirmed** scale. No admin editor yet. |
+| D6  | **Teacher `COMMENTS` are shown to students**, on the subject detail page, once the term is released. Built 2026-11-03 (rules: `google-sheets-template.md` §2).                                                                                                                                                                                                                                                          |
+| D7  | **Scores are hidden until an admin releases** them. Superseded by D16: release is per term.                                                                                                                                                                                                                                                                                                                             |
+| D8  | **Program per term comes from `ALL`'s class** through the term's class list (WEP: A, B, C; SNAC: D); an admin can override it. Changed 2026-11-03 (was: admins assign SNAC/WEP by hand). Rules: `google-sheets-template.md` §3.                                                                                                                                                                                         |
+| D9  | **`ALL` is the master roster** (IDs, first/last name, gender, class, `CLASS 2`). Subject tabs only add enrollments and scores; a name that differs from `ALL` is a warning, a name of another student rejects the row. A student in a subject tab but missing from `ALL` → row rejected (`UNKNOWN_STUDENT`).                                                                                                            |
+| D10 | **5 terms per intake** (matches the current default, so no `term_count` column was added; terms stay fixed at 5).                                                                                                                                                                                                                                                                                                       |
+| D11 | **GEN2027 only** on 1 January. GEN2026 (no student IDs in its sheet) is post-launch.                                                                                                                                                                                                                                                                                                                                    |
+| D12 | **Production on one cloud VPS** with Docker Compose + Caddy (already prepared in `docker-compose.prod.yml`).                                                                                                                                                                                                                                                                                                            |
+| D13 | **All 5 admins have equal rights** (single ADMIN role, everything audited). **First passwords are printed on paper per class** from the existing CSV export.                                                                                                                                                                                                                                                            |
 
 Later on 2026-10-30, after the first connect attempt with the real workbook:
 
@@ -275,8 +275,8 @@ and results stay unchanged. Index `(generation_id, program_id, class_name)`.
 Partial unique indexes: one ACTIVE and one PENDING source per `term_id`.
 
 **`grade_scales`** — `id` PK, `generation_id` UNIQUE FK → generations, `confirmed bool default
-false`, `confirmed_by/at`. Planned: seeded with the placeholder bands when an intake is created. Not
-built.
+false`, `confirmed_by/at`. Every generation gets the official scale, confirmed
+(`ssrs_apply_grade_defaults`, migration `20261110090000_grade_scale`; decisions.md G1–G4).
 
 **`grade_bands`**
 
@@ -476,7 +476,7 @@ sequenceDiagram
         API->>DB: enrollments of THIS student ∩ visibility = VISIBLE, scores, published schemes
         API->>R: set (version-keyed)
     end
-    API-->>Web: terms → subjects → criteria, total, status, teacher comment (letter not built)
+    API-->>Web: terms → subjects → criteria, total, status, teacher comment and `finalGrade` beside a COMPLETE final score
 ```
 
 ### B.4 Admin: reset password and manage access
@@ -550,7 +550,7 @@ apps/worker  BullMQ processor
 | POST           | `/admin/terms/:id/release`                          | Sets all offerings of a term VISIBLE or HIDDEN (audited)                                   |
 | GET/PUT        | `/admin/generations/:id/grade-scale`                | Not built. Read / replace bands (validated: covers 0–100, no overlaps)                     |
 | POST           | `/admin/generations/:id/grade-scale/confirm`        | Not built. Mark the scale official → letters become visible to students                    |
-| GET            | `/student/me/results`                               | Exists, with `teacherComment`. `letter` not built                                          |
+| GET            | `/student/me/results`                               | Exists, with `teacherComment` and `finalGrade` (COMPLETE subjects only)                    |
 
 ### C.3 Google Sheets authentication
 
@@ -671,7 +671,7 @@ controls in Edit term (D31), Workbooks by term, Reopen tab, one running sync per
 - Subjects, aliases and programs as data; shared vs program-specific offerings.
 - Weights from headers, cross-checked against sheet `TOTAL`; versioned scheme publish.
 - Release (visibility) per term.
-- Letter grades from an editable per-intake scale, shown once the scale is confirmed (D5).
+- Letter grades from the official per-intake scale, beside COMPLETE final scores only (D5, decisions.md G1–G4).
 - Teacher comments on the released term's subject detail page (D6).
 - Student login with full student ID, forced first password change, view own scores by term.
 - Admin: student list (filter class/program), reset password, bulk credential CSV, disable account, audit log.

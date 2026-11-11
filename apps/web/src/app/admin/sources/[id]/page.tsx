@@ -1,13 +1,12 @@
 'use client';
 
-import { ExternalLink, Pencil, Power, RefreshCw, TriangleAlert } from 'lucide-react';
+import { ExternalLink, Pencil, Power, TriangleAlert } from 'lucide-react';
 import { useParams } from 'next/navigation';
 import { useState } from 'react';
 import { SyncJobsTable } from '@/components/admin/sync-jobs-table';
 import { SheetPreviewPanel } from '@/components/admin/sheet-preview';
-import { SyncActiveSheet } from '@/components/admin/sync-confirm';
+import { SyncActiveSheet, SyncPendingSheet } from '@/components/admin/sync-confirm';
 import { TermMappings } from '@/components/admin/term-mappings';
-import { useStartSync } from '@/components/admin/use-start-sync';
 import { Confirm } from '@/components/app/confirm';
 import { Field, fieldErrors, onSubmit } from '@/components/app/form';
 import { PageHeader, Section } from '@/components/app/page-header';
@@ -81,7 +80,6 @@ export default function SourceDetailPage() {
       keepPrevious: true,
     },
   );
-  const startSync = useStartSync();
   const preview = useApi<SheetPreview | null>(`/admin/sources/${id}/preview`);
   const workbooks = useApi<TermWorkbooks[]>('/admin/term-workbooks');
   const discard = useApiMutation(
@@ -168,13 +166,7 @@ export default function SourceDetailPage() {
               </Button>
             )}
             {pending ? (
-              <Button
-                disabled={!previewConfirmed || startSync.isPending}
-                onClick={() => startSync.mutate({ scope: 'SOURCE', sourceId: s.id })}
-              >
-                <RefreshCw aria-hidden />
-                Sync now
-              </Button>
+              <SyncPendingSheet sourceId={s.id} disabled={!previewConfirmed} />
             ) : (
               <SyncActiveSheet sourceId={s.id} disabled={!active} />
             )}

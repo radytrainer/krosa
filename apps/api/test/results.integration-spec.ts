@@ -178,7 +178,7 @@ describe('Student results (integration)', () => {
     });
   // Comments are written straight to the database here, which does not bump the cache version.
   const clearResultsCache = async () => {
-    const keys = await ctx.redis.keys('ssrs:v3:results:*');
+    const keys = await ctx.redis.keys('ssrs:v4:results:*');
     if (keys.length) await ctx.redis.del(...keys);
   };
 
@@ -350,6 +350,228 @@ describe('Student results (integration)', () => {
     });
   });
 
+  describe('student summary', () => {
+    it('keeps terms and overall exactly as before (all terms, released, enrolled)', async () => {
+      const res = await alice.get(`${ME}/summary`).expect(200);
+      const empty = {
+        status: 'EMPTY',
+        average: null,
+        provisionalAverage: null,
+        completedCourses: 0,
+        totalCourses: 0,
+        creditsCompleted: '0.0',
+        creditsTotal: '0.0',
+      };
+      expect(res.body.terms).toEqual([
+        {
+          number: 1,
+          name: 'Term 1',
+          summary: {
+            status: 'INCOMPLETE',
+            average: null,
+            provisionalAverage: '40.00',
+            completedCourses: 1,
+            totalCourses: 2,
+            creditsCompleted: '3.0',
+            creditsTotal: '5.0',
+          },
+        },
+        {
+          number: 2,
+          name: 'Term 2',
+          summary: { ...empty, status: 'INCOMPLETE', totalCourses: 1, creditsTotal: '4.0' },
+        },
+        { number: 3, name: 'Term 3', summary: empty },
+        { number: 4, name: 'Term 4', summary: empty },
+        { number: 5, name: 'Term 5', summary: empty },
+      ]);
+      expect(res.body.overall).toEqual({
+        status: 'INCOMPLETE',
+        average: null,
+        provisionalAverage: '40.00',
+        completedCourses: 1,
+        totalCourses: 3,
+        creditsCompleted: '3.0',
+        creditsTotal: '9.0',
+      });
+    });
+
+    it('uses the latest term with a released subject and never falls back', async () => {
+      // Alice: Term 2 has SCI101 (released, not graded); Term 3 is withdrawn, so not hers.
+      const res = await alice.get(`${ME}/summary`).expect(200);
+      expect(res.body.latestTermHighest).toEqual({
+        termNumber: 2,
+        termName: 'Term 2',
+        finalScore: null,
+        finalGrade: null,
+        subjects: [],
+      });
+      const bobRes = await bob.get(`${ME}/summary`).expect(200);
+      expect(bobRes.body.latestTermHighest).toEqual({
+        termNumber: 1,
+        termName: 'Term 1',
+        finalScore: '100.00',
+        finalGrade: 'A',
+        subjects: [{ offeringId: s.math.id, courseCode: 'MATH101', title: 'MATH101 title' }],
+      });
+    });
+
+    it('ignores hidden subjects, also when they score higher or sit in a later term', async () => {
+      // Hide SCI101: Alice's latest released term becomes Term 1, where hidden ART101 (90.00)
+      // must not beat MATH101 (40.00).
+      await ctx.prisma.courseOffering.update({
+        where: { id: s.sci.id },
+        data: { visibility: 'HIDDEN' },
+      });
+      await clearResultsCache();
+      const res = await alice.get(`${ME}/summary`).expect(200);
+      expect(res.body.latestTermHighest).toMatchObject({
+        termNumber: 1,
+        finalScore: '40.00',
+        finalGrade: 'F',
+        subjects: [{ offeringId: s.math.id }],
+      });
+      expect(JSON.stringify(res.body)).not.toContain(s.art.id);
+      expect(JSON.stringify(res.body)).not.toContain('ART101');
+      expect(res.body.overall).toMatchObject({ completedCourses: 1, totalCourses: 2 });
+    });
+
+    it('lists every subject tied for the highest score', async () => {
+      const eng = await ctx.prisma.assessmentCriterion.findMany({
+        where: { offeringId: s.eng.id },
+        orderBy: { displayOrder: 'asc' },
+      });
+      const enrollment = await ctx.prisma.enrollment.create({
+        data: { studentId: s.bob.id, offeringId: s.eng.id },
+      });
+      await ctx.prisma.assessmentScore.createMany({
+        data: eng.map((c) => ({
+          enrollmentId: enrollment.id,
+          offeringId: s.eng.id,
+          criterionId: c.id,
+          status: 'RECORDED' as const,
+          mark: c.key === 'Q1' ? 10 : 100,
+        })),
+      });
+      await clearResultsCache();
+      const res = await bob.get(`${ME}/summary`).expect(200);
+      expect(res.body.latestTermHighest).toMatchObject({
+        termNumber: 1,
+        finalScore: '100.00',
+        finalGrade: 'A',
+        subjects: [
+          { offeringId: s.eng.id, courseCode: 'ENG101' },
+          { offeringId: s.math.id, courseCode: 'MATH101' },
+        ],
+      });
+    });
+
+    it('is null when nothing is released', async () => {
+      await ctx.prisma.courseOffering.updateMany({ data: { visibility: 'HIDDEN' } });
+      await clearResultsCache();
+      const res = await alice.get(`${ME}/summary`).expect(200);
+      expect(res.body.latestTermHighest).toBeNull();
+      expect(res.body.overall.totalCourses).toBe(0);
+    });
+  });
+
+  describe('letter grades (G1–G4)', () => {
+    /** Every key in a response that names a grade, with its path. */
+    const gradeKeys = (body: unknown, path = '$'): string[] => {
+      if (Array.isArray(body)) return body.flatMap((v, i) => gradeKeys(v, `${path}[${i}]`));
+      if (body && typeof body === 'object') {
+        return Object.entries(body).flatMap(([k, v]) => [
+          ...(/grade|letter/i.test(k) ? [`${path}.${k}`] : []),
+          ...gradeKeys(v, `${path}.${k}`),
+        ]);
+      }
+      return [];
+    };
+
+    it('returns a grade only beside a COMPLETE final score', async () => {
+      const res = await alice.get(`${ME}/results`).expect(200);
+      const courses = allCourses(res.body);
+      const byCode = Object.fromEntries(courses.map((c) => [c.courseCode as string, c]));
+      expect(byCode.MATH101).toMatchObject({
+        status: 'COMPLETE',
+        finalScore: '40.00',
+        finalGrade: 'F',
+      });
+      expect(byCode.ENG101).toMatchObject({
+        status: 'INCOMPLETE',
+        finalScore: null,
+        finalGrade: null,
+      });
+      expect(byCode.SCI101).toMatchObject({ status: 'NOT_CONFIGURED', finalGrade: null });
+      // The only grade field is finalGrade on a course: none on criteria, summaries or terms.
+      expect(
+        gradeKeys(res.body).every((k) => /^\$\.terms\[\d+\]\.courses\[\d+\]\.finalGrade$/.test(k)),
+      ).toBe(true);
+      expect(gradeKeys(res.body)).toHaveLength(courses.length);
+
+      // The summary's only grade is the one beside the highest final score (S2).
+      const summary = await alice.get(`${ME}/summary`).expect(200);
+      expect(gradeKeys(summary.body)).toEqual(['$.latestTermHighest.finalGrade']);
+
+      const list = await alice.get(`${ME}/courses`).expect(200);
+      expect(list.body).toEqual([
+        expect.objectContaining({ courseCode: 'ENG101', finalGrade: null }),
+        expect.objectContaining({ courseCode: 'MATH101', finalScore: '40.00', finalGrade: 'F' }),
+        expect.objectContaining({ courseCode: 'SCI101', finalGrade: null }),
+      ]);
+      const one = await bob.get(`${ME}/courses/${s.math.id}`).expect(200);
+      expect(one.body).toMatchObject({ finalScore: '100.00', finalGrade: 'A' });
+      expect(gradeKeys(one.body)).toEqual(['$.finalGrade']);
+    });
+
+    it('never sends a hidden subject, or its grade, to the student', async () => {
+      const res = await alice.get(`${ME}/results`).expect(200);
+      expect(allCourses(res.body).map((c) => c.offeringId)).not.toContain(s.art.id);
+      await alice.get(`${ME}/courses/${s.art.id}`).expect(404);
+      // The admin view lists it, with its grade beside its final score.
+      const adminRes = await admin.get(`/api/v1/admin/students/${s.alice.id}/results`).expect(200);
+      const art = allCourses(adminRes.body).find((c) => c.offeringId === s.art.id);
+      expect(art).toMatchObject({
+        status: 'COMPLETE',
+        finalScore: '90.00',
+        finalGrade: 'A',
+        admin: expect.objectContaining({ visibility: 'HIDDEN' }),
+      });
+      const eng = allCourses(adminRes.body).find((c) => c.offeringId === s.eng.id);
+      expect(eng).toMatchObject({ status: 'INCOMPLETE', finalGrade: null });
+    });
+
+    it('gives no grade, never a default F, when the generation has no scale', async () => {
+      await ctx.prisma.gradeScale.deleteMany({ where: { generationId: s.generation.id } });
+      await clearResultsCache();
+      const res = await alice.get(`${ME}/courses/${s.math.id}`).expect(200);
+      expect(res.body).toMatchObject({ status: 'COMPLETE', finalScore: '40.00', finalGrade: null });
+    });
+
+    it('gives a new generation the official scale, confirmed', async () => {
+      const created = await admin
+        .post('/api/v1/admin/generations', {
+          code: 'GEN2030',
+          name: 'Generation 2030',
+          startDate: '2030-01-07',
+        })
+        .expect(201);
+      const scale = await ctx.prisma.gradeScale.findUniqueOrThrow({
+        where: { generationId: created.body.id },
+        include: { bands: { orderBy: { minTotal: 'desc' } } },
+      });
+      expect(scale.confirmed).toBe(true);
+      expect(scale.bands.map((b) => [b.letter, b.minTotal.toFixed(2), b.isPass])).toEqual([
+        ['A', '90.00', true],
+        ['B', '80.00', true],
+        ['C', '70.00', true],
+        ['D', '60.00', true],
+        ['E', '50.00', true],
+        ['F', '0.00', false],
+      ]);
+    });
+  });
+
   describe('access control (STU-01, STU-04)', () => {
     it('returns 404 for hidden, withdrawn, not-enrolled and unknown offerings', async () => {
       for (const id of [s.art.id, s.his.id, '01900000-0000-7000-8000-000000000000']) {
@@ -470,7 +692,7 @@ describe('Student results (integration)', () => {
       expect(t3.summary).toMatchObject({ status: 'EMPTY', totalCourses: 0 });
 
       // Never cached.
-      expect(await ctx.redis.keys('ssrs:v3:results:*')).toEqual([]);
+      expect(await ctx.redis.keys('ssrs:v4:results:*')).toEqual([]);
       await admin
         .get('/api/v1/admin/students/01900000-0000-7000-8000-000000000000/results')
         .expect(404);

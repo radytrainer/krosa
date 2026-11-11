@@ -21,8 +21,17 @@ import { isUniqueViolation } from '../common/prisma-errors.js';
 import { RateLimitedException } from '../common/rate-limited.exception.js';
 import type { RequestMeta } from '../common/request-meta.js';
 import { PrismaService } from '../infra/prisma.service.js';
+import {
+  sourceReleaseViews,
+  type SourceReleaseView,
+} from '../sheets-sources/source-release.service.js';
 import { SyncQueueService } from './sync-queue.service.js';
-import type { ListSyncErrorsQueryDto, ListSyncJobsQueryDto, RequestSyncDto } from './sync.dto.js';
+import type {
+  ListSyncErrorsQueryDto,
+  ListSyncJobsQueryDto,
+  RequestSyncDto,
+  SyncPlanQueryDto,
+} from './sync.dto.js';
 
 const SYNC_REQUEST_LIMIT = { limit: 10, windowSeconds: 60 };
 const RETRYABLE = new Set(['FAILED', 'SUCCEEDED_WITH_ERRORS']);
@@ -64,6 +73,8 @@ export interface SyncJobView {
   generation: { id: string; code: string; name: string } | null;
   /** Scope ALL only: the term number this run was limited to. */
   termNumber: number | null;
+  /** "Release scores after sync" was ticked: a successful run releases the term. */
+  releaseAfterSync: boolean;
   requestedBy: { id: string; username: string };
   parentId: string | null;
   retryOfId: string | null;
@@ -87,6 +98,7 @@ function toView(j: JobRow): SyncJobView {
     source: j.source,
     generation: j.generation,
     termNumber: j.termNumber,
+    releaseAfterSync: j.releaseAfterSync,
     requestedBy: j.requestedBy,
     parentId: j.parentId,
     retryOfId: j.retryOfId,
@@ -102,6 +114,7 @@ interface Target {
   generationId?: string | null;
   termNumber?: number | null;
   previewId?: string | null;
+  releaseAfterSync?: boolean;
 }
 
 export interface SyncTargetOption {
@@ -131,7 +144,12 @@ export class SyncService {
     if (!limit.allowed) throw new RateLimitedException(limit.retryAfterSeconds);
     if (dto.scope === 'TERM') {
       const sourceId = await this.termSource(dto.generationId ?? '', dto.termId ?? '');
-      return this.start({ scope: 'SOURCE', sourceId }, actor, meta, null);
+      return this.start(
+        { scope: 'SOURCE', sourceId, releaseAfterSync: dto.releaseAfterSync ?? false },
+        actor,
+        meta,
+        null,
+      );
     }
     return this.start(
       {
@@ -140,6 +158,7 @@ export class SyncService {
         generationId: dto.generationId,
         termNumber: dto.scope === 'ALL' ? dto.termNumber : null,
         previewId: dto.previewId,
+        releaseAfterSync: dto.releaseAfterSync ?? false,
       },
       actor,
       meta,
@@ -174,6 +193,25 @@ export class SyncService {
     return source.id;
   }
 
+  /**
+   * The workbooks a Sync Center sync would cover, with each one's release state, so the
+   * confirmation can say what students will see. Same selection as `start`. Changes nothing.
+   */
+  async plan(query: SyncPlanQueryDto): Promise<SourceReleaseView[]> {
+    if (query.scope === 'TERM') {
+      const sourceId = await this.termSource(query.generationId ?? '', query.termId ?? '');
+      return sourceReleaseViews(this.prisma.client, { id: sourceId });
+    }
+    return sourceReleaseViews(
+      this.prisma.client,
+      multiSourceWhere({
+        scope: query.scope,
+        generationId: query.generationId,
+        termNumber: query.scope === 'ALL' ? query.termNumber : null,
+      }),
+    );
+  }
+
   /** Generation and Term options for the sync form: active generations with their terms. */
   async targets(): Promise<SyncTargetOption[]> {
     return this.prisma.client.generation.findMany({
@@ -199,8 +237,9 @@ export class SyncService {
         message: 'Only failed or partially failed jobs can be retried.',
       });
     }
-    // A preview authorizes one sync. A retry of an active sheet archives nothing.
-    return this.start({ ...job, previewId: null }, actor, meta, job.id);
+    // A preview authorizes one sync. A retry of an active sheet archives nothing, and releases
+    // nothing: release is asked for at the confirmation, which a retry skips.
+    return this.start({ ...job, previewId: null, releaseAfterSync: false }, actor, meta, job.id);
   }
 
   /** The confirmed preview a job applies. It decides which subjects the job may archive. */
@@ -268,7 +307,14 @@ export class SyncService {
         source.status === 'PENDING' || target.previewId
           ? await this.boundPreview(source.id, target.previewId)
           : null;
-      const job = await this.createSourceJob(source, actor.userId, null, retryOfId, previewId);
+      const job = await this.createSourceJob(
+        source,
+        actor.userId,
+        null,
+        retryOfId,
+        previewId,
+        target.releaseAfterSync ?? false,
+      );
       if (!job.ok) {
         throw new ConflictException({
           code: 'SYNC_IN_PROGRESS',
@@ -295,13 +341,7 @@ export class SyncService {
       }
     }
     const sources = await db.googleSheetSource.findMany({
-      where: {
-        status: 'ACTIVE',
-        tabMappings: { some: { status: 'CONFIRMED' } },
-        generation: { status: 'ACTIVE' },
-        ...(target.scope === 'GENERATION' ? { generationId: target.generationId ?? '' } : {}),
-        ...(target.termNumber ? { term: { number: target.termNumber } } : {}),
-      },
+      where: multiSourceWhere(target),
       select: { id: true, label: true, termId: true },
       orderBy: { createdAt: 'asc' },
     });
@@ -321,12 +361,20 @@ export class SyncService {
         requestedById: actor.userId,
         retryOfId,
         progressTotal: sources.length,
+        releaseAfterSync: target.releaseAfterSync ?? false,
       },
     });
     const childIds: string[] = [];
     const busy: { id: string; label: string; activeJobId: string | null }[] = [];
     for (const source of sources) {
-      const child = await this.createSourceJob(source, actor.userId, parent.id, null);
+      const child = await this.createSourceJob(
+        source,
+        actor.userId,
+        parent.id,
+        null,
+        null,
+        target.releaseAfterSync ?? false,
+      );
       if (child.ok) childIds.push(child.id);
       else busy.push({ id: source.id, label: source.label, activeJobId: child.activeJobId });
     }
@@ -365,6 +413,7 @@ export class SyncService {
     parentId: string | null,
     retryOfId: string | null,
     previewId: string | null = null,
+    releaseAfterSync = false,
   ): Promise<{ ok: true; id: string } | { ok: false; activeJobId: string | null }> {
     try {
       const job = await this.prisma.client.syncJob.create({
@@ -376,6 +425,7 @@ export class SyncService {
           parentId,
           retryOfId,
           previewId,
+          releaseAfterSync,
         },
       });
       return { ok: true, id: job.id };
@@ -408,6 +458,7 @@ export class SyncService {
         generationId: target.generationId ?? null,
         termNumber: target.termNumber ?? null,
         retryOfId,
+        releaseAfterSync: target.releaseAfterSync ?? false,
         ...extra,
       },
       context: meta,
@@ -552,4 +603,15 @@ export class SyncService {
     };
     return this.list(listQuery);
   }
+}
+
+/** The active, confirmed workbooks a GENERATION or ALL sync covers. */
+function multiSourceWhere(target: Target): Prisma.GoogleSheetSourceWhereInput {
+  return {
+    status: 'ACTIVE',
+    tabMappings: { some: { status: 'CONFIRMED' } },
+    generation: { status: 'ACTIVE' },
+    ...(target.scope === 'GENERATION' ? { generationId: target.generationId ?? '' } : {}),
+    ...(target.termNumber ? { term: { number: target.termNumber } } : {}),
+  };
 }

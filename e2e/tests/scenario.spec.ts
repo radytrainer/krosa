@@ -139,6 +139,8 @@ test('6. issues a temporary password to a student', async () => {
   await admin.getByRole('alertdialog').getByRole('button', { name: 'Issue password' }).click();
   const shown = admin.getByRole('dialog').locator('code');
   await expect(shown).toBeVisible();
+  // Hidden by default (Item 1): show it to read it.
+  await admin.getByRole('dialog').getByRole('button', { name: 'Show password' }).click();
   temporaryPassword = (await shown.textContent())?.trim() ?? '';
   expect(temporaryPassword.length).toBeGreaterThanOrEqual(12);
   await admin.getByRole('button', { name: 'Done' }).click();
@@ -235,6 +237,8 @@ test('10. changing the sheet changes nothing for students until its sync complet
   await expect(student.getByRole('button', { name: /Logic/ })).toContainText('78.90');
 
   await admin.getByRole('button', { name: 'Sync now' }).click();
+  // The pending sheet's sync has its own confirmation, with "Release scores after sync".
+  await admin.getByRole('dialog').getByRole('button', { name: 'Sync now' }).click();
   await expect(admin).toHaveURL(/\/admin\/sync\/[0-9a-f-]+$/);
   await expect(admin.getByText('Succeeded', { exact: true }).first()).toBeVisible({
     timeout: 60_000,

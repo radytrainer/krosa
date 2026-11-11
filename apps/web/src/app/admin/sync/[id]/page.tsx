@@ -5,7 +5,8 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { ISSUES_PAGE_SIZE, IssueFilters, PagedIssues } from '@/components/admin/paged-issues';
-import { SyncJobsTable, jobTarget } from '@/components/admin/sync-jobs-table';
+import { PerSourceJobs } from '@/components/admin/source-release';
+import { jobTarget } from '@/components/admin/sync-jobs-table';
 import { NativeSelect } from '@/components/app/form';
 import { PageHeader, Section } from '@/components/app/page-header';
 import { SyncStatusPill, isActiveJob } from '@/components/app/status';
@@ -277,9 +278,9 @@ export default function SyncJobPage() {
         {job.children.length ? (
           <Section
             title="Per-source jobs"
-            description="A generation or full sync runs one job per spreadsheet."
+            description="A generation or full sync runs one job per spreadsheet. Hide or release each workbook's scores for students here; it acts on the whole term."
           >
-            <SyncJobsTable jobs={job.children} />
+            <PerSourceJobs jobs={job.children} />
           </Section>
         ) : null}
 

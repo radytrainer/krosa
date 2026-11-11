@@ -21,6 +21,17 @@ export async function applyTermDefaults(
   await db.$executeRaw`SELECT ssrs_apply_term_defaults(id) FROM terms WHERE generation_id = ${generationId}::uuid`;
 }
 
+/**
+ * Gives a generation the official letter-grade scale, confirmed (migration
+ * 20261110090000_grade_scale holds it). A generation that already has bands is left alone.
+ */
+export async function applyGradeDefaults(
+  db: Pick<PrismaClient, '$executeRaw'>,
+  generationId: string,
+): Promise<void> {
+  await db.$executeRaw`SELECT ssrs_apply_grade_defaults(${generationId}::uuid)`;
+}
+
 export function createPrismaClient(options: CreatePrismaClientOptions): PrismaClient {
   const adapter = new PrismaPg({
     connectionString: options.connectionString,

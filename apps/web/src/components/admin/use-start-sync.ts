@@ -14,6 +14,8 @@ export interface SyncTarget {
   termId?: string;
   termNumber?: number;
   previewId?: string;
+  /** "Release scores after sync" (default off). */
+  releaseAfterSync?: boolean;
 }
 
 const MESSAGES: Record<string, string> = {

@@ -22,6 +22,7 @@
     "test:integration": "turbo run test:integration --concurrency=1",
     "admin:create": "pnpm --filter @ssrs/api admin:create",
     "demo:seed": "pnpm --filter @ssrs/api demo:seed",
+    "grades:report": "pnpm --filter @ssrs/api grades:report",
     "test:e2e": "pnpm --filter @ssrs/e2e test:e2e"
   },
   "devDependencies": {

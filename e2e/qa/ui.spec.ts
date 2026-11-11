@@ -64,6 +64,47 @@ test.beforeAll(async ({ browser }) => {
   student = await open(browser, 'student');
 });
 
+test('P1 sign-in: Show / Hide password by mouse and keyboard; hidden again after submit', async () => {
+  const secret = 'Not-A-Real-Pass-731';
+  const logged: string[] = [];
+  admin.on('console', (m) => logged.push(m.text()));
+  await admin.goto('/login');
+  const field = admin.locator('input[name=password]');
+  await expect(field).toHaveAttribute('type', 'password');
+  await expect(field).toHaveAttribute('autocomplete', 'current-password');
+  await expect(field).toHaveAttribute('name', 'password');
+  await field.fill(secret);
+  const show = admin.getByRole('button', { name: 'Show password' });
+  await expect(show).toHaveAttribute('aria-pressed', 'false');
+  // Keyboard: Tab from the field reaches the toggle, with a visible focus ring.
+  await field.focus();
+  await admin.keyboard.press('Tab');
+  await expect(show).toBeFocused();
+  const ring = await show.evaluate((el) => getComputedStyle(el).boxShadow);
+  expect(ring).not.toBe('none');
+  await admin.keyboard.press('Enter');
+  await expect(field).toHaveAttribute('type', 'text');
+  await expect(field).toHaveValue(secret);
+  const hide = admin.getByRole('button', { name: 'Hide password' });
+  await expect(hide).toHaveAttribute('aria-pressed', 'true');
+  await expect(field).toHaveAttribute('autocomplete', 'current-password');
+  await admin.keyboard.press('Space');
+  await expect(field).toHaveAttribute('type', 'password');
+  // Shown, then submitted (wrong password): hidden again.
+  await show.click();
+  await admin.getByLabel(/Username or student ID/).fill('nobody');
+  await admin.getByRole('button', { name: 'Sign in' }).click();
+  await expect(admin.getByRole('alert').first()).toBeVisible();
+  await expect(field).toHaveAttribute('type', 'password');
+  // Leaving and coming back: hidden.
+  await field.fill(secret);
+  await show.click();
+  await admin.goto('/login?x=1');
+  await expect(admin.locator('input[name=password]')).toHaveAttribute('type', 'password');
+  admin.removeAllListeners('console');
+  expect(logged.filter((l) => l.includes(secret))).toEqual([]);
+});
+
 test('H-01 sign-in: empty form and wrong password give clear messages', async () => {
   await admin.goto('/login');
   await admin.getByRole('button', { name: 'Sign in' }).click();
@@ -160,9 +201,27 @@ test('H-11 temporary password: shown once, gone after close and on Back', async 
   await admin.goto(`/admin/students/${studentRowId}`);
   await admin.getByRole('button', { name: 'Issue password' }).click();
   await admin.getByRole('alertdialog').getByRole('button', { name: 'Issue password' }).click();
-  const shown = admin.getByRole('dialog').locator('code');
+  const dialog = admin.getByRole('dialog');
+  const shown = dialog.locator('code');
   await expect(shown).toBeVisible();
+  // Hidden by default: dots only, and the password is not in the page.
+  await expect(shown).toHaveText(/^•{12,}$/);
+  const toggle = dialog.getByRole('button', { name: 'Show password' });
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  // Copy works while hidden.
+  await admin.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await dialog.getByRole('button', { name: 'Copy' }).click();
+  await expect(dialog.getByRole('button', { name: 'Copied' })).toBeVisible();
+  const copied = await admin.evaluate(() => navigator.clipboard.readText());
+  expect(copied).not.toMatch(/•/);
+  expect(await admin.content()).not.toContain(copied);
+  await toggle.click();
+  await expect(dialog.getByRole('button', { name: 'Hide password' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
   const temp = (await shown.textContent())!.trim();
+  expect(temp).toBe(copied);
   await admin.getByRole('button', { name: 'Done' }).click();
   await expect(admin.getByText(temp)).toHaveCount(0);
   expect(await admin.content()).not.toContain(temp);
@@ -194,6 +253,43 @@ test('H-02 forced change: cannot skip by URL; weak password shows the reason', a
   await student.locator('input[name=confirm]').fill(STUDENT.password);
   await student.getByRole('button', { name: 'Save and continue' }).click();
   await expect(student).toHaveURL(/\/student$/);
+});
+
+test('P2 change password: three fields, each with its own toggle', async () => {
+  const logged: string[] = [];
+  student.on('console', (m) => logged.push(m.text()));
+  await student.goto('/student/profile');
+  const fields = {
+    current: student.locator('input[name=currentPassword]'),
+    next: student.locator('input[name=newPassword]'),
+    confirm: student.locator('input[name=confirm]'),
+  };
+  await expect(fields.current).toHaveAttribute('autocomplete', 'current-password');
+  await expect(fields.next).toHaveAttribute('autocomplete', 'new-password');
+  await expect(fields.confirm).toHaveAttribute('autocomplete', 'new-password');
+  const toggles = student.getByRole('button', { name: 'Show password' });
+  await expect(toggles).toHaveCount(3);
+  for (const f of Object.values(fields)) await expect(f).toHaveAttribute('type', 'password');
+  await fields.next.fill('Visible-Only-Here-55');
+  // Toggle only the new password: the other two stay hidden.
+  await student.locator(`button[aria-controls="${await fields.next.getAttribute('id')}"]`).click();
+  await expect(fields.next).toHaveAttribute('type', 'text');
+  await expect(fields.current).toHaveAttribute('type', 'password');
+  await expect(fields.confirm).toHaveAttribute('type', 'password');
+  await student
+    .locator(`button[aria-controls="${await fields.confirm.getAttribute('id')}"]`)
+    .click();
+  await expect(fields.confirm).toHaveAttribute('type', 'text');
+  await expect(fields.current).toHaveAttribute('type', 'password');
+  // Submitting hides them all again (the current password is wrong, so nothing changes).
+  await fields.current.fill('Wrong-Current-Pass-99');
+  await fields.confirm.fill('Visible-Only-Here-55');
+  await student.getByRole('button', { name: 'Change password' }).click();
+  await expect(student.getByText('This is not your current password.')).toBeVisible();
+  for (const f of Object.values(fields)) await expect(f).toHaveAttribute('type', 'password');
+  student.removeAllListeners('console');
+  expect(logged.filter((l) => /Visible-Only-Here-55|Wrong-Current-Pass-99/.test(l))).toEqual([]);
+  await student.goto('/student');
 });
 
 test('H-03 student empty state before release', async () => {
@@ -230,6 +326,78 @@ test('H-06 / C-17 / F-06 results: totals match the API; a blank is not a zero', 
   const row = student.getByRole('row', { name: /Quiz 1/ }).first();
   expect(await row.innerText()).not.toMatch(/\b0\.00\b/);
   await noJunk(student, 'results');
+});
+
+test('G3 a grade appears only beside a COMPLETE final score', async () => {
+  const courses: {
+    offeringId: string;
+    title: string;
+    status: string;
+    finalGrade: string | null;
+  }[] = await call(student, 'GET', '/student/me/courses');
+  const complete = courses.filter((c) => c.status === 'COMPLETE');
+  expect(complete.length).toBeGreaterThan(0);
+  expect(complete.every((c) => /^[A-F]$/.test(c.finalGrade ?? ''))).toBe(true);
+  expect(courses.filter((c) => c.status !== 'COMPLETE').every((c) => c.finalGrade === null)).toBe(
+    true,
+  );
+  const grades = (page: Page) => page.locator('main:visible [data-slot=final-grade]');
+
+  // Student panel: one grade per COMPLETE course card, none in the summary or chart.
+  await student.goto('/student');
+  await expect(grades(student)).toHaveCount(complete.length);
+  for (const text of await grades(student).allInnerTexts()) expect(text).toMatch(/^Grade [A-F]$/);
+  // The Overall card's only grade is beside the highest final score (S2).
+  const overallCard = student.locator('section', {
+    has: student.getByRole('heading', { name: 'Overall' }),
+  });
+  await expect(overallCard.getByText(/Grade/)).toHaveCount(0);
+  await expect(overallCard.locator('[data-slot=highest-grade]')).toHaveCount(1);
+
+  // Results page: Logic (78.90) shows C as text; BCU is in progress and shows none.
+  await student.goto('/student/results');
+  await expect(student.getByRole('button', { name: /Logic/ })).toContainText('78.90');
+  await expect(student.getByRole('button', { name: /Logic/ })).toContainText('Grade C');
+  const bcu = student.getByRole('button', { name: /BCU/ });
+  await expect(bcu.locator('[data-slot=final-grade]')).toHaveCount(0);
+  await bcu.click();
+  // Component marks and contributions never carry one.
+  await expect(student.getByRole('table').getByText(/Grade/)).toHaveCount(0);
+
+  // Subject page.
+  const logic = complete.find((c) => /Logic/.test(c.title))!;
+  await student.goto(`/student/courses/${logic.offeringId}`);
+  await expect(grades(student)).toHaveText(['Grade C']);
+  await expect(student.getByRole('table').getByText(/Grade/)).toHaveCount(0);
+
+  // Admin view of the student.
+  await admin.goto(`/admin/students/${studentRowId}`);
+  await expect(admin.getByRole('button', { name: /Logic/ })).toContainText('Grade C');
+  await expect(
+    admin.getByRole('button', { name: /BCU/ }).locator('[data-slot=final-grade]'),
+  ).toHaveCount(0);
+});
+
+test('S1 dashboard Overall: courses complete and the latest term highest, no average', async () => {
+  const summary = await call(student, 'GET', '/student/me/summary');
+  const highest = summary.latestTermHighest;
+  expect(highest).not.toBeNull();
+  await student.goto('/student');
+  const card = student.locator('section', {
+    has: student.getByRole('heading', { name: 'Overall' }),
+  });
+  await expect(card).toContainText('Courses complete');
+  await expect(card).toContainText(
+    `${summary.overall.completedCourses} / ${summary.overall.totalCourses}`,
+  );
+  await expect(card).not.toContainText(/average/i);
+  await expect(card).not.toContainText(/credits/i);
+  await expect(card).toContainText('Highest final score of the latest term');
+  const line = card.locator('[data-slot=highest]');
+  await expect(line).toContainText(`${highest.finalScore} (${highest.finalGrade})`);
+  for (const s of highest.subjects) await expect(line).toContainText(s.title);
+  await expect(line).toContainText(`Term ${highest.termNumber}`);
+  await noJunk(student, 'dashboard');
 });
 
 test('H-04 student error states: 500, 503, offline', async () => {
@@ -288,6 +456,64 @@ test('H-09 / E-01 Sync Center: Term follows Generation; job page, issues table',
   await admin.goto(`/admin/sync/${jobId}`);
   await expect(admin.getByRole('heading', { name: 'What changed' })).toBeVisible();
   await noJunk(admin, 'job page');
+});
+
+test('R1 Sync Center: confirm, then Hide and Release from the per-source list', async () => {
+  // The term was released earlier (G-05): the confirmation notes it instead of offering release.
+  await admin.goto('/admin/sync');
+  await admin
+    .getByLabel(/^Generation/)
+    .first()
+    .selectOption({ label: 'Generation 2027' });
+  await admin.getByRole('button', { name: 'Start sync' }).click();
+  const confirm = admin.getByRole('dialog');
+  await expect(confirm).toContainText('1 workbook will be read');
+  await expect(confirm.locator('[data-slot=released-note]')).toContainText(
+    'updated scores become visible to students after this sync',
+  );
+  await expect(confirm.getByLabel('Release scores after sync')).toHaveCount(0);
+  await confirm.getByRole('button', { name: 'Start sync' }).click();
+  await expect(admin).toHaveURL(/\/admin\/sync\/[0-9a-f-]+$/);
+  await expect(admin.getByText('Succeeded', { exact: true }).first()).toBeVisible({
+    timeout: 30_000,
+  });
+
+  const list = admin.locator('section', {
+    has: admin.getByRole('heading', { name: 'Per-source jobs' }),
+  });
+  await expect(list.getByText('Released', { exact: true })).toBeVisible();
+  const expectedStudents = (await call(admin, 'GET', `/admin/sync/plan?scope=ALL`))[0].students;
+
+  // Hide one source: confirmation with the number of students, then the student sees nothing.
+  await list.getByRole('button', { name: /^Hide scores/ }).click();
+  const hide = admin.getByRole('alertdialog');
+  await expect(hide.locator('[data-slot=students-affected]')).toHaveText(
+    `${expectedStudents} ${expectedStudents === 1 ? 'student' : 'students'} affected.`,
+  );
+  await hide.getByRole('button', { name: 'Hide scores' }).click();
+  await expect(list.getByText('Hidden', { exact: true })).toBeVisible();
+  await student.goto('/student');
+  await expect(student.getByText('No results yet')).toBeVisible();
+  await expect(student.locator('[data-slot=final-grade]')).toHaveCount(0);
+  await student.goto('/student/results');
+  await expect(student.getByRole('button', { name: /Logic/ })).toHaveCount(0);
+
+  // Bulk: select by keyboard, Release selected, confirm.
+  const box = list.getByRole('checkbox', { name: /^Select Generation 2027/ });
+  await box.focus();
+  await admin.keyboard.press('Space');
+  await expect(box).toBeChecked();
+  await list.getByRole('button', { name: 'Release selected' }).click();
+  await admin.getByRole('alertdialog').getByRole('button', { name: 'Release scores' }).click();
+  await expect(list.getByText('Released', { exact: true })).toBeVisible();
+  await student.goto('/student/results');
+  await expect(student.getByRole('button', { name: /Logic/ })).toContainText('78.90');
+
+  const audit = await call(admin, 'GET', '/admin/audit-logs?pageSize=10');
+  const actions = (audit.data as { action: string }[]).map((e) => e.action);
+  expect(actions).toContain('source.hidden');
+  expect(actions).toContain('source.released');
+  await noJunk(admin, 'job page with release controls');
 });
 
 test('H-10 Edit term: an invalid replacement shows a message and changes nothing', async () => {

@@ -3,7 +3,11 @@ import type { Prisma } from '@ssrs/database';
 import {
   computeCourseResult,
   computeTermSummary,
+  gradeFor,
+  isUsableGradeScale,
+  latestTermHighest,
   type CourseResult,
+  type GradeBandInput,
   type CourseResultView,
   type StudentCourseListItem,
   type StudentProfileView,
@@ -19,8 +23,8 @@ import { RedisService } from '../infra/redis.service.js';
 export const RESULTS_CACHE_TTL_SECONDS = 600;
 
 /** docs/architecture.md §6. The version segment makes stale entries unreachable. */
-/** Bump the `v3` segment whenever the cached view's shape changes (v3: term history on the profile). */
-export const RESULTS_CACHE_PREFIX = 'ssrs:v3:results:';
+/** Bump the segment whenever the cached view's shape changes (v4: `finalGrade`). */
+export const RESULTS_CACHE_PREFIX = 'ssrs:v4:results:';
 
 export function resultsCacheKey(generationId: string, version: number, studentId: string): string {
   return `${RESULTS_CACHE_PREFIX}gen:${generationId}:v${version}:student:${studentId}`;
@@ -32,7 +36,17 @@ const STUDENT_SELECT = {
   fullName: true,
   gender: true,
   className: true,
-  generation: { select: { id: true, code: true, name: true, cacheVersion: true } },
+  generation: {
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      cacheVersion: true,
+      gradeScale: {
+        select: { confirmed: true, bands: { select: { letter: true, minTotal: true } } },
+      },
+    },
+  },
   terms: {
     select: {
       term: { select: { number: true, name: true } },
@@ -82,10 +96,12 @@ interface AssembledResults {
 interface AssembleOptions {
   /** Admin view: hidden offerings and withdrawn enrollments, with `admin` metadata. */
   admin: boolean;
+  /** The generation's confirmed letter-grade bands; null gives no grades at all. */
+  bands: readonly GradeBandInput[] | null;
 }
 
 function toProfile(s: StudentRow): StudentProfileView {
-  const { cacheVersion: _version, ...generation } = s.generation;
+  const { cacheVersion: _version, gradeScale: _scale, ...generation } = s.generation;
   return {
     id: s.id,
     studentCode: s.studentCode,
@@ -134,7 +150,7 @@ export class ResultsService {
     const cached = await this.cacheGet(key);
     if (cached) return cached;
 
-    const view = await this.assemble(student, { admin: false });
+    const view = await this.assemble(student, { admin: false, bands: this.bandsOf(student) });
     await this.cacheSet(key, view);
     return view;
   }
@@ -146,7 +162,20 @@ export class ResultsService {
       select: STUDENT_SELECT,
     });
     if (!student) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Student not found' });
-    return (await this.assemble(student, { admin: true })).results;
+    return (await this.assemble(student, { admin: true, bands: this.bandsOf(student) })).results;
+  }
+
+  /**
+   * Letters come only from a confirmed, usable scale. Without one there is no grade (never a
+   * default letter) and an error is logged, by generation id only.
+   */
+  private bandsOf(student: StudentRow): readonly GradeBandInput[] | null {
+    const scale = student.generation.gradeScale;
+    if (scale?.confirmed && isUsableGradeScale(scale.bands)) return scale.bands;
+    this.logger.error(
+      `Generation ${student.generation.id} has no confirmed, usable grade scale: grades are not shown`,
+    );
+    return null;
   }
 
   async profile(userId: string): Promise<StudentProfileView> {
@@ -159,6 +188,8 @@ export class ResultsService {
       student: results.student,
       terms: results.terms.map((t) => ({ number: t.number, name: t.name, summary: t.summary })),
       overall,
+      // Student views hold released subjects and ENROLLED enrollments only.
+      latestTermHighest: latestTermHighest(results.terms),
     };
   }
 
@@ -173,6 +204,7 @@ export class ResultsService {
         credits: c.credits,
         status: c.status,
         finalScore: c.finalScore,
+        finalGrade: c.finalGrade,
       })),
     );
   }
@@ -344,6 +376,8 @@ function computeCourse(
       };
     }),
     finalScore: result.finalScore,
+    // Only beside a COMPLETE subject's final score (finalScore is null otherwise).
+    finalGrade: result.status === 'COMPLETE' ? gradeFor(options.bands, result.finalScore) : null,
     attemptedWeight: result.attemptedWeight,
     earnedSoFar: result.earnedSoFar,
     teacherComment: enrollment.teacherComment,

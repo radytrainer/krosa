@@ -4,9 +4,10 @@ import { ArrowRight } from 'lucide-react';
 import Link from 'next/link';
 import { PageHeader, Section } from '@/components/app/page-header';
 import { CourseStatusPill } from '@/components/app/status';
+import { FinalGrade } from '@/components/results/course-result';
 import { EmptyState, ErrorState, LoadingRows } from '@/components/app/states';
 import { TermChart } from '@/components/results/term-chart';
-import { TermSummaryBar } from '@/components/results/term-summary';
+import { OverallSummary } from '@/components/results/overall-summary';
 import { buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { trimDecimal } from '@/lib/format';
@@ -42,7 +43,7 @@ export default function StudentDashboardPage() {
       ) : (
         <div className="space-y-8">
           <Section title="Overall">
-            <TermSummaryBar summary={overall} label="Overall average" />
+            <OverallSummary summary={summary.data} />
           </Section>
 
           <Card>
@@ -80,6 +81,7 @@ export default function StudentDashboardPage() {
                           {c.finalScore ? (
                             <span className="text-lg font-semibold tabular-nums">
                               {c.finalScore}
+                              <FinalGrade course={c} />
                             </span>
                           ) : null}
                         </CardContent>

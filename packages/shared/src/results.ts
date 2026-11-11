@@ -49,6 +49,11 @@ export interface CourseResultView {
   criteria: CriterionResultView[];
   /** Only when status is COMPLETE. */
   finalScore: string | null;
+  /**
+   * Letter for `finalScore` (official scale, docs/decisions.md G1–G4). Only when status is
+   * COMPLETE; null otherwise or when the generation has no usable scale. No other figure has one.
+   */
+  finalGrade: string | null;
   attemptedWeight: string;
   earnedSoFar: string;
   /** The teacher's comment from the sheet, as plain text. Never part of any calculation. */
@@ -82,6 +87,22 @@ export interface StudentSummaryView {
   terms: { number: number; name: string; summary: TermSummary }[];
   /** Credit-weighted across all terms. */
   overall: TermSummary;
+  /** Null when the student has no released subject. See latestTermHighest. */
+  latestTermHighest: LatestTermHighestView | null;
+}
+
+/**
+ * The highest final score in the latest term with a released subject (decisions.md S1–S3).
+ * `finalScore` is null when that term has no COMPLETE subject yet; then `subjects` is empty.
+ */
+export interface LatestTermHighestView {
+  termNumber: number;
+  termName: string;
+  finalScore: string | null;
+  /** Letter beside that final score (G3); null without a final score or a usable scale. */
+  finalGrade: string | null;
+  /** Every subject with that score (ties), in the term's order. */
+  subjects: { offeringId: string; courseCode: string; title: string }[];
 }
 
 export interface StudentCourseListItem {
@@ -92,4 +113,6 @@ export interface StudentCourseListItem {
   credits: string;
   status: CourseStatus;
   finalScore: string | null;
+  /** Same rule as CourseResultView.finalGrade. */
+  finalGrade: string | null;
 }

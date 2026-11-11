@@ -50,6 +50,39 @@ export class RequestSyncDto {
   @ValidateIf((o: RequestSyncDto) => o.scope === 'SOURCE' && o.previewId !== undefined)
   @IsUUID()
   previewId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Release each synced term to students once its sync succeeds. Default false.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  releaseAfterSync?: boolean;
+}
+
+/** What a Sync Center sync would cover, for its confirmation. Same targets as POST /sync. */
+export class SyncPlanQueryDto {
+  @ApiProperty({ enum: ['TERM', 'GENERATION', 'ALL'] })
+  @IsEnum(['TERM', 'GENERATION', 'ALL'])
+  scope!: 'TERM' | 'GENERATION' | 'ALL';
+
+  @ApiPropertyOptional({ description: 'Required for scopes GENERATION and TERM' })
+  @ValidateIf((o: SyncPlanQueryDto) => o.scope === 'GENERATION' || o.scope === 'TERM')
+  @IsUUID()
+  generationId?: string;
+
+  @ApiPropertyOptional({ description: 'Required for scope TERM' })
+  @ValidateIf((o: SyncPlanQueryDto) => o.scope === 'TERM')
+  @IsUUID()
+  termId?: string;
+
+  @ApiPropertyOptional({ description: 'Scope ALL only' })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) => (value === undefined ? value : Number(value)))
+  @IsInt()
+  @Min(1)
+  @Max(TERMS_PER_GENERATION)
+  termNumber?: number;
 }
 
 const STATUSES = [

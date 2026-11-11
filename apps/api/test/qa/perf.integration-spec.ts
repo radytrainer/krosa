@@ -140,7 +140,7 @@ describe('QA G-15 / G-16 performance at 300 x 5', () => {
     const cached = await hammer(600, 20, (i) =>
       sessions[i % sessions.length]!.get(`${V1}/student/me/results`).expect(200),
     );
-    await ctx.redis.keys('ssrs:v3:results:*').then((k) => (k.length ? ctx.redis.del(...k) : 0));
+    await ctx.redis.keys('ssrs:v4:results:*').then((k) => (k.length ? ctx.redis.del(...k) : 0));
     const admin = await hammer(300, 20, (i) =>
       h.admin.get(`${ADMIN_V1}/students/${students[i % students.length]!.id}/results`).expect(200),
     );
