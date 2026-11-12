@@ -45,6 +45,18 @@ pnpm test:integration      # needs TEST_DATABASE_URL (name must end in _test)
 E2E_CHANNEL=msedge pnpm test:e2e
 ```
 
+## Hard rules
+
+- Never write to the ssrs database (migrate deploy, migrate dev, db push, psql writes, seeds,
+  resets) without my explicit approval in this session. ssrs contains real student data. Tests run
+  only against ssrs_test or a disposable copy.
+- Every command that writes to a database goes through `scripts/db-guard.sh`: it stops on the first
+  error, refuses an empty database name or URL, refuses unless the URL names exactly the intended
+  database, and prints the target host and database first.
+- Never wrap a database or git command inside `bash -c`, `sh -c` or another script to avoid a
+  permission prompt. Permission rules match the command as written, so a wrapped command would
+  slip past them.
+
 ## Rules
 
 - **The `ALL` tab is the roster and the authority**: student ID, name, gender, class, and from

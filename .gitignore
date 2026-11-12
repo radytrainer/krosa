@@ -32,3 +32,7 @@ Thumbs.db
 *.log
 backups/
 .deploy-history
+
+# Database dumps and backups (may hold real student data)
+*.dump
+*.sql.gz

@@ -176,6 +176,25 @@ See the open items in `delivery-plan-2027.md`. A7 (no `EX` marks) is implemented
 
 Nothing blocks development. **A live connect through the app needs a real sheet URL.** Automated tests use the in-memory reader, which follows the same contract. Error mapping and retries are unit-tested. Google accepted the key on 2026-10-30, with a made-up ID returning `SHEET_NOT_FOUND`.
 
+## Incident: a migration applied to the dev database without approval (2026-11-12)
+
+- **What happened:** while testing migration `20261113090000_grade_scale_2026_11` on a copy of the
+  dev database, creating the copy failed (`ssrs` had open sessions). The command chain went on: the
+  copy's name variable was empty, so the URL ended in `/` with no database name, and PostgreSQL
+  defaulted to the user's own database, `ssrs`. `prisma migrate deploy` applied the migration to
+  `ssrs` at 14:01 (Asia/Phnom_Penh) without the approval it needed.
+- **Effect:** only what the migration writes: the grade bands of the one generation were replaced
+  by the new scale, its scale marked confirmed, its cache version bumped, and two database functions
+  added or replaced. No marks, scores, offerings or visibility changed. Kept by decision (B); not
+  reverted.
+- **Cause:** an empty database name defaulted to `ssrs`; the guard that checked the target name was
+  left out of that command; the chain did not stop on the first error.
+- **Guardrails added:** `scripts/db-guard.sh` runs every database write: it stops on the first
+  error, refuses an empty name or URL, refuses unless the URL names exactly the intended database,
+  refuses `ssrs` without explicit approval, and prints the target first. CLAUDE.md has a hard rule
+  against writing to `ssrs` without approval. Copies for testing are built from a dump, so nobody
+  has to stop using `ssrs`.
+
 ## Term enrollments, part 3c: admin screens and history (2026-11-04)
 
 API (`apps/api/src/programs`): programs, a term's class lists (edit; a class in two programs or a
