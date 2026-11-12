@@ -230,6 +230,102 @@ test('5c. a first sheet: after its sync, no page says it was never synced, witho
   await admin.goto(jobPage); // where the next step expects the admin
 });
 
+/** The admin's top-level sync jobs, as the Sync Center counts them. */
+async function jobCount(): Promise<number> {
+  const res = await admin.request.get('/api/v1/admin/sync?pageSize=1');
+  expect(res.ok()).toBe(true);
+  return ((await res.json()) as { meta: { total: number } }).meta.total;
+}
+
+const startDialog = () => admin.getByRole('dialog', { name: 'Start this sync?' });
+
+/** Sync Center: Generation 2027, Term 1, Start sync. Returns the open dialog. */
+async function openStartDialog() {
+  await nav(admin, 'Sync center').click();
+  // The form's own fields (the jobs filter below also has a "Generation" select).
+  const card = admin.locator('[data-slot=card]', { hasText: 'Start a synchronization' });
+  await card.getByLabel(/^Generation/).selectOption({ label: 'Generation 2027' });
+  await card.getByLabel(/^Term/).selectOption({ label: 'Term 1' });
+  await card.getByRole('button', { name: 'Start sync' }).click();
+  await expect(startDialog()).toBeVisible();
+  // The workbook it reads, with its subject and student counts.
+  await expect(startDialog()).toContainText(/Generation 2027, Term 1: \d+ subjects?, \d+ students/);
+  return startDialog();
+}
+
+/** Sync Center as shown now: loaded, and no confirm dialog (it may only open from a click). */
+async function expectNoStartDialog(page = admin) {
+  await expect(page.getByRole('heading', { name: 'Workbooks by term' })).toBeVisible();
+  await page.waitForTimeout(500); // a dialog restored from an earlier visit appears at once
+  await expect(page.getByRole('dialog', { name: 'Start this sync?' })).toHaveCount(0);
+}
+
+test('5d. the "Start this sync?" dialog opens only from a click on this visit', async () => {
+  // Confirm (with a double-click): one job, then the job page.
+  const before = await jobCount();
+  const dialog = await openStartDialog();
+  await dialog.getByRole('button', { name: 'Start sync' }).dblclick();
+  await expect(admin).toHaveURL(/\/admin\/sync\/[0-9a-f-]+$/);
+  await expect(admin.getByText('Succeeded', { exact: true }).first()).toBeVisible({
+    timeout: 60_000,
+  });
+  expect(await jobCount()).toBe(before + 1);
+
+  // Back to the Sync Center through the sidebar, from another page.
+  await nav(admin, 'Dashboard').click();
+  await expect(admin).toHaveURL(/\/admin$/);
+  await nav(admin, 'Sync center').click();
+  await expectNoStartDialog();
+
+  // Browser Back from the job page.
+  const again = await openStartDialog();
+  await again.getByRole('button', { name: 'Start sync' }).click();
+  await expect(admin).toHaveURL(/\/admin\/sync\/[0-9a-f-]+$/);
+  await expect(admin.getByText('Succeeded', { exact: true }).first()).toBeVisible({
+    timeout: 60_000,
+  });
+  await admin.goBack();
+  await expect(admin).toHaveURL(/\/admin\/sync$/);
+  await expectNoStartDialog();
+
+  // A refresh, and a new tab.
+  await admin.reload();
+  await expectNoStartDialog();
+  const tab = await admin.context().newPage();
+  await tab.goto('/admin/sync');
+  await expectNoStartDialog(tab);
+  await tab.close();
+
+  // Switching to another browser tab and back is not leaving the page: the dialog stays open.
+  const kept = await openStartDialog();
+  const other = await admin.context().newPage();
+  await other.goto('/admin');
+  await other.bringToFront();
+  await admin.evaluate(`(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+  })()`);
+  await admin.bringToFront();
+  await admin.evaluate(`(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+  })()`);
+  await other.close();
+  await admin.waitForTimeout(500);
+  await expect(kept).toBeVisible();
+  await expect(kept).toContainText(/Generation 2027, Term 1: \d+ subjects?, \d+ students/);
+  await kept.getByRole('button', { name: 'Cancel' }).click();
+
+  // Cancel, leave, return.
+  const cancelled = await openStartDialog();
+  await cancelled.getByRole('button', { name: 'Cancel' }).click();
+  await expect(startDialog()).toHaveCount(0);
+  await nav(admin, 'Dashboard').click();
+  await nav(admin, 'Sync center').click();
+  await expectNoStartDialog();
+  expect(await jobCount()).toBe(before + 2);
+});
+
 test('6. issues a temporary password to a student', async () => {
   await nav(admin, 'Students').click();
   await admin.getByRole('link', { name: STUDENT.name }).click();

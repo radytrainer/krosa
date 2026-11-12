@@ -5,6 +5,7 @@ import { useId, useState } from 'react';
 import { ReleaseAfterSyncOption, useReleaseStatus } from '@/components/admin/source-release';
 import { useStartSync, type SyncTarget } from '@/components/admin/use-start-sync';
 import { ErrorState, LoadingRows } from '@/components/app/states';
+import { useVisitState } from '@/components/app/use-visit-state';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -92,7 +93,8 @@ function ProblemList({ preview }: { preview: SheetPreview }) {
 
 /** "Sync now" for an active sheet: reads the sheet first and shows what the sync would do. */
 export function SyncActiveSheet({ sourceId, disabled }: { sourceId: string; disabled: boolean }) {
-  const [open, setOpen] = useState(false);
+  // Open only after a click on this visit: never restored when the admin comes back.
+  const [open, setOpen] = useVisitState(false);
   const [acknowledged, setAcknowledged] = useState(false);
   const [release, setRelease] = useState(false);
   const status = useReleaseStatus(open ? [sourceId] : []);
@@ -108,12 +110,10 @@ export function SyncActiveSheet({ sourceId, disabled }: { sourceId: string; disa
       ),
     {
       onSuccess: (preview) => {
-        startSync.mutate({
-          scope: 'SOURCE',
-          sourceId,
-          previewId: preview.id,
-          releaseAfterSync: release,
-        });
+        startSync.mutate(
+          { scope: 'SOURCE', sourceId, previewId: preview.id, releaseAfterSync: release },
+          { onSuccess: () => setOpen(false) },
+        );
       },
     },
   );
@@ -204,7 +204,8 @@ export function SyncActiveSheet({ sourceId, disabled }: { sourceId: string; disa
  * "Release scores after sync" option.
  */
 export function SyncPendingSheet({ sourceId, disabled }: { sourceId: string; disabled: boolean }) {
-  const [open, setOpen] = useState(false);
+  // Open only after a click on this visit: never restored when the admin comes back.
+  const [open, setOpen] = useVisitState(false);
   const [release, setRelease] = useState(false);
   const status = useReleaseStatus(open ? [sourceId] : []);
   const startSync = useStartSync();
@@ -243,7 +244,10 @@ export function SyncPendingSheet({ sourceId, disabled }: { sourceId: string; dis
             <Button
               disabled={startSync.isPending || !status.data}
               onClick={() =>
-                startSync.mutate({ scope: 'SOURCE', sourceId, releaseAfterSync: release })
+                startSync.mutate(
+                  { scope: 'SOURCE', sourceId, releaseAfterSync: release },
+                  { onSuccess: () => setOpen(false) },
+                )
               }
             >
               Sync now
@@ -279,7 +283,8 @@ export function SyncPlanButton({
   disabled?: boolean;
   label?: string;
 }) {
-  const [open, setOpen] = useState(false);
+  // Open only after a click on this visit: never restored when the admin comes back.
+  const [open, setOpen] = useVisitState(false);
   const [release, setRelease] = useState(false);
   const startSync = useStartSync();
   const plan = useApi<SourceReleaseView[]>(
@@ -342,7 +347,13 @@ export function SyncPlanButton({
             </Button>
             <Button
               disabled={startSync.isPending || !rows.length || !target}
-              onClick={() => target && startSync.mutate({ ...target, releaseAfterSync: release })}
+              onClick={() =>
+                target &&
+                startSync.mutate(
+                  { ...target, releaseAfterSync: release },
+                  { onSuccess: () => setOpen(false) },
+                )
+              }
             >
               Start sync
             </Button>
