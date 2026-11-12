@@ -5,14 +5,15 @@ import { Suspense } from 'react';
 import { PageHeader } from '@/components/app/page-header';
 import { ErrorState, LoadingRows, PageLoading } from '@/components/app/states';
 import { ResultsTabs, defaultTerm } from '@/components/results/results-tabs';
-import { useApi } from '@/lib/query';
+import { useFreshApi } from '@/lib/query';
 import type { StudentResultsView } from '@/lib/types';
 
 function Results() {
   const params = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
-  const { data, error, refetch } = useApi<StudentResultsView>('/student/me/results');
+  // Released results can be hidden at any time: never shown from an earlier visit.
+  const { data, error, refetch } = useFreshApi<StudentResultsView>('/student/me/results');
 
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
   if (!data) return <LoadingRows rows={5} />;

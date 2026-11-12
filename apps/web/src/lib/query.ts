@@ -36,6 +36,30 @@ export function useApi<T>(
   });
 }
 
+/**
+ * GET for data that can change behind the viewer's back (a student's released results, a sheet
+ * waiting to be synced): asked for on every visit, never kept after the page closes, and `data` is
+ * only what this visit fetched, so nothing cached is ever shown first, not even for a moment.
+ * Keys are the API paths, as for useApi.
+ */
+export function useFreshApi<T>(
+  path: string | null,
+  options: {
+    refetchOnWindowFocus?: boolean;
+    /** Poll while this returns a number of milliseconds (e.g. while a sync runs). */
+    refetchInterval?: UseQueryOptions<T>['refetchInterval'];
+  } = {},
+) {
+  const query = useApi<T>(path, {
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: options.refetchOnWindowFocus ? 'always' : false,
+    refetchInterval: options.refetchInterval ?? false,
+  });
+  return { ...query, data: query.isFetchedAfterMount ? query.data : undefined };
+}
+
 /** `/admin/sync/abc?x=1` → `['/admin', '/sync', '/abc', '?x=1']`, so prefixes match parents. */
 export function apiKey(path: string): string[] {
   const [pathname = '', search] = path.split('?');

@@ -6,17 +6,19 @@ import { PageHeader, Section } from '@/components/app/page-header';
 import { CourseStatusPill } from '@/components/app/status';
 import { FinalGrade } from '@/components/results/course-result';
 import { EmptyState, ErrorState, LoadingRows } from '@/components/app/states';
+import { UrlNotice } from '@/components/app/url-notice';
 import { TermChart } from '@/components/results/term-chart';
 import { OverallSummary } from '@/components/results/overall-summary';
 import { buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { trimDecimal } from '@/lib/format';
-import { useApi } from '@/lib/query';
+import { useFreshApi } from '@/lib/query';
 import type { StudentCourseListItem, StudentSummaryView } from '@/lib/types';
 
-export default function StudentDashboardPage() {
-  const summary = useApi<StudentSummaryView>('/student/me/summary');
-  const courses = useApi<StudentCourseListItem[]>('/student/me/courses');
+function Dashboard() {
+  // Released results can be hidden at any time: never shown from an earlier visit.
+  const summary = useFreshApi<StudentSummaryView>('/student/me/summary');
+  const courses = useFreshApi<StudentCourseListItem[]>('/student/me/courses');
 
   if (summary.error) return <ErrorState error={summary.error} onRetry={() => summary.refetch()} />;
   if (!summary.data) return <LoadingRows rows={4} />;
@@ -94,6 +96,16 @@ export default function StudentDashboardPage() {
           </Section>
         </div>
       )}
+    </>
+  );
+}
+
+export default function StudentDashboardPage() {
+  return (
+    <>
+      {/* Shown in every state of the page, also while it loads. */}
+      <UrlNotice />
+      <Dashboard />
     </>
   );
 }
