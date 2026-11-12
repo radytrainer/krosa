@@ -22,15 +22,32 @@ export const OFFICIAL_GRADE_BANDS: readonly {
   letter: string;
   minTotal: string;
   isPass: boolean;
+  /** The colour of a final score with this letter (decisions.md G7). */
+  tone: GradeTone;
 }[] = [
-  { letter: 'A', minTotal: '85', isPass: true },
-  { letter: 'B+', minTotal: '80', isPass: true },
-  { letter: 'B', minTotal: '70', isPass: true },
-  { letter: 'C+', minTotal: '65', isPass: true },
-  { letter: 'C', minTotal: '60', isPass: true },
-  { letter: 'D', minTotal: '50', isPass: true },
-  { letter: 'E', minTotal: '0', isPass: false },
+  { letter: 'A', minTotal: '85', isPass: true, tone: 'good' },
+  { letter: 'B+', minTotal: '80', isPass: true, tone: 'good' },
+  { letter: 'B', minTotal: '70', isPass: true, tone: 'good' },
+  { letter: 'C+', minTotal: '65', isPass: true, tone: 'good' },
+  { letter: 'C', minTotal: '60', isPass: true, tone: 'caution' },
+  { letter: 'D', minTotal: '50', isPass: true, tone: 'caution' },
+  { letter: 'E', minTotal: '0', isPass: false, tone: 'fail' },
 ];
+
+/**
+ * How a final score and its letter are coloured (decisions.md G7): `good` green (A, B+, B, C+),
+ * `caution` yellow (C, D), `fail` red (E). Screens colour by tone and never name letters; the
+ * letter is always shown as text too, so colour is never the only signal. The API returns only the
+ * letter.
+ */
+export type GradeTone = 'good' | 'caution' | 'fail';
+
+const TONE_BY_LETTER = new Map(OFFICIAL_GRADE_BANDS.map((b) => [b.letter, b.tone]));
+
+/** The tone of a grade letter, or null without one (no final score, no usable scale). */
+export function gradeTone(letter: string | null | undefined): GradeTone | null {
+  return (letter && TONE_BY_LETTER.get(letter)) || null;
+}
 
 /**
  * A usable scale has at least one band, a band starting at 0, thresholds within 0–100 and no

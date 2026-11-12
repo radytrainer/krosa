@@ -394,6 +394,149 @@ test('9. an administrator releases the term and the student sees it at once', as
   await expect(student.locator('blockquote b')).toHaveCount(0);
 });
 
+/**
+ * Measures, in the browser, the text colour of each element matching `selector` against the
+ * colour actually behind it (its own and its ancestors' backgrounds, composited on a canvas), and
+ * returns the WCAG contrast ratio with the element's text. CSS colours in any syntax (oklch,
+ * color-mix) are resolved by the canvas.
+ */
+const CONTRAST = (selector: string) => `(() => {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 1;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const pixel = (fills) => {
+    ctx.clearRect(0, 0, 1, 1);
+    for (const f of fills) { ctx.fillStyle = f; ctx.fillRect(0, 0, 1, 1); }
+    return ctx.getImageData(0, 0, 1, 1).data;
+  };
+  const lum = ([r, g, b]) => {
+    const c = [r, g, b].map((v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  return [...document.querySelectorAll(${JSON.stringify(selector)})]
+    .filter((el) => el.checkVisibility())
+    .map((el) => {
+      const backgrounds = [];
+      for (let n = el; n; n = n.parentElement) backgrounds.unshift(getComputedStyle(n).backgroundColor);
+      const bg = pixel(['#fff', ...backgrounds]);
+      const fg = pixel(['rgb(' + bg[0] + ',' + bg[1] + ',' + bg[2] + ')', getComputedStyle(el).color]);
+      const [hi, lo] = [lum(fg), lum(bg)].sort((a, b) => b - a);
+      return { tone: el.dataset.gradeTone ?? null, text: el.textContent.trim(), ratio: (hi + 0.05) / (lo + 0.05),
+               color: 'rgb(' + fg[0] + ',' + fg[1] + ',' + fg[2] + ')' };
+    });
+})()`;
+
+type Measured = { tone: string | null; text: string; ratio: number; color: string };
+
+/** Every visible final score and grade on the page: the expected tone, the letter, 4.5:1 or more. */
+async function expectToned(page: Page, tone: string, letter: string, score: string) {
+  const all = (await page.evaluate(
+    CONTRAST(
+      '[data-slot=final-score], [data-slot=final-grade], [data-slot=top-scoring-score], [data-slot=top-scoring-grade], [data-slot=highest-score], [data-slot=highest-grade]',
+    ),
+  )) as Measured[];
+  expect(all.length, 'final scores and grades on the page').toBeGreaterThan(0);
+  for (const m of all) {
+    expect(m.tone, m.text).toBe(tone);
+    expect(m.ratio, `${m.text} contrast`).toBeGreaterThanOrEqual(4.5);
+  }
+  // The letter is always there as text, never colour alone; the score is the same colour.
+  const texts = all.map((m) => m.text);
+  expect(texts.some((t) => t === `Grade ${letter}` || t === `(${letter})`)).toBe(true);
+  expect(texts).toContain(score);
+  return all;
+}
+
+/** Sets every Logic mark of the student to `mark` in the test database (final score = mark). */
+async function setLogicMarks(mark: number | null, restore?: { id: string; mark: unknown }[]) {
+  loadRootEnv();
+  const prisma = createPrismaClient({
+    connectionString: process.env['TEST_DATABASE_URL']!,
+    poolMax: 1,
+  });
+  try {
+    const where = {
+      enrollment: { student: { studentCode: STUDENT.id }, offering: { title: 'Logic' } },
+    };
+    const before = await prisma.assessmentScore.findMany({
+      where,
+      select: { id: true, mark: true },
+    });
+    if (restore) {
+      for (const r of restore) {
+        await prisma.assessmentScore.update({
+          where: { id: r.id },
+          data: { mark: r.mark as never },
+        });
+      }
+    } else {
+      await prisma.assessmentScore.updateMany({ where, data: { mark: mark! } });
+    }
+    // Cached student results carry the grade: make them stale, as a sync would.
+    await prisma.generation.updateMany({ data: { cacheVersion: { increment: 1 } } });
+    return before;
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+test('9a. final scores and grades are coloured by tone, readable in light and dark', async ({}, info) => {
+  await nav(admin, 'Students').click();
+  await admin.getByRole('link', { name: STUDENT.name }).click();
+  await expect(admin.getByRole('heading', { name: STUDENT.name })).toBeVisible();
+  const adminStudentPage = admin.url();
+
+  const cases = [
+    { mark: null, tone: 'good', letter: 'B', score: '78.90' }, // as synced
+    { mark: 64, tone: 'caution', letter: 'C', score: '64.00' },
+    { mark: 40, tone: 'fail', letter: 'E', score: '40.00' },
+  ] as const;
+  let original: { id: string; mark: unknown }[] = [];
+  try {
+    for (const c of cases) {
+      if (c.mark !== null) {
+        const before = await setLogicMarks(c.mark);
+        if (original.length === 0) original = before;
+      }
+      for (const theme of ['light', 'dark'] as const) {
+        const dark = theme === 'dark';
+        const setTheme = (page: Page) =>
+          page.evaluate(`document.documentElement.classList.toggle('dark', ${dark})`);
+        // Student: results (course card, Top scoring), course page, dashboard (card, highest).
+        await student.goto('/student/results');
+        await setTheme(student);
+        await student.getByRole('button', { name: /Logic/ }).click();
+        await expectToned(student, c.tone, c.letter, c.score);
+        await student.screenshot({
+          path: info.outputPath(`student-results-${c.tone}-${theme}.png`),
+        });
+        await student.goto('/student');
+        await setTheme(student);
+        await expect(student.getByRole('heading', { name: /Hello, DARA/ })).toBeVisible();
+        await expectToned(student, c.tone, c.letter, c.score);
+        await student.getByRole('link', { name: /Logic/ }).click();
+        await expect(student).toHaveURL(/\/student\/courses\//);
+        await expect(student.getByRole('heading', { name: 'Logic' })).toBeVisible();
+        await expectToned(student, c.tone, c.letter, c.score);
+        // Admin: the student page (course card, Top scoring).
+        await admin.goto(adminStudentPage);
+        await setTheme(admin);
+        await admin.getByRole('button', { name: /Logic/ }).click();
+        await expectToned(admin, c.tone, c.letter, c.score);
+        await admin.screenshot({ path: info.outputPath(`admin-student-${c.tone}-${theme}.png`) });
+      }
+    }
+  } finally {
+    if (original.length) await setLogicMarks(null, original);
+    for (const page of [student, admin]) {
+      await page.evaluate(`document.documentElement.classList.remove('dark')`);
+    }
+  }
+  // Back as synced, where the next step expects the student.
+  await student.goto('/student/results');
+  await expect(student.getByRole('button', { name: /Logic/ })).toContainText('78.90');
+});
+
 test('9b. term classes for the admin, term history for the student', async () => {
   await nav(admin, 'Generations').click();
   await admin.getByRole('link', { name: 'GEN2027' }).click();

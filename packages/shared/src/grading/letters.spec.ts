@@ -1,7 +1,8 @@
 import { computeCourseResult } from './grading.js';
-import { gradeFor, isUsableGradeScale, OFFICIAL_GRADE_BANDS } from './letters.js';
+import { gradeFor, gradeTone, isUsableGradeScale, OFFICIAL_GRADE_BANDS } from './letters.js';
 
 const grade = (score: string | null) => gradeFor(OFFICIAL_GRADE_BANDS, score);
+const toneOf = (score: string) => gradeTone(grade(score));
 
 describe('gradeFor (official scale, decisions.md G5)', () => {
   // The approved boundary values: lower bound inclusive, upper bound exclusive (except 100).
@@ -126,5 +127,42 @@ describe('gradeFor (official scale, decisions.md G5)', () => {
 
   it('E is the only fail', () => {
     expect(OFFICIAL_GRADE_BANDS.filter((b) => !b.isPass).map((b) => b.letter)).toEqual(['E']);
+  });
+});
+
+describe('gradeTone (decisions.md G7)', () => {
+  it.each([
+    ['A', 'good'],
+    ['B+', 'good'],
+    ['B', 'good'],
+    ['C+', 'good'],
+    ['C', 'caution'],
+    ['D', 'caution'],
+    ['E', 'fail'],
+  ])('%s is %s', (letter, tone) => {
+    expect(gradeTone(letter)).toBe(tone);
+  });
+
+  it('gives no tone without a letter, or for a letter outside the scale', () => {
+    expect(gradeTone(null)).toBeNull();
+    expect(gradeTone(undefined)).toBeNull();
+    expect(gradeTone('')).toBeNull();
+    expect(gradeTone('F')).toBeNull();
+    expect(gradeTone('a')).toBeNull();
+  });
+
+  it('every band of the scale has a tone, and only the fail band is fail', () => {
+    for (const band of OFFICIAL_GRADE_BANDS) {
+      expect(band.tone).toBe(gradeTone(band.letter));
+      expect(band.tone === 'fail').toBe(!band.isPass);
+    }
+  });
+
+  it('follows the score through the letter: 49.99 is fail, 50.00 caution, 65.00 good', () => {
+    expect(toneOf('49.99')).toBe('fail');
+    expect(toneOf('50.00')).toBe('caution');
+    expect(toneOf('64.99')).toBe('caution');
+    expect(toneOf('65.00')).toBe('good');
+    expect(toneOf('100.00')).toBe('good');
   });
 });

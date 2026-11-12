@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { PageHeader, Section } from '@/components/app/page-header';
 import { CourseStatusPill } from '@/components/app/status';
 import { FinalGrade } from '@/components/results/course-result';
+import { gradeScoreClass, gradeToneAttr } from '@/components/results/grade-tone';
 import { EmptyState, ErrorState, LoadingRows } from '@/components/app/states';
 import { UrlNotice } from '@/components/app/url-notice';
 import { OverallSummary } from '@/components/results/overall-summary';
@@ -72,7 +73,13 @@ function Dashboard() {
                           <CourseStatusPill status={c.status} />
                           {c.finalScore ? (
                             <span className="text-lg font-semibold tabular-nums">
-                              {c.finalScore}
+                              <span
+                                data-slot="final-score"
+                                data-grade-tone={gradeToneAttr(c.finalGrade)}
+                                className={gradeScoreClass(c.finalGrade)}
+                              >
+                                {c.finalScore}
+                              </span>
                               <FinalGrade course={c} />
                             </span>
                           ) : null}

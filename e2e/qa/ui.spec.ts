@@ -371,6 +371,8 @@ test('G3 a grade appears only beside a COMPLETE final score', async () => {
   await expect(termSummary.getByText(/Grade/)).toHaveCount(0);
   const bcu = student.getByRole('button', { name: /BCU/ });
   await expect(bcu.locator('[data-slot=final-grade]')).toHaveCount(0);
+  // An unfinished subject gets no grade and no grade colour (decisions.md G7).
+  await expect(bcu.locator('[data-grade-tone]')).toHaveCount(0);
   await bcu.click();
   // Component marks and contributions never carry one.
   await expect(student.getByRole('table').getByText(/Grade/)).toHaveCount(0);

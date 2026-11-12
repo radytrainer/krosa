@@ -1,6 +1,8 @@
 import { EyeOff } from 'lucide-react';
 import { Fragment } from 'react';
 import { StatusPill } from '@/components/app/status';
+import { cn } from '@/lib/utils';
+import { gradeScoreClass, gradeToneAttr } from './grade-tone';
 import type { TermSummaryView } from '@/lib/types';
 
 /**
@@ -41,9 +43,20 @@ export function TermSummaryBar({ summary }: { summary: TermSummaryView }) {
                 ) : null}
               </Fragment>
             ))}
-            : <span className="text-xl font-semibold tabular-nums">{top.finalScore}</span>
+            :{' '}
+            <span
+              data-slot="top-scoring-score"
+              data-grade-tone={gradeToneAttr(top.finalGrade)}
+              className={cn('text-xl font-semibold tabular-nums', gradeScoreClass(top.finalGrade))}
+            >
+              {top.finalScore}
+            </span>
             {top.finalGrade ? (
-              <span data-slot="top-scoring-grade" className="text-xl font-semibold">
+              <span
+                data-slot="top-scoring-grade"
+                data-grade-tone={gradeToneAttr(top.finalGrade)}
+                className={cn('text-xl font-semibold', gradeScoreClass(top.finalGrade))}
+              >
                 {' '}
                 ({top.finalGrade})
               </span>
