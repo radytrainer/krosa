@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { apiFetch } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
-import { json, useApi, useApiMutation } from '@/lib/query';
+import { json, useApi, useApiMutation, useFreshApi } from '@/lib/query';
 import type { SheetCheck, Source, TermWorkbooks } from '@/lib/types';
 
 const INVALIDATE = ['/admin/term-workbooks', '/admin/sources', '/admin/generations'];
@@ -143,8 +143,8 @@ function SheetForm({
 /** The Google Sheet of a term: its URL, and the way to replace or remove it. */
 export function TermSheet({ term }: { term: { id: string; name: string } }) {
   const [replacing, setReplacing] = useState(false);
-  const { data, error, refetch } = useApi<TermWorkbooks[]>('/admin/term-workbooks', {
-    refetchOnMount: 'always',
+  // Fresh on every visit, never a cached "not synced yet".
+  const { data, error, refetch } = useFreshApi<TermWorkbooks[]>('/admin/term-workbooks', {
     // A running sync locks the sheet, so keep watching until it ends.
     refetchInterval: (q) => (q.state.data?.some((r) => r.runningJobId) ? 3000 : false),
   });

@@ -91,6 +91,17 @@ describe('Changing the sheet of a term (integration)', () => {
 
   const offering = () => ctx.prisma.courseOffering.findFirst({ where: { title: 'Science' } });
 
+  /** What the Sync Center's "Workbooks by term" shows for this term: the sheet waiting, if any. */
+  const waiting = async () => {
+    const rows = (await admin.get(`${V1}/term-workbooks`).expect(200)).body as {
+      term: { id: string };
+      pending: { id: string } | null;
+      runningJobId: string | null;
+    }[];
+    const row = rows.find((r) => r.term.id === termId)!;
+    return { pending: row.pending?.id ?? null, running: row.runningJobId };
+  };
+
   const previewOf = async () =>
     (await admin.post(`${V1}/sources/${sourceA}/preview`).expect(201)).body.summary;
 
@@ -618,6 +629,8 @@ describe('Changing the sheet of a term (integration)', () => {
 
       expect(await statusOf(SHEET_B)).toBe('ACTIVE');
       expect(await statusOf(SHEET_A)).toBe('DISABLED');
+      // Finished: nothing is waiting to be synced any more, and no sync is running.
+      expect(await waiting()).toEqual({ pending: null, running: null });
       const score = await quiz1();
       expect(score.mark.toString()).toBe('55');
       const history = await ctx.prisma.assessmentScoreRevision.findMany({
@@ -654,6 +667,8 @@ describe('Changing the sheet of a term (integration)', () => {
       expect(job).toMatchObject({ status: 'FAILED', failureCode: 'SHEET_CHANGE_REJECTED' });
       expect(await statusOf(SHEET_A)).toBe('ACTIVE');
       expect(await statusOf(SHEET_B)).toBe('PENDING');
+      // A failed sync leaves the sheet waiting: the "not synced yet" notice stays.
+      expect(await waiting()).toEqual({ pending, running: null });
       expect((await quiz1()).mark.toString()).toBe('90');
       expect(await results()).toEqual(before);
       expect(await ctx.prisma.assessmentScoreRevision.count()).toBe(MARKS);
@@ -672,6 +687,7 @@ describe('Changing the sheet of a term (integration)', () => {
       await runJob(jobId);
       expect(await statusOf(SHEET_A)).toBe('ACTIVE');
       expect(await statusOf(SHEET_B)).toBe('PENDING');
+      expect(await waiting()).toEqual({ pending, running: null });
       expect(await results()).toEqual(before);
     });
 
@@ -683,6 +699,7 @@ describe('Changing the sheet of a term (integration)', () => {
       const job = await sync(pending);
       expect(job).toMatchObject({ status: 'FAILED', failureCode: 'PREVIEW_STALE' });
       expect(await statusOf(SHEET_B)).toBe('PENDING');
+      expect(await waiting()).toEqual({ pending, running: null });
       expect((await quiz1()).mark.toString()).toBe('90');
     });
 

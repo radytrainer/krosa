@@ -24,6 +24,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { apiFetch } from '@/lib/api';
+import { useRefreshOnJobFinish } from '@/components/admin/use-refresh-on-job-finish';
 import { formatDateTime, formatDuration, humanize } from '@/lib/format';
 import { qs, useApi, useApiMutation } from '@/lib/query';
 import type { SyncErrorPage, SyncJobDetail } from '@/lib/types';
@@ -160,6 +161,8 @@ export default function SyncJobPage() {
   } = useApi<SyncJobDetail>(`/admin/sync/${id}`, {
     refetchInterval: (q) => (q.state.data && isActiveJob(q.state.data.status) ? 2000 : false),
   });
+  // Polls every 2 s while the job runs; the moment it finishes, every admin view is refreshed.
+  useRefreshOnJobFinish(job ? [job] : null);
   const retry = useApiMutation(
     () => apiFetch<{ jobId: string }>(`/admin/sync/${id}/retry`, { method: 'POST' }),
     {

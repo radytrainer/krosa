@@ -42,7 +42,7 @@ import {
 } from '@/components/ui/table';
 import { apiFetch, errorCode } from '@/lib/api';
 import { formatDate, formatDateTime } from '@/lib/format';
-import { json, useApi, useApiMutation } from '@/lib/query';
+import { json, useApi, useApiMutation, useFreshApi } from '@/lib/query';
 import type { GenerationDetail, Source, Term, TermDetail } from '@/lib/types';
 
 function DatesFields({
@@ -353,7 +353,8 @@ export default function GenerationDetailPage() {
     isPending,
     refetch,
   } = useApi<GenerationDetail>(`/admin/generations/${id}`);
-  const sources = useApi<Source[]>(`/admin/generations/${id}/sources`);
+  // Fresh on every visit: a sync may have promoted a waiting sheet since it was last shown.
+  const sources = useFreshApi<Source[]>(`/admin/generations/${id}/sources`);
   const setStatus = useApiMutation(
     (action: 'archive' | 'activate') =>
       apiFetch(`/admin/generations/${id}/${action}`, { method: 'POST' }),
