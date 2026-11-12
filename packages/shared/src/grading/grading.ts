@@ -238,47 +238,25 @@ export function computeCourseResult(
 // ---------------------------------------------------------------------------------------------
 
 export interface TermCourseInput {
-  credits: DecimalInput;
-  result: Pick<CourseResult, 'status' | 'finalScoreExact'>;
+  result: Pick<CourseResult, 'status'>;
 }
 
+/**
+ * How many courses of a term (or of all terms) are COMPLETE. No average and no credits: a term's
+ * best result is its Top scoring subject (top-scoring.ts), never a mean (decisions.md T1).
+ */
 export interface TermSummary {
   status: 'COMPLETE' | 'INCOMPLETE' | 'EMPTY';
-  /** Credit-weighted mean of all courses; only when every course is COMPLETE (2 dp). */
-  average: string | null;
-  /** Credit-weighted mean of the COMPLETE courses so far (2 dp); null if none. */
-  provisionalAverage: string | null;
   completedCourses: number;
   totalCourses: number;
-  creditsCompleted: string;
-  creditsTotal: string;
 }
 
 export function computeTermSummary(courses: readonly TermCourseInput[]): TermSummary {
-  let weighted = new GradeDecimal(0);
-  let creditsCompleted = new GradeDecimal(0);
-  let creditsTotal = new GradeDecimal(0);
-  let completed = 0;
-
-  for (const course of courses) {
-    const credits = toDecimal(course.credits);
-    creditsTotal = creditsTotal.plus(credits);
-    if (course.result.status === 'COMPLETE' && course.result.finalScoreExact) {
-      completed++;
-      creditsCompleted = creditsCompleted.plus(credits);
-      weighted = weighted.plus(course.result.finalScoreExact.times(credits));
-    }
-  }
-
-  const provisional = creditsCompleted.gt(0) ? weighted.div(creditsCompleted) : null;
+  const completed = courses.filter((c) => c.result.status === 'COMPLETE').length;
   const allComplete = courses.length > 0 && completed === courses.length;
   return {
     status: courses.length === 0 ? 'EMPTY' : allComplete ? 'COMPLETE' : 'INCOMPLETE',
-    average: allComplete && provisional ? formatFixed(provisional, SCORE_DP) : null,
-    provisionalAverage: provisional ? formatFixed(provisional, SCORE_DP) : null,
     completedCourses: completed,
     totalCourses: courses.length,
-    creditsCompleted: formatFixed(creditsCompleted, 1),
-    creditsTotal: formatFixed(creditsTotal, 1),
   };
 }

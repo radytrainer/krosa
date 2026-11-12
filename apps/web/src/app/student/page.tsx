@@ -7,7 +7,6 @@ import { CourseStatusPill } from '@/components/app/status';
 import { FinalGrade } from '@/components/results/course-result';
 import { EmptyState, ErrorState, LoadingRows } from '@/components/app/states';
 import { UrlNotice } from '@/components/app/url-notice';
-import { TermChart } from '@/components/results/term-chart';
 import { OverallSummary } from '@/components/results/overall-summary';
 import { buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -22,7 +21,7 @@ function Dashboard() {
 
   if (summary.error) return <ErrorState error={summary.error} onRetry={() => summary.refetch()} />;
   if (!summary.data) return <LoadingRows rows={4} />;
-  const { student, terms, overall } = summary.data;
+  const { student, overall } = summary.data;
   const firstName = student.fullName.split(' ')[0] ?? student.fullName;
 
   return (
@@ -47,15 +46,6 @@ function Dashboard() {
           <Section title="Overall">
             <OverallSummary summary={summary.data} />
           </Section>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Averages by term</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <TermChart terms={terms} />
-            </CardContent>
-          </Card>
 
           <Section title="Courses">
             {courses.error ? (

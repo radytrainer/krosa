@@ -111,10 +111,13 @@ A mark erased in the sheet returns `score: null`, like one never entered.
       "name": "Term 1",
       "summary": {
         "status": "INCOMPLETE",
-        "average": null,
         "completedCourses": 1,
         "totalCourses": 2,
-        "creditsCompleted": "3.0"
+        "topScoring": {
+          "finalScore": "86.75",
+          "finalGrade": "B",
+          "subjects": [{ "offeringId": "uuid", "courseCode": "MATH101", "title": "Mathematics I" }]
+        }
       },
       "courses": [
         {
@@ -156,8 +159,10 @@ Course `status`: `COMPLETE` | `INCOMPLETE` (finalScore null; attemptedWeight/ear
 no contribution; no final score) | `NOT_CONFIGURED` (no published scheme; `criteria` is `[]`,
 `schemeVersion` is null).
 `finalGrade` is the letter for `finalScore` (decisions.md G1–G4): only when `status` is
-`COMPLETE`, otherwise null; null too when the generation has no confirmed, usable scale. It is the
-only grade in any response: criteria, `earnedSoFar`, averages and summaries never carry one.
+`COMPLETE`, otherwise null; null too when the generation has no confirmed, usable scale. Grades
+appear only beside a final score: a course's `finalGrade`, and the same letter beside a term's
+`topScoring` and the summary's `latestTermHighest`. Criteria, `earnedSoFar` and course counts never
+carry one.
 `score` is `null` when no mark has been entered. `ABS` appears as `{ "status": "ABSENT", "mark": "0.000" }`.
 `teacherComment` is the sheet's COMMENTS cell as plain text, or null. Clients must render it as
 text, never as HTML. It is never used in any calculation.
@@ -165,18 +170,25 @@ Courses also carry `termNumber`; terms carry `startDate`/`endDate` (`YYYY-MM-DD`
 terms are always returned; a term without courses has summary status `EMPTY`. Courses within a
 term are ordered by course code.
 
-Term `summary`: `status` (`COMPLETE` | `INCOMPLETE` | `EMPTY`), `average` (credit-weighted, only
-when every course is COMPLETE), `provisionalAverage` (credit-weighted over COMPLETE courses so far),
-`completedCourses`, `totalCourses`, `creditsCompleted`, `creditsTotal`. Averages use exact final
-scores and are rounded once.
+Term `summary` (decisions.md T1–T3): `status` (`COMPLETE` | `INCOMPLETE` | `EMPTY`),
+`completedCourses`, `totalCourses` and `topScoring`. There is no average and no credit total.
+`topScoring` is the highest final score among the term's COMPLETE subjects, as
+`{ finalScore, finalGrade, subjects: [{ offeringId, courseCode, title }] }`, listing every subject
+tied on that score (compared as displayed, 2 decimals) in the term's order; it is `null` when the
+term has no COMPLETE subject yet (shown as "No final score yet", never a zero). Withdrawn
+enrollments never count. Student responses hold released subjects only; in the admin view
+(`GET /admin/students/:id/results`) hidden subjects count and carry `hiddenFromStudent: true`
+(`false` otherwise; the field is absent from student responses).
 
 `GET /student/me/summary` → `{ student, terms: [{ number, name, summary }], overall,
-latestTermHighest }`, where `overall` has the same shape as a term summary, across all terms.
+latestTermHighest }`, where each term `summary` is as above and `overall` is
+`{ status, completedCourses, totalCourses }` across all terms.
 `latestTermHighest` (decisions.md S1–S3) is null when no subject is released, otherwise
 `{ termNumber, termName, finalScore, finalGrade, subjects: [{ offeringId, courseCode, title }] }`
 for the highest term number with a released subject: the highest COMPLETE final score there and
 every subject tied on it. `finalScore` is null and `subjects` empty when that term has no COMPLETE
-subject yet; there is no fallback to an older term. Its `finalGrade` is the summary's only grade.
+subject yet; there is no fallback to an older term. It is that term's `topScoring`, computed by the
+same helper (`packages/shared/src/top-scoring.ts`), so the two never disagree.
 `GET /student/me/courses` → `[{ offeringId, termNumber, courseCode, title, credits, status, finalScore, finalGrade }]`.
 
 ## 4. Admin (role ADMIN)

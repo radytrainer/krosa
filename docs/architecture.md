@@ -181,13 +181,14 @@ no attempt, so a job is never reported complete while it is still unfinished.
 ## 6. Results read path
 
 `GET /student/me/results` → resolve `studentId` from the session → cache lookup
-`ssrs:v1:results:gen:{genId}:v{genVersion}:student:{studentUuid}` → on miss, batched queries (terms;
+`ssrs:v5:results:gen:{genId}:v{genVersion}:student:{studentUuid}` → on miss, batched queries (terms;
 enrollments with offerings and published scheme items; scores) → `@ssrs/shared` grading engine →
 cache (TTL 10 min) → response. Implemented in `apps/api/src/results/results.service.ts`. Prisma
 issues ten `IN`-batched statements per miss, independent of the number of courses (student,
 generation, terms, enrollments, offerings, courses, published schemes, scheme items, criteria,
-scores). The cached value also holds the overall summary, because averages need exact final scores
-that the views don't carry. All `/student/me*` endpoints read the same cache entry. Redis errors (or
+scores). The cached value also holds the course counts across all terms (`overall`). The prefix
+segment (`v5`) changes whenever the cached shape does. All `/student/me*` endpoints read the same
+cache entry. Redis errors (or
 an unreadable entry) fall back to PostgreSQL. Admin views (`/admin/students/:id/results`) are never
 cached. The generation version counter is incremented after a sync commit, a term release or hide,
 and a generation or term edit, so stale entries are never read and simply expire. Confirming a tab

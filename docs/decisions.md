@@ -49,9 +49,17 @@ Replaces the D5 placeholder scale (A 85 / B 70 / C 50 / F below 50), which was n
 
 | #   | Decision                                                                                                                                                                                                          | Rule in                              |
 | --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| S1  | The Overall card shows "Courses complete" (all terms, released, enrolled) and "Highest final score of the latest term". No provisional average and no credits there; term tabs and chart keep theirs              | api-specification.md §3              |
+| S1  | The Overall card shows "Courses complete" (all terms, released, enrolled) and "Highest final score of the latest term". No average and no credits anywhere (T1)                                                   | api-specification.md §3              |
 | S2  | Latest term = the highest term number with a released subject. Only released COMPLETE subjects count; ties are all shown in one line. No COMPLETE subject yet: "Term 3: no final scores yet", never an older term | `packages/shared/src/latest-term.ts` |
 | S3  | The grade beside that highest score is the only grade in the summary (G3)                                                                                                                                         | api-specification.md §3              |
+
+## Term summary: Top scoring (2026-11-11)
+
+| #   | Decision                                                                                                                                                                                                                | Rule in                              |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| T1  | No term average, provisional average or credit totals, for students and admins, and no "Averages by term" chart. Each term shows Courses complete and Top scoring; the term tab shows "N courses"                       | api-specification.md §3              |
+| T2  | Top scoring: the highest final score among the term's COMPLETE subjects, with name, score and grade; ties all shown in one line; none yet: "No final score yet", never a zero. Withdrawn enrollments never count        | `packages/shared/src/top-scoring.ts` |
+| T3  | Students: released subjects only. Admins: hidden subjects count, marked "Hidden from student". Its grade, beside that final score, is the summary's only grade (G3). The dashboard's highest score uses the same helper | api-specification.md §3              |
 
 ## Releasing scores from the Sync Center (2026-11-10)
 

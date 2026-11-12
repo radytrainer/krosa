@@ -130,8 +130,19 @@ describe('QA R: per-source Hide and Release', () => {
     const hidden = await studentView();
     expect(hidden.courses).toEqual([]);
     expect(hidden.results.terms.flatMap((t: { courses: unknown[] }) => t.courses)).toEqual([]);
-    expect(hidden.summary.overall).toMatchObject({ totalCourses: 0, completedCourses: 0 });
-    expect(hidden.summary.overall.provisionalAverage).toBeNull();
+    expect(hidden.summary.overall).toEqual({
+      status: 'EMPTY',
+      totalCourses: 0,
+      completedCourses: 0,
+    });
+    for (const t of [...hidden.summary.terms, ...hidden.results.terms]) {
+      expect(t.summary).toEqual({
+        status: 'EMPTY',
+        completedCourses: 0,
+        totalCourses: 0,
+        topScoring: null,
+      });
+    }
     expect(hidden.summary.latestTermHighest).toBeNull();
     const text = JSON.stringify(hidden);
     for (const t of titles) expect(text).not.toContain(t);

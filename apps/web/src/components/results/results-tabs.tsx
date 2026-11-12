@@ -11,11 +11,7 @@ import { TermSummaryBar } from './term-summary';
 
 /** Second line of a term tab: what the student will find there. */
 function termCaption(t: TermResultView): string {
-  if (t.courses.length === 0) return 'No results yet';
-  const average = t.summary.average ?? t.summary.provisionalAverage;
-  return average
-    ? `${plural(t.courses.length, 'course')} · avg ${average}`
-    : plural(t.courses.length, 'course');
+  return t.courses.length === 0 ? 'No results yet' : plural(t.courses.length, 'course');
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   gradeFor,
   isUsableGradeScale,
   latestTermHighest,
+  topScoring,
   type CourseResult,
   type GradeBandInput,
   type CourseResultView,
@@ -15,6 +16,7 @@ import {
   type StudentSummaryView,
   type TermResultView,
   type TermSummary,
+  type TermSummaryView,
 } from '@ssrs/shared';
 import { PrismaService } from '../infra/prisma.service.js';
 import { RedisService } from '../infra/redis.service.js';
@@ -23,8 +25,11 @@ import { RedisService } from '../infra/redis.service.js';
 export const RESULTS_CACHE_TTL_SECONDS = 600;
 
 /** docs/architecture.md §6. The version segment makes stale entries unreachable. */
-/** Bump the segment whenever the cached view's shape changes (v4: `finalGrade`). */
-export const RESULTS_CACHE_PREFIX = 'ssrs:v4:results:';
+/**
+ * Bump the segment whenever the cached view's shape changes (v4: `finalGrade`; v5: summaries
+ * without averages or credits, with `topScoring`).
+ */
+export const RESULTS_CACHE_PREFIX = 'ssrs:v5:results:';
 
 export function resultsCacheKey(generationId: string, version: number, studentId: string): string {
   return `${RESULTS_CACHE_PREFIX}gen:${generationId}:v${version}:student:${studentId}`;
@@ -87,7 +92,7 @@ const ENROLLMENT_INCLUDE = {
 
 type EnrollmentRow = Prisma.EnrollmentGetPayload<{ include: typeof ENROLLMENT_INCLUDE }>;
 
-/** What is cached: the overall summary needs exact final scores, which views do not carry. */
+/** What is cached: the student's views and the course counts across all terms. */
 interface AssembledResults {
   results: StudentResultsView;
   overall: TermSummary;
@@ -286,13 +291,13 @@ export class ResultsService {
         name: term.name,
         startDate: term.startDate?.toISOString().slice(0, 10) ?? null,
         endDate: term.endDate?.toISOString().slice(0, 10) ?? null,
-        summary: summarizeCourses(courses),
+        summary: summarizeTerm(courses),
         courses: courses.map((c) => c.view),
       };
     });
     return {
       results: { student: toProfile(student), terms: termViews },
-      overall: summarizeCourses(all),
+      overall: countCourses(all),
     };
   }
 
@@ -323,10 +328,20 @@ interface Computed {
   counted: boolean;
 }
 
-function summarizeCourses(courses: readonly Computed[]): TermSummary {
-  return computeTermSummary(
-    courses.filter((c) => c.counted).map((c) => ({ credits: c.view.credits, result: c.result })),
-  );
+/** Courses complete, counting ENROLLED enrollments only. */
+function countCourses(courses: readonly Computed[]): TermSummary {
+  return computeTermSummary(courses.filter((c) => c.counted).map((c) => ({ result: c.result })));
+}
+
+/**
+ * A term's summary. Top scoring counts what the view lists, minus withdrawn enrollments (as
+ * Courses complete does): released subjects for a student; for an admin, hidden ones too, marked.
+ */
+function summarizeTerm(courses: readonly Computed[]): TermSummaryView {
+  return {
+    ...countCourses(courses),
+    topScoring: topScoring(courses.filter((c) => c.counted).map((c) => c.view)),
+  };
 }
 
 function computeCourse(

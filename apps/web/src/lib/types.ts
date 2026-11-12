@@ -12,6 +12,9 @@ export type {
   StudentSummaryView,
   TermResultView,
   TermSummary,
+  TermSummaryView,
+  TopScoringSubject,
+  TopScoringView,
 } from '@ssrs/shared';
 
 export interface Paginated<T> {

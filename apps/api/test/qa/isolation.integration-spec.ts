@@ -183,7 +183,7 @@ describe('QA B: authorization and data isolation', () => {
         expect(ra.student.studentCode).toBe(CODE_A);
         expect(rb.student.studentCode).toBe(CODE_B);
       }
-      const keys = await ctx.redis.keys('ssrs:v4:results:*');
+      const keys = await ctx.redis.keys('ssrs:v5:results:*');
       expect(keys.length).toBeGreaterThanOrEqual(2);
       for (const key of keys) expect(key).toMatch(/:student:[0-9a-f-]{36}$/);
     });
@@ -310,8 +310,9 @@ describe('QA B: authorization and data isolation', () => {
       expect((await a.get(`${V1}/student/me/courses`).expect(200)).body).toEqual([]);
       await a.get(`${V1}/student/me/courses/${course.offeringId}`).expect(404);
       const summary = (await a.get(`${V1}/student/me/summary`).expect(200)).body;
-      expect(summary.overall.totalCourses).toBe(0);
-      expect(summary.overall.provisionalAverage).toBeNull();
+      expect(summary.overall).toEqual({ status: 'EMPTY', completedCourses: 0, totalCourses: 0 });
+      expect(summary.latestTermHighest).toBeNull();
+      for (const t of summary.terms) expect(t.summary.topScoring).toBeNull();
       expect(JSON.stringify(summary)).not.toContain(course.title);
 
       await h.admin.post(`${ADMIN_V1}/terms/${h.termId}/release`, { visible: true }).expect(200);

@@ -178,7 +178,7 @@ describe('Student results (integration)', () => {
     });
   // Comments are written straight to the database here, which does not bump the cache version.
   const clearResultsCache = async () => {
-    const keys = await ctx.redis.keys('ssrs:v4:results:*');
+    const keys = await ctx.redis.keys('ssrs:v5:results:*');
     if (keys.length) await ctx.redis.del(...keys);
   };
 
@@ -244,13 +244,16 @@ describe('Student results (integration)', () => {
 
       expect(t1.summary).toEqual({
         status: 'INCOMPLETE',
-        average: null,
-        provisionalAverage: '40.00',
         completedCourses: 1,
         totalCourses: 2,
-        creditsCompleted: '3.0',
-        creditsTotal: '5.0',
+        topScoring: {
+          finalScore: '40.00',
+          finalGrade: 'F',
+          subjects: [{ offeringId: s.math.id, courseCode: 'MATH101', title: 'MATH101 title' }],
+        },
       });
+      // No COMPLETE subject: no Top scoring (never a zero).
+      expect(t2.summary.topScoring).toBeNull();
       expect(t2.courses).toEqual([
         expect.objectContaining({
           courseCode: 'SCI101',
@@ -340,46 +343,38 @@ describe('Student results (integration)', () => {
 
       const summary = await alice.get(`${ME}/summary`).expect(200);
       expect(summary.body.terms).toHaveLength(5);
-      expect(summary.body.overall).toMatchObject({
+      expect(summary.body.overall).toEqual({
         status: 'INCOMPLETE',
         completedCourses: 1,
         totalCourses: 3,
-        creditsTotal: '9.0',
-        provisionalAverage: '40.00',
       });
     });
   });
 
   describe('student summary', () => {
-    it('keeps terms and overall exactly as before (all terms, released, enrolled)', async () => {
+    it('gives each term its courses complete and Top scoring, nothing else (T1–T3)', async () => {
       const res = await alice.get(`${ME}/summary`).expect(200);
-      const empty = {
-        status: 'EMPTY',
-        average: null,
-        provisionalAverage: null,
-        completedCourses: 0,
-        totalCourses: 0,
-        creditsCompleted: '0.0',
-        creditsTotal: '0.0',
-      };
+      const empty = { status: 'EMPTY', completedCourses: 0, totalCourses: 0, topScoring: null };
       expect(res.body.terms).toEqual([
         {
           number: 1,
           name: 'Term 1',
           summary: {
             status: 'INCOMPLETE',
-            average: null,
-            provisionalAverage: '40.00',
             completedCourses: 1,
             totalCourses: 2,
-            creditsCompleted: '3.0',
-            creditsTotal: '5.0',
+            // Hidden ART101 (90.00) never counts for the student.
+            topScoring: {
+              finalScore: '40.00',
+              finalGrade: 'F',
+              subjects: [{ offeringId: s.math.id, courseCode: 'MATH101', title: 'MATH101 title' }],
+            },
           },
         },
         {
           number: 2,
           name: 'Term 2',
-          summary: { ...empty, status: 'INCOMPLETE', totalCourses: 1, creditsTotal: '4.0' },
+          summary: { ...empty, status: 'INCOMPLETE', totalCourses: 1 },
         },
         { number: 3, name: 'Term 3', summary: empty },
         { number: 4, name: 'Term 4', summary: empty },
@@ -387,13 +382,19 @@ describe('Student results (integration)', () => {
       ]);
       expect(res.body.overall).toEqual({
         status: 'INCOMPLETE',
-        average: null,
-        provisionalAverage: '40.00',
         completedCourses: 1,
         totalCourses: 3,
-        creditsCompleted: '3.0',
-        creditsTotal: '9.0',
       });
+      // No average or credit field anywhere in the summary.
+      expect(JSON.stringify(res.body)).not.toMatch(/average|credits(Completed|Total)/i);
+    });
+
+    it('agrees with each term Top scoring: one helper, one tie rule', async () => {
+      const res = await bob.get(`${ME}/summary`).expect(200);
+      const { termNumber, termName, ...highest } = res.body.latestTermHighest;
+      const term = res.body.terms.find((t: { number: number }) => t.number === termNumber);
+      expect(termName).toBe(term.name);
+      expect(highest).toEqual(term.summary.topScoring);
     });
 
     it('uses the latest term with a released subject and never falls back', async () => {
@@ -464,6 +465,12 @@ describe('Student results (integration)', () => {
           { offeringId: s.math.id, courseCode: 'MATH101' },
         ],
       });
+      // The term's Top scoring shows the same tie, in one list.
+      expect(res.body.terms[0].summary.topScoring).toEqual({
+        finalScore: res.body.latestTermHighest.finalScore,
+        finalGrade: res.body.latestTermHighest.finalGrade,
+        subjects: res.body.latestTermHighest.subjects,
+      });
     });
 
     it('is null when nothing is released', async () => {
@@ -471,11 +478,15 @@ describe('Student results (integration)', () => {
       await clearResultsCache();
       const res = await alice.get(`${ME}/summary`).expect(200);
       expect(res.body.latestTermHighest).toBeNull();
-      expect(res.body.overall.totalCourses).toBe(0);
+      expect(res.body.overall).toEqual({ status: 'EMPTY', completedCourses: 0, totalCourses: 0 });
+      for (const t of res.body.terms) expect(t.summary.topScoring).toBeNull();
     });
   });
 
   describe('letter grades (G1–G4)', () => {
+    /** Where a grade may appear: beside a course's or a term Top scoring's final score. */
+    const GRADE_BESIDE_SCORE =
+      /^\$\.terms\[\d+\]\.(courses\[\d+\]|summary\.topScoring)\.finalGrade$/;
     /** Every key in a response that names a grade, with its path. */
     const gradeKeys = (body: unknown, path = '$'): string[] => {
       if (Array.isArray(body)) return body.flatMap((v, i) => gradeKeys(v, `${path}[${i}]`));
@@ -503,15 +514,21 @@ describe('Student results (integration)', () => {
         finalGrade: null,
       });
       expect(byCode.SCI101).toMatchObject({ status: 'NOT_CONFIGURED', finalGrade: null });
-      // The only grade field is finalGrade on a course: none on criteria, summaries or terms.
-      expect(
-        gradeKeys(res.body).every((k) => /^\$\.terms\[\d+\]\.courses\[\d+\]\.finalGrade$/.test(k)),
-      ).toBe(true);
-      expect(gradeKeys(res.body)).toHaveLength(courses.length);
+      // Grades only beside a final score: each course's, and each term's Top scoring (T3). None
+      // on criteria, counts or terms.
+      const keys = gradeKeys(res.body);
+      expect(keys.every((k) => GRADE_BESIDE_SCORE.test(k))).toBe(true);
+      const tops = res.body.terms.filter((t: { summary: { topScoring: unknown } }) =>
+        Boolean(t.summary.topScoring),
+      );
+      expect(keys).toHaveLength(courses.length + tops.length);
 
-      // The summary's only grade is the one beside the highest final score (S2).
+      // The summary's grades sit beside the highest final score (S2) and each Top scoring (T3).
       const summary = await alice.get(`${ME}/summary`).expect(200);
-      expect(gradeKeys(summary.body)).toEqual(['$.latestTermHighest.finalGrade']);
+      expect(gradeKeys(summary.body)).toEqual([
+        '$.terms[0].summary.topScoring.finalGrade',
+        '$.latestTermHighest.finalGrade',
+      ]);
 
       const list = await alice.get(`${ME}/courses`).expect(200);
       expect(list.body).toEqual([
@@ -684,15 +701,35 @@ describe('Student results (integration)', () => {
         presentInSource: true,
       });
       expect(t1.summary.totalCourses).toBe(3);
+      // Top scoring follows what this view lists: hidden ART101 (90.00) counts, marked hidden.
+      expect(t1.summary.topScoring).toEqual({
+        finalScore: '90.00',
+        finalGrade: 'A',
+        subjects: [
+          {
+            offeringId: s.art.id,
+            courseCode: 'ART101',
+            title: expect.any(String),
+            hiddenFromStudent: true,
+          },
+        ],
+      });
       expect(t3.courses[0]).toMatchObject({
         courseCode: 'HIS101',
+        status: 'COMPLETE',
+        finalScore: '50.00',
         admin: { enrollmentStatus: 'WITHDRAWN' },
       });
-      // Withdrawn courses are listed but not counted.
-      expect(t3.summary).toMatchObject({ status: 'EMPTY', totalCourses: 0 });
+      // Withdrawn courses are listed but not counted: not in Courses complete, not Top scoring.
+      expect(t3.summary).toEqual({
+        status: 'EMPTY',
+        completedCourses: 0,
+        totalCourses: 0,
+        topScoring: null,
+      });
 
       // Never cached.
-      expect(await ctx.redis.keys('ssrs:v4:results:*')).toEqual([]);
+      expect(await ctx.redis.keys('ssrs:v5:results:*')).toEqual([]);
       await admin
         .get('/api/v1/admin/students/01900000-0000-7000-8000-000000000000/results')
         .expect(404);

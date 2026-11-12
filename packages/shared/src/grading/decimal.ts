@@ -7,7 +7,7 @@ import { Decimal } from 'decimal.js';
 export const GradeDecimal = Decimal.clone({ precision: 40, rounding: Decimal.ROUND_HALF_UP });
 export type GradeDecimal = InstanceType<typeof GradeDecimal>;
 
-/** Decimal places for displayed contributions, final scores and averages. */
+/** Decimal places for displayed contributions and final scores. */
 export const SCORE_DP = 2;
 /** Decimal places stored for marks, max marks and weights (numeric(…, 3) columns). */
 export const VALUE_DP = 3;

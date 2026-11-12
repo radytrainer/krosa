@@ -66,7 +66,8 @@ function TeacherComment({ text }: { text: string }) {
 
 /**
  * The letter beside a COMPLETE subject's final score, as text ("Grade E"), never color alone.
- * Nothing else (marks, progress, averages) ever shows a grade.
+ * Nothing else (marks, progress, course counts) ever shows a grade; a term's Top scoring shows
+ * this same letter beside that subject's final score.
  */
 export function FinalGrade({
   course,

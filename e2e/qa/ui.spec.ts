@@ -358,6 +358,13 @@ test('G3 a grade appears only beside a COMPLETE final score', async () => {
   await student.goto('/student/results');
   await expect(student.getByRole('button', { name: /Logic/ })).toContainText('78.90');
   await expect(student.getByRole('button', { name: /Logic/ })).toContainText('Grade C');
+  // The term summary's only grade sits beside its Top scoring final score (T3).
+  const termSummary = student.locator('main:visible dl', { hasText: 'Top scoring' });
+  await expect(termSummary.locator('[data-slot=top-scoring-grade]')).toHaveCount(1);
+  await expect(termSummary.locator('[data-slot=top-scoring]')).toContainText(
+    /\d+\.\d\d \([A-F]\)$/,
+  );
+  await expect(termSummary.getByText(/Grade/)).toHaveCount(0);
   const bcu = student.getByRole('button', { name: /BCU/ });
   await expect(bcu.locator('[data-slot=final-grade]')).toHaveCount(0);
   await bcu.click();

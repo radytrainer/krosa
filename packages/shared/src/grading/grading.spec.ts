@@ -216,51 +216,28 @@ describe('computeCourseResult', () => {
   });
 });
 
-const complete = (score: string) => ({
-  status: 'COMPLETE' as const,
-  finalScoreExact: new GradeDecimal(score),
-});
+const complete = { result: { status: 'COMPLETE' as const } };
 
 describe('computeTermSummary', () => {
-  it('averages complete courses weighted by credits', () => {
-    const summary = computeTermSummary([
-      { credits: 3, result: complete('80') },
-      { credits: 1, result: complete('60') },
-    ]);
-    expect(summary).toMatchObject({
-      status: 'COMPLETE',
-      average: '75.00',
-      provisionalAverage: '75.00',
-      completedCourses: 2,
-      totalCourses: 2,
-      creditsCompleted: '4.0',
-      creditsTotal: '4.0',
-    });
+  it('counts complete courses, and nothing else (no average, no credits)', () => {
+    const summary = computeTermSummary([complete, complete]);
+    expect(summary).toEqual({ status: 'COMPLETE', completedCourses: 2, totalCourses: 2 });
   });
 
-  it('withholds the final average while any course is incomplete', () => {
+  it('is INCOMPLETE while any course is not complete', () => {
     const summary = computeTermSummary([
-      { credits: 2, result: complete('90') },
-      { credits: 2, result: { status: 'INCOMPLETE', finalScoreExact: null } },
+      complete,
+      { result: { status: 'INCOMPLETE' } },
+      { result: { status: 'NEEDS_REVIEW' } },
+      { result: { status: 'NOT_CONFIGURED' } },
     ]);
-    expect(summary.status).toBe('INCOMPLETE');
-    expect(summary.average).toBeNull();
-    expect(summary.provisionalAverage).toBe('90.00');
-    expect(summary.completedCourses).toBe(1);
-  });
-
-  it('uses exact course scores, not rounded ones', () => {
-    const summary = computeTermSummary([
-      { credits: 1, result: complete('33.335') },
-      { credits: 1, result: complete('33.335') },
-    ]);
-    expect(summary.average).toBe('33.34');
+    expect(summary).toEqual({ status: 'INCOMPLETE', completedCourses: 1, totalCourses: 4 });
   });
 
   it('reports an empty term', () => {
-    expect(computeTermSummary([])).toMatchObject({
+    expect(computeTermSummary([])).toEqual({
       status: 'EMPTY',
-      average: null,
+      completedCourses: 0,
       totalCourses: 0,
     });
   });
