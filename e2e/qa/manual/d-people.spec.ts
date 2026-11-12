@@ -699,7 +699,7 @@ test.describe('Score Calculation', () => {
     await u.page.goto('/student/results');
     const top = u.page.locator('[data-slot="top-scoring"]');
     // Ties in one line; Three is INCOMPLETE (exam missing), so it never counts.
-    await expect(top).toContainText('80.00 (B)');
+    await expect(top).toContainText('80.00 (B+)');
     await expect(top).toContainText('One');
     await expect(top).toContainText('Two');
     await expect(top).not.toContainText('Three');
@@ -709,7 +709,7 @@ test.describe('Score Calculation', () => {
     await syncNow(admin, source.id);
     await u.page.reload();
     await expect(top).toContainText('Three');
-    await expect(top).toContainText('80.00 (B)');
+    await expect(top).toContainText('80.00 (B+)');
     remark('Top scoring: COMPLETE subjects only, every tie shown; Three joined at 80.00');
   });
 

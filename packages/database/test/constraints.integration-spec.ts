@@ -1,4 +1,9 @@
-import { applyTermDefaults, createPrismaClient, type PrismaClient } from '../src/index.js';
+import {
+  applyGradeDefaults,
+  applyTermDefaults,
+  createPrismaClient,
+  type PrismaClient,
+} from '../src/index.js';
 import { assertTestDatabaseUrl, truncateAllTables } from '../src/testing.js';
 
 /**
@@ -19,6 +24,20 @@ interface Fixture {
 }
 
 let fx: Fixture;
+
+/** A generation's grade bands, highest first, and whether its scale is confirmed. */
+const bandsOf = async (generationId: string) => {
+  const scale = await prisma.gradeScale.findUniqueOrThrow({
+    where: { generationId },
+    include: { bands: { orderBy: { minTotal: 'desc' } } },
+  });
+  return {
+    confirmed: scale.confirmed,
+    bands: scale.bands.map((b) => [b.letter, b.minTotal.toFixed(2), b.isPass]),
+  };
+};
+const cacheVersionOf = async (id: string) =>
+  (await prisma.generation.findUniqueOrThrow({ where: { id } })).cacheVersion;
 
 async function seed(): Promise<Fixture> {
   const user = await prisma.user.create({
@@ -519,6 +538,64 @@ describe('term workbooks (delivery plan A.3)', () => {
     );
     await prisma.program.create({
       data: { code: 'SNAC', name: 'System Network Administrators and Cybersecurity' },
+    });
+  });
+
+  describe('official grade scale of 2026-11-12 (decisions.md G5)', () => {
+    const NEW = [
+      ['A', '85.00', true],
+      ['B+', '80.00', true],
+      ['B', '70.00', true],
+      ['C+', '65.00', true],
+      ['C', '60.00', true],
+      ['D', '50.00', true],
+      ['E', '0.00', false],
+    ];
+    const OLD = [
+      ['A', '90.00', true],
+      ['B', '80.00', true],
+      ['C', '70.00', true],
+      ['D', '60.00', true],
+      ['E', '50.00', true],
+      ['F', '0.00', false],
+    ];
+    it('replaces a generation’s old bands, confirms its scale and makes cached results stale', async () => {
+      // A generation still on the previous scale, not confirmed.
+      await prisma.gradeScale.create({
+        data: {
+          generationId: fx.generationId,
+          confirmed: false,
+          bands: {
+            create: OLD.map(([letter, minTotal, isPass]) => ({
+              letter: letter as string,
+              minTotal: minTotal as string,
+              isPass: isPass as boolean,
+            })),
+          },
+        },
+      });
+      // Creating or seeding never overwrites a scale that has bands.
+      await applyGradeDefaults(prisma, fx.generationId);
+      expect(await bandsOf(fx.generationId)).toEqual({ confirmed: false, bands: OLD });
+
+      const before = await cacheVersionOf(fx.generationId);
+      await prisma.$executeRaw`SELECT ssrs_set_official_grade_bands(${fx.generationId}::uuid)`;
+      expect(await bandsOf(fx.generationId)).toEqual({ confirmed: true, bands: NEW });
+      expect(await cacheVersionOf(fx.generationId)).toBe(before + 1);
+      // Running it again changes nothing but the cache version.
+      await prisma.$executeRaw`SELECT ssrs_set_official_grade_bands(${fx.generationId}::uuid)`;
+      expect(await bandsOf(fx.generationId)).toEqual({ confirmed: true, bands: NEW });
+    });
+
+    it('gives a new generation the new scale, and refuses an unknown generation', async () => {
+      const created = await prisma.generation.create({
+        data: { code: 'GEN2031', name: 'Generation 2031', startDate: new Date('2031-01-06') },
+      });
+      await applyGradeDefaults(prisma, created.id);
+      expect(await bandsOf(created.id)).toEqual({ confirmed: true, bands: NEW });
+      await expect(
+        prisma.$executeRaw`SELECT ssrs_set_official_grade_bands('01900000-0000-7000-8000-000000000000'::uuid)`,
+      ).rejects.toThrow(/does not exist/);
     });
   });
 });

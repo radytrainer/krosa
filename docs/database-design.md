@@ -415,10 +415,13 @@ per `(term_id, student_code, kind)`; resolved rows are kept with who resolved th
 
 ### grade_scales, grade_bands
 
-Letter grades (D5, decisions.md G1–G4). Every generation has one scale, filled with the official
-bands A 90 / B 80 / C 70 / D 60 / E 50 / F 0 (`is_pass` false only for F) and marked confirmed by
-`ssrs_apply_grade_defaults(generation_id)` (migration `20261110090000_grade_scale`; called when a
-generation is created). It leaves a scale that already has bands alone. The letter is computed on
+Letter grades (D5, decisions.md G2–G6). Every generation has one scale, filled with the official
+bands of 2026-11-12, A 85 / B+ 80 / B 70 / C+ 65 / C 60 / D 50 / E 0 (`is_pass` false only for E,
+the only fail), and marked confirmed. `ssrs_apply_grade_defaults(generation_id)`,
+called when a generation is created, gives a generation with no bands these; it leaves a scale that
+already has bands alone. `ssrs_set_official_grade_bands(generation_id)` replaces a generation's
+bands with them (migration `20261113090000_grade_scale_2026_11` ran it for every generation; it
+supersedes the scale of `20261110090000_grade_scale`). The letter is computed on
 read (`gradeFor` in `packages/shared`), never stored. No admin editor yet.
 
 ### participation_records

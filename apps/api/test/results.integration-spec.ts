@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import request from 'supertest';
 import { resultsCacheKey } from '../src/results/results.service.js';
 import {
@@ -248,7 +249,7 @@ describe('Student results (integration)', () => {
         totalCourses: 2,
         topScoring: {
           finalScore: '40.00',
-          finalGrade: 'F',
+          finalGrade: 'E',
           subjects: [{ offeringId: s.math.id, courseCode: 'MATH101', title: 'MATH101 title' }],
         },
       });
@@ -366,7 +367,7 @@ describe('Student results (integration)', () => {
             // Hidden ART101 (90.00) never counts for the student.
             topScoring: {
               finalScore: '40.00',
-              finalGrade: 'F',
+              finalGrade: 'E',
               subjects: [{ offeringId: s.math.id, courseCode: 'MATH101', title: 'MATH101 title' }],
             },
           },
@@ -429,7 +430,7 @@ describe('Student results (integration)', () => {
       expect(res.body.latestTermHighest).toMatchObject({
         termNumber: 1,
         finalScore: '40.00',
-        finalGrade: 'F',
+        finalGrade: 'E',
         subjects: [{ offeringId: s.math.id }],
       });
       expect(JSON.stringify(res.body)).not.toContain(s.art.id);
@@ -483,7 +484,7 @@ describe('Student results (integration)', () => {
     });
   });
 
-  describe('letter grades (G1–G4)', () => {
+  describe('letter grades (G2–G5)', () => {
     /** Where a grade may appear: beside a course's or a term Top scoring's final score. */
     const GRADE_BESIDE_SCORE =
       /^\$\.terms\[\d+\]\.(courses\[\d+\]|summary\.topScoring)\.finalGrade$/;
@@ -506,7 +507,7 @@ describe('Student results (integration)', () => {
       expect(byCode.MATH101).toMatchObject({
         status: 'COMPLETE',
         finalScore: '40.00',
-        finalGrade: 'F',
+        finalGrade: 'E',
       });
       expect(byCode.ENG101).toMatchObject({
         status: 'INCOMPLETE',
@@ -533,7 +534,7 @@ describe('Student results (integration)', () => {
       const list = await alice.get(`${ME}/courses`).expect(200);
       expect(list.body).toEqual([
         expect.objectContaining({ courseCode: 'ENG101', finalGrade: null }),
-        expect.objectContaining({ courseCode: 'MATH101', finalScore: '40.00', finalGrade: 'F' }),
+        expect.objectContaining({ courseCode: 'MATH101', finalScore: '40.00', finalGrade: 'E' }),
         expect.objectContaining({ courseCode: 'SCI101', finalGrade: null }),
       ]);
       const one = await bob.get(`${ME}/courses/${s.math.id}`).expect(200);
@@ -558,11 +559,42 @@ describe('Student results (integration)', () => {
       expect(eng).toMatchObject({ status: 'INCOMPLETE', finalGrade: null });
     });
 
-    it('gives no grade, never a default F, when the generation has no scale', async () => {
-      await ctx.prisma.gradeScale.deleteMany({ where: { generationId: s.generation.id } });
+    it('gives no grade, never a default letter, when the generation has no scale', async () => {
+      const logged = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      try {
+        await ctx.prisma.gradeScale.deleteMany({ where: { generationId: s.generation.id } });
+        await clearResultsCache();
+        const res = await alice.get(`${ME}/courses/${s.math.id}`).expect(200);
+        expect(res.body).toMatchObject({
+          status: 'COMPLETE',
+          finalScore: '40.00',
+          finalGrade: null,
+        });
+        // An error is logged, naming the generation by id only.
+        expect(logged).toHaveBeenCalledWith(expect.stringContaining(s.generation.id));
+        expect(logged.mock.calls.flat().join(' ')).toMatch(/no confirmed, usable grade scale/);
+      } finally {
+        logged.mockRestore();
+      }
+    });
+
+    it('gives no grade when the scale is not confirmed, or has no bands', async () => {
+      await ctx.prisma.gradeScale.update({
+        where: { generationId: s.generation.id },
+        data: { confirmed: false },
+      });
       await clearResultsCache();
-      const res = await alice.get(`${ME}/courses/${s.math.id}`).expect(200);
-      expect(res.body).toMatchObject({ status: 'COMPLETE', finalScore: '40.00', finalGrade: null });
+      expect(
+        (await alice.get(`${ME}/courses/${s.math.id}`).expect(200)).body.finalGrade,
+      ).toBeNull();
+      await ctx.prisma.gradeScale.update({
+        where: { generationId: s.generation.id },
+        data: { confirmed: true, bands: { deleteMany: {} } },
+      });
+      await clearResultsCache();
+      expect(
+        (await alice.get(`${ME}/courses/${s.math.id}`).expect(200)).body.finalGrade,
+      ).toBeNull();
     });
 
     it('gives a new generation the official scale, confirmed', async () => {
@@ -579,12 +611,13 @@ describe('Student results (integration)', () => {
       });
       expect(scale.confirmed).toBe(true);
       expect(scale.bands.map((b) => [b.letter, b.minTotal.toFixed(2), b.isPass])).toEqual([
-        ['A', '90.00', true],
-        ['B', '80.00', true],
-        ['C', '70.00', true],
-        ['D', '60.00', true],
-        ['E', '50.00', true],
-        ['F', '0.00', false],
+        ['A', '85.00', true],
+        ['B+', '80.00', true],
+        ['B', '70.00', true],
+        ['C+', '65.00', true],
+        ['C', '60.00', true],
+        ['D', '50.00', true],
+        ['E', '0.00', false],
       ]);
     });
   });

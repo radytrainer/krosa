@@ -6,6 +6,8 @@ import { E2E, WEB_URL } from '../support/stack.js';
 test.describe.configure({ mode: 'serial' });
 
 const STUDENT = { id: 'PNC2027-001', name: 'DARA SOK', password: 'River-Lantern-Morning-48' };
+/** The official letters (decisions.md G5). */
+const LETTER = '(?:A|B\\+|B|C\\+|C|D|E)';
 const V1 = '/api/v1';
 const PHONE = { width: 390, height: 844 };
 
@@ -337,7 +339,7 @@ test('G3 a grade appears only beside a COMPLETE final score', async () => {
   }[] = await call(student, 'GET', '/student/me/courses');
   const complete = courses.filter((c) => c.status === 'COMPLETE');
   expect(complete.length).toBeGreaterThan(0);
-  expect(complete.every((c) => /^[A-F]$/.test(c.finalGrade ?? ''))).toBe(true);
+  expect(complete.every((c) => new RegExp(`^${LETTER}$`).test(c.finalGrade ?? ''))).toBe(true);
   expect(courses.filter((c) => c.status !== 'COMPLETE').every((c) => c.finalGrade === null)).toBe(
     true,
   );
@@ -346,7 +348,9 @@ test('G3 a grade appears only beside a COMPLETE final score', async () => {
   // Student panel: one grade per COMPLETE course card, none in the summary or chart.
   await student.goto('/student');
   await expect(grades(student)).toHaveCount(complete.length);
-  for (const text of await grades(student).allInnerTexts()) expect(text).toMatch(/^Grade [A-F]$/);
+  for (const text of await grades(student).allInnerTexts()) {
+    expect(text).toMatch(new RegExp(`^Grade ${LETTER}$`));
+  }
   // The Overall card's only grade is beside the highest final score (S2).
   const overallCard = student.locator('section', {
     has: student.getByRole('heading', { name: 'Overall' }),
@@ -354,15 +358,15 @@ test('G3 a grade appears only beside a COMPLETE final score', async () => {
   await expect(overallCard.getByText(/Grade/)).toHaveCount(0);
   await expect(overallCard.locator('[data-slot=highest-grade]')).toHaveCount(1);
 
-  // Results page: Logic (78.90) shows C as text; BCU is in progress and shows none.
+  // Results page: Logic (78.90) shows B as text; BCU is in progress and shows none.
   await student.goto('/student/results');
   await expect(student.getByRole('button', { name: /Logic/ })).toContainText('78.90');
-  await expect(student.getByRole('button', { name: /Logic/ })).toContainText('Grade C');
+  await expect(student.getByRole('button', { name: /Logic/ })).toContainText('Grade B');
   // The term summary's only grade sits beside its Top scoring final score (T3).
   const termSummary = student.locator('main:visible dl', { hasText: 'Top scoring' });
   await expect(termSummary.locator('[data-slot=top-scoring-grade]')).toHaveCount(1);
   await expect(termSummary.locator('[data-slot=top-scoring]')).toContainText(
-    /\d+\.\d\d \([A-F]\)$/,
+    new RegExp(`\\d+\\.\\d\\d \\(${LETTER}\\)$`),
   );
   await expect(termSummary.getByText(/Grade/)).toHaveCount(0);
   const bcu = student.getByRole('button', { name: /BCU/ });
@@ -374,12 +378,12 @@ test('G3 a grade appears only beside a COMPLETE final score', async () => {
   // Subject page.
   const logic = complete.find((c) => /Logic/.test(c.title))!;
   await student.goto(`/student/courses/${logic.offeringId}`);
-  await expect(grades(student)).toHaveText(['Grade C']);
+  await expect(grades(student)).toHaveText(['Grade B']);
   await expect(student.getByRole('table').getByText(/Grade/)).toHaveCount(0);
 
   // Admin view of the student.
   await admin.goto(`/admin/students/${studentRowId}`);
-  await expect(admin.getByRole('button', { name: /Logic/ })).toContainText('Grade C');
+  await expect(admin.getByRole('button', { name: /Logic/ })).toContainText('Grade B');
   await expect(
     admin.getByRole('button', { name: /BCU/ }).locator('[data-slot=final-grade]'),
   ).toHaveCount(0);

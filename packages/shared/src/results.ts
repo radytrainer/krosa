@@ -50,7 +50,7 @@ export interface CourseResultView {
   /** Only when status is COMPLETE. */
   finalScore: string | null;
   /**
-   * Letter for `finalScore` (official scale, docs/decisions.md G1–G4). Only when status is
+   * Letter for `finalScore` (official scale, docs/decisions.md G2–G5). Only when status is
    * COMPLETE; null otherwise or when the generation has no usable scale. No other figure has one.
    */
   finalGrade: string | null;

@@ -158,7 +158,8 @@ Course `status`: `COMPLETE` | `INCOMPLETE` (finalScore null; attemptedWeight/ear
 `NEEDS_REVIEW` (a stored mark lies outside 0…maxMark; that criterion has `invalidMark: true` and
 no contribution; no final score) | `NOT_CONFIGURED` (no published scheme; `criteria` is `[]`,
 `schemeVersion` is null).
-`finalGrade` is the letter for `finalScore` (decisions.md G1–G4): only when `status` is
+`finalGrade` is the letter for `finalScore` (decisions.md G2–G6; one of A, B+, B, C+, C, D, E,
+lower bound inclusive, E the only fail): only when `status` is
 `COMPLETE`, otherwise null; null too when the generation has no confirmed, usable scale. Grades
 appear only beside a final score: a course's `finalGrade`, and the same letter beside a term's
 `topScoring` and the summary's `latestTermHighest`. Criteria, `earnedSoFar` and course counts never

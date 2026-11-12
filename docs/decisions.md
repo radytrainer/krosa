@@ -36,14 +36,24 @@ during the November 2026 retest. Each says where the rule now lives.
 
 ## Letter grades (2026-11-10)
 
-Replaces the D5 placeholder scale (A 85 / B 70 / C 50 / F below 50), which was never stored.
+Replaces the D5 placeholder scale (A 85 / B 70 / C 50, a fail band below 50), which was never
+stored. G1 is superseded by G5 (2026-11-12).
 
 | #   | Decision                                                                                                                                                                     | Rule in                                  |
 | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| G1  | Official scale, minimum thresholds with no gaps: A 90–100, B 80 to below 90, C 70 to below 80, D 60 to below 70, E 50 to below 60, F 0 to below 50. One copy per generation  | database-design.md `grade_bands`         |
-| G2  | The grade uses the final score as displayed (2 decimals, half up): a raw 89.995 shows 90.00 and A; 89.99 shows B. A student never sees a score and a letter that disagree    | `packages/shared/src/grading/letters.ts` |
+| G1  | Superseded by G5 on 2026-11-12. Was: minimum thresholds A 90, B 80, C 70, D 60, E 50, and a fail band below 50. One copy per generation                                      | database-design.md `grade_bands`         |
+| G2  | The grade uses the final score as displayed (2 decimals, half up): a raw 84.995 shows 85.00 and A; 84.99 shows B+. A student never sees a score and a letter that disagree   | `packages/shared/src/grading/letters.ts` |
 | G3  | A grade appears only beside a COMPLETE subject's final score: never on a component mark, a "so far" figure, an average, a term summary or an INCOMPLETE subject (UI and API) | api-specification.md §3                  |
-| G4  | No confirmed, usable scale (for example no band at 0): no grade and an error in the log, never a default F. Grades are computed on read and never stored                     | api-specification.md §3                  |
+| G4  | No confirmed, usable scale (for example no band at 0): no grade and an error in the log, never a default letter. Grades are computed on read and never stored                | api-specification.md §3                  |
+
+## Grade scale (2026-11-12)
+
+Supersedes G1 (the scale of 2026-11-10). G2–G4 still apply.
+
+| #   | Decision                                                                                                                                                                                                                                                                                                 | Rule in                                        |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| G5  | Official scale: A 85–100, B+ 80 to below 85, B 70 to below 80, C+ 65 to below 70, C 60 to below 65, D 50 to below 60, E 0 to below 50. Lower bound inclusive, compared on the displayed score (G2): 85.00 is A, 84.99 is B+, 50.00 is D, 49.99 is E. There is no F; E is the only fail (`is_pass` false) | `packages/shared/src/grading/letters.ts`       |
+| G6  | It replaces the bands of every generation (each scale marked confirmed) and is what every new generation gets. Grades are computed on read, so released results show the new letters at once                                                                                                             | migration `20261113090000_grade_scale_2026_11` |
 
 ## Student dashboard summary (2026-11-10)
 

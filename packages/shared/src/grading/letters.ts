@@ -1,7 +1,7 @@
 import { GradeDecimal, SCORE_DP, tryDecimal, type DecimalInput } from './decimal.js';
 
 /**
- * Letter grades (docs/decisions.md G1–G4). A grade belongs only to a subject's final score: it is
+ * Letter grades (docs/decisions.md G2–G5). A grade belongs only to a subject's final score: it is
  * never computed for a component mark, a partial figure or an average.
  */
 
@@ -12,21 +12,24 @@ export interface GradeBandInput {
 }
 
 /**
- * The official scale. Minimum-score thresholds, so there are no gaps: 89.99 is B, 90.00 is A.
- * The database holds a copy per generation (`grade_bands`, migration 20261110090000_grade_scale);
- * this list is what that migration and new generations write.
+ * The official scale since 2026-11-12 (decisions.md G5; it supersedes G1). Minimum-score
+ * thresholds, lower bound inclusive, so there are no gaps: 84.99 is B+, 85.00 is A. E (below 50)
+ * is the only fail. The database holds a copy per generation (`grade_bands`, written
+ * by migration 20261113090000_grade_scale_2026_11 and for every new generation); this list is the
+ * same table.
  */
 export const OFFICIAL_GRADE_BANDS: readonly {
   letter: string;
   minTotal: string;
   isPass: boolean;
 }[] = [
-  { letter: 'A', minTotal: '90', isPass: true },
-  { letter: 'B', minTotal: '80', isPass: true },
-  { letter: 'C', minTotal: '70', isPass: true },
-  { letter: 'D', minTotal: '60', isPass: true },
-  { letter: 'E', minTotal: '50', isPass: true },
-  { letter: 'F', minTotal: '0', isPass: false },
+  { letter: 'A', minTotal: '85', isPass: true },
+  { letter: 'B+', minTotal: '80', isPass: true },
+  { letter: 'B', minTotal: '70', isPass: true },
+  { letter: 'C+', minTotal: '65', isPass: true },
+  { letter: 'C', minTotal: '60', isPass: true },
+  { letter: 'D', minTotal: '50', isPass: true },
+  { letter: 'E', minTotal: '0', isPass: false },
 ];
 
 /**
@@ -52,8 +55,9 @@ export function isUsableGradeScale(bands: readonly GradeBandInput[]): boolean {
 
 /**
  * The letter for a subject's final score, or null when there is no final score or no usable
- * scale. The comparison uses the score as displayed (2 decimals, half up), so a student never
- * sees a score and a letter that disagree: a raw 89.995 shows 90.00 and A; 89.99 shows B.
+ * scale (never a default letter). The comparison uses the score as displayed (2 decimals, half
+ * up), so a student never sees a score and a letter that disagree: a raw 84.995 shows 85.00 and A;
+ * 84.99 shows B+.
  */
 export function gradeFor(
   bands: readonly GradeBandInput[] | null,

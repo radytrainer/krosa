@@ -248,7 +248,7 @@ test('6. issues a temporary password to a student', async () => {
   const top = admin.locator('[data-slot="top-scoring"]');
   await expect(top).toContainText('Logic');
   await expect(top).toContainText('Hidden from student');
-  await expect(top).toContainText('78.90 (C)');
+  await expect(top).toContainText('78.90 (B)');
   await expect(admin.getByRole('tab', { name: /Term 1/ })).toContainText('1 course');
   await expect(admin.locator('main:visible')).not.toContainText(
     /average|Credits complete|Provisional/i,
@@ -285,7 +285,7 @@ test('9. an administrator releases the term and the student sees it at once', as
   await student.reload();
   // Top scoring for the student: released subjects only, never a hidden label.
   const top = student.locator('[data-slot="top-scoring"]');
-  await expect(top).toHaveText('Logic: 78.90 (C)');
+  await expect(top).toHaveText('Logic: 78.90 (B)');
   await expect(student.locator('main:visible')).not.toContainText(
     /average|Credits complete|Provisional|Hidden from student/i,
   );

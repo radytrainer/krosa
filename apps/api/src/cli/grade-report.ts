@@ -1,5 +1,5 @@
 /**
- * Read-only report of the letters the official scale gives (docs/decisions.md G1–G4):
+ * Read-only report of the letters the official scale gives (docs/decisions.md G2–G5):
  *
  *   pnpm grades:report
  *
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
         bucket[letter] = (bucket[letter] ?? 0) + 1;
       }
       const line = (c: Counts) =>
-        ['A', 'B', 'C', 'D', 'E', 'F', 'none']
+        [...OFFICIAL_GRADE_BANDS.map((b) => b.letter), 'none']
           .filter((l) => c[l])
           .map((l) => `${l} ${c[l]}`)
           .join(', ') || 'none';
