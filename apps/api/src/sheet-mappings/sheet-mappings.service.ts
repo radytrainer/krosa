@@ -2,6 +2,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -34,9 +35,11 @@ import type { AuthUser } from '../auth/auth.types.js';
 import { paginated, skipTake } from '../common/pagination.js';
 import type { RequestMeta } from '../common/request-meta.js';
 import { PrismaService } from '../infra/prisma.service.js';
+import { RedisService } from '../infra/redis.service.js';
 import { toHttpError } from '../sheets-sources/sheets-errors.js';
 import { SHEETS_READER } from '../sheets-sources/sheets-reader.provider.js';
 import { DETECT_ISSUE_LIMIT } from '../sheets-sources/sheets-sources.service.js';
+import { acquireDetectLock, releaseDetectLock } from './detect-lock.js';
 import type {
   ConfirmMappingDto,
   ConfirmPreviewDto,
@@ -51,7 +54,10 @@ const MAPPING_INCLUDE = {
 type MappingRow = Prisma.SheetTabMappingGetPayload<{ include: typeof MAPPING_INCLUDE }>;
 
 export interface ColumnMappingView {
-  columnIndex: number;
+  /** Null only when the column is missing from the sheet. */
+  columnIndex: number | null;
+  /** A reopened tab's column the sheet no longer has (decisions.md TD2); DRAFT tabs only. */
+  missingFromSheet: boolean;
   headerLabel: string | null;
   groupLabel: string | null;
   role: MappingRow['columns'][number]['role'];
@@ -102,8 +108,16 @@ export interface TabMappingView {
 
 export interface DetectedTab {
   tabName: string;
-  /** The stored mapping after detection (a fresh DRAFT unless it was confirmed or ignored). */
+  /**
+   * The stored mapping after detection: a fresh DRAFT proposal, or, for a tab confirmed or ignored,
+   * unchanged. A reopened tab keeps what the admin set (audience, column roles, names, weights).
+   */
   mapping: TabMappingView | null;
+  /**
+   * A reopened tab whose saved audience differs from what the sheet now suggests: the suggestion
+   * (SHARED or a program code), shown to the admin and never applied. Null otherwise.
+   */
+  audienceSuggestion: string | null;
   /** null when the tab has no STUDENT ID header (not a subject tab). */
   detected: {
     headerRow: number;
@@ -116,6 +130,21 @@ export interface DetectedTab {
   } | null;
 }
 
+/** What a detection run changed or found, against the mappings saved before it (decisions.md TD1–TD3). */
+export interface DetectionChange {
+  tabName: string;
+  kind:
+    | 'TAB_NEW'
+    | 'TAB_GONE'
+    | 'COLUMN_ADDED'
+    | 'COLUMN_MISSING'
+    | 'COLUMN_RETURNED'
+    | 'HEADERS_CHANGED'
+    | 'AUDIENCE_SUGGESTED';
+  /** A column's header, or the suggested audience. */
+  detail: string | null;
+}
+
 export interface DetectionView {
   spreadsheetTitle: string;
   fatal: boolean;
@@ -125,6 +154,7 @@ export interface DetectionView {
   issues: TemplateIssue[];
   issuesTruncated: boolean;
   tabs: DetectedTab[];
+  changes: DetectionChange[];
 }
 
 function toView(m: MappingRow, carried: TabMappingView['carriedFrom'] = null): TabMappingView {
@@ -140,6 +170,7 @@ function toView(m: MappingRow, carried: TabMappingView['carriedFrom'] = null): T
     audience: m.audience === 'PROGRAM' ? (m.audienceProgram?.code ?? null) : m.audience,
     columns: m.columns.map((c) => ({
       columnIndex: c.columnIndex,
+      missingFromSheet: c.missingFromSheet,
       headerLabel: c.headerLabel,
       groupLabel: c.groupLabel,
       role: c.role,
@@ -194,6 +225,36 @@ function toPreviewView(p: {
 
 const fail = (code: string, message: string) => new UnprocessableEntityException({ code, message });
 
+/** SHARED or a program code, as a tab mapping row holds its audience; null when unset. */
+function audienceCode(m: { audience: string | null; audienceProgram: { code: string } | null }) {
+  return m.audience === 'PROGRAM' ? (m.audienceProgram?.code ?? null) : m.audience;
+}
+
+/** What an audit entry or a refusal lists for a column dropped from a mapping. */
+function droppedColumn(c: {
+  headerLabel: string | null;
+  role: string;
+  proposedName: string | null;
+  proposedWeight: { toString(): string } | null;
+}) {
+  return {
+    header: c.headerLabel,
+    role: c.role,
+    name: c.proposedName,
+    weight: c.proposedWeight?.toString() ?? null,
+  };
+}
+
+/** Saved columns by header label, each handed out once (a sheet can repeat a header). */
+function takeByLabel<T extends { headerLabel: string | null }>(columns: readonly T[]) {
+  const byLabel = new Map<string | null, T[]>();
+  for (const c of columns) byLabel.set(c.headerLabel, [...(byLabel.get(c.headerLabel) ?? []), c]);
+  return {
+    take: (label: string | null) => byLabel.get(label)?.shift(),
+    rest: () => [...byLabel.values()].flat(),
+  };
+}
+
 function columnRows(layout: TabLayout) {
   return layout.columns
     .filter((c) => c.label !== null)
@@ -214,9 +275,12 @@ function columnRows(layout: TabLayout) {
  */
 @Injectable()
 export class SheetMappingsService {
+  private readonly logger = new Logger(SheetMappingsService.name);
+
   constructor(
     @Inject(SHEETS_READER) private readonly reader: SheetsReader,
     private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
     private readonly audit: AuditService,
     private readonly guard: AcademicGuardService,
   ) {}
@@ -258,7 +322,19 @@ export class SheetMappingsService {
     const source = await this.termSource(sourceId);
     await this.guard.assertGenerationEditable(source.generationId);
     const tab = await this.tabOf(sourceId, tabMappingId);
-    const stored = new Map(tab.columns.map((c) => [c.columnIndex, c]));
+    // Columns with a place in the sheet. Columns missing from it (a reopened tab) are not part of
+    // what is confirmed: the admin sees them listed and agrees to drop their mapping rows.
+    const stored = new Map(
+      tab.columns.flatMap((c) => (c.columnIndex === null ? [] : [[c.columnIndex, c] as const])),
+    );
+    const missing = tab.columns.filter((c) => c.missingFromSheet);
+    if (missing.length > 0 && !dto.dropMissingColumns) {
+      throw new ConflictException({
+        code: 'MISSING_COLUMNS',
+        message: `${missing.length} column(s) of this tab are missing from the sheet. Confirm dropping them from the mapping (their marks and criteria stay).`,
+        columns: missing.map(droppedColumn),
+      });
+    }
 
     for (const column of dto.columns) {
       if (!stored.has(column.columnIndex)) {
@@ -353,6 +429,7 @@ export class SheetMappingsService {
         criterionIds.set(column.columnIndex, criterion.id);
       }
 
+      if (missing.length > 0) await this.dropMissingColumns(tx, tab, missing, actor, meta);
       // Cleared first: (tab, criterion) is unique and columns may swap criteria.
       await tx.sheetColumnMapping.updateMany({
         where: { tabMappingId: tab.id },
@@ -400,9 +477,52 @@ export class SheetMappingsService {
         },
         tx,
       );
+      // The admin took the audience the sheet suggested on re-detection (decisions.md TD2).
+      const before = audienceCode(tab);
+      const after = audienceCode(confirmed);
+      if (dto.appliedAudienceSuggestion && before !== after) {
+        await this.audit.record(
+          {
+            action: 'mapping.audience_suggestion_applied',
+            actorUserId: actor.userId,
+            entityType: 'tab_mapping',
+            entityId: tab.id,
+            metadata: { tab: tab.tabName, from: before, to: after },
+            context: meta,
+          },
+          tx,
+        );
+      }
       return confirmed;
     });
     return toView(saved);
+  }
+
+  /**
+   * Drops the mapping rows of columns missing from the sheet, audited with what they held. Only
+   * the rows go: marks, criteria and their history stay.
+   */
+  private async dropMissingColumns(
+    tx: Prisma.TransactionClient,
+    tab: { id: string; tabName: string },
+    missing: readonly MappingRow['columns'][number][],
+    actor: AuthUser,
+    meta: RequestMeta,
+  ): Promise<void> {
+    await tx.sheetColumnMapping.deleteMany({
+      where: { tabMappingId: tab.id, missingFromSheet: true },
+    });
+    await this.audit.record(
+      {
+        action: 'mapping.columns_dropped',
+        actorUserId: actor.userId,
+        entityType: 'tab_mapping',
+        entityId: tab.id,
+        metadata: { tab: tab.tabName, columns: missing.map(droppedColumn) },
+        context: meta,
+      },
+      tx,
+    );
   }
 
   /** SHARED or a program of the term, as stored on a tab mapping. */
@@ -514,7 +634,18 @@ export class SheetMappingsService {
     const source = await this.termSource(sourceId);
     await this.guard.assertGenerationEditable(source.generationId);
     const tab = await this.tabOf(sourceId, tabMappingId);
-    return this.setStatus(tab.id, 'IGNORED', { offeringId: null }, 'mapping.ignored', actor, meta);
+    const missing = tab.columns.filter((c) => c.missingFromSheet);
+    // Columns missing from the sheet exist on DRAFT tabs only: an ignored tab drops them, audited.
+    return this.setStatus(
+      tab.id,
+      'IGNORED',
+      { offeringId: null },
+      'mapping.ignored',
+      actor,
+      meta,
+      (tx) =>
+        missing.length > 0 ? this.dropMissingColumns(tx, tab, missing, actor, meta) : undefined,
+    );
   }
 
   /** Reopens a confirmed or ignored tab for review; run detect next to refresh its columns. */
@@ -537,8 +668,10 @@ export class SheetMappingsService {
     action: string,
     actor: AuthUser,
     meta: RequestMeta,
+    before?: (tx: Prisma.TransactionClient) => Promise<void> | undefined,
   ): Promise<TabMappingView> {
     const saved = await this.prisma.client.$transaction(async (tx) => {
+      await before?.(tx);
       const row = await tx.sheetTabMapping.update({
         where: { id },
         data: { status, ...extra },
@@ -741,6 +874,39 @@ export class SheetMappingsService {
     }
     await this.guard.assertGenerationEditable(source.generationId);
 
+    // One run per source at a time: a second click or the automatic run after connecting gets
+    // "already running" and writes nothing. Without Redis, detection still runs (it never touches
+    // scores), only without this guard.
+    let token: string | null = null;
+    try {
+      token = await acquireDetectLock(this.redis.client, sourceId);
+      if (token === null) {
+        throw new ConflictException({
+          code: 'DETECT_IN_PROGRESS',
+          message: 'The tabs of this sheet are already being read. Wait a moment, then look again.',
+        });
+      }
+    } catch (err) {
+      if (err instanceof ConflictException) throw err;
+      this.logger.warn(`Detect lock unavailable, running without it: ${(err as Error).message}`);
+    }
+    try {
+      return await this.detectLocked(source, actor, meta);
+    } finally {
+      if (token) {
+        await releaseDetectLock(this.redis.client, sourceId, token).catch((err: Error) =>
+          this.logger.warn(`Detect lock release failed (expires on its own): ${err.message}`),
+        );
+      }
+    }
+  }
+
+  private async detectLocked(
+    source: Awaited<ReturnType<SheetMappingsService['termSource']>>,
+    actor: AuthUser,
+    meta: RequestMeta,
+  ): Promise<DetectionView> {
+    const sourceId = source.id;
     let detection;
     try {
       detection = await detectTermWorkbook(this.reader, source.spreadsheetId, {
@@ -762,15 +928,30 @@ export class SheetMappingsService {
         ),
       );
       const result: DetectedTab[] = [];
+      const changes: DetectionChange[] = [];
       const detectable = new Set<string>();
       for (const tab of detection.tabs) {
         const previous = existing.get(tab.tabName);
         const layout = tab.layout;
         if (!layout) {
-          result.push({ tabName: tab.tabName, mapping: null, detected: null });
+          result.push({
+            tabName: tab.tabName,
+            mapping: null,
+            detected: null,
+            audienceSuggestion: null,
+          });
           continue;
         }
         detectable.add(tab.tabName);
+        if (!previous || previous.status === 'REMOVED') {
+          changes.push({ tabName: tab.tabName, kind: 'TAB_NEW', detail: null });
+        }
+        const proposed = proposeAudience(termConfig, tab.rosterClasses);
+        const proposedAudience =
+          proposed.kind === 'PROGRAM'
+            ? { audience: 'PROGRAM' as const, audienceProgramId: proposed.programId }
+            : { audience: 'SHARED' as const, audienceProgramId: null };
+        let audienceSuggestion: string | null = null;
         let mapping: MappingRow;
         if (previous && previous.status !== 'DRAFT' && previous.status !== 'REMOVED') {
           mapping = await tx.sheetTabMapping.update({
@@ -779,16 +960,32 @@ export class SheetMappingsService {
             include: MAPPING_INCLUDE,
           });
         } else {
-          // Proposed from who the tab lists; the admin confirms or changes it.
-          const proposed = proposeAudience(termConfig, tab.rosterClasses);
+          // A tab confirmed before and reopened for review: what the admin set stays (audience,
+          // column roles, names, weights). A fresh proposal only fills what is new.
+          const reopened = previous?.status === 'DRAFT' && previous.confirmedAt !== null;
+          if (
+            reopened &&
+            (previous.audience !== proposedAudience.audience ||
+              previous.audienceProgramId !== proposedAudience.audienceProgramId)
+          ) {
+            audienceSuggestion =
+              proposed.kind === 'PROGRAM'
+                ? (termConfig.programs.find((p) => p.id === proposed.programId)?.code ?? null)
+                : 'SHARED';
+            if (audienceSuggestion) {
+              changes.push({
+                tabName: tab.tabName,
+                kind: 'AUDIENCE_SUGGESTED',
+                detail: audienceSuggestion,
+              });
+            }
+          }
           const data = {
             status: 'DRAFT' as const,
             sheetTabId: tab.sheetTabId,
             headerRow: layout.headerRow,
             headerSignature: layout.headerSignature,
-            ...(proposed.kind === 'PROGRAM'
-              ? { audience: 'PROGRAM' as const, audienceProgramId: proposed.programId }
-              : { audience: 'SHARED' as const, audienceProgramId: null }),
+            ...(reopened ? {} : proposedAudience),
           };
           const saved = previous
             ? await tx.sheetTabMapping.update({ where: { id: previous.id }, data })
@@ -796,17 +993,38 @@ export class SheetMappingsService {
                 data: { ...data, sourceId, tabName: tab.tabName },
               });
           await tx.sheetColumnMapping.deleteMany({ where: { tabMappingId: saved.id } });
-          // A reopened tab keeps what was confirmed for the columns that are still there.
+          const rows = columnRows(layout);
+          // Columns are matched by header. A reopened tab keeps each matched column as the admin
+          // left it; a new draft keeps only names and weights linked to a criterion, as before.
           const fromActive = active.get(cleanLabel(tab.tabName).toLowerCase());
-          const kept = new Map(
-            [...(fromActive?.columns ?? []), ...(previous?.columns ?? [])].map((c) => [
-              c.headerLabel,
-              c,
-            ]),
-          );
+          const own = takeByLabel(previous?.columns ?? []);
+          const carried = new Map((fromActive?.columns ?? []).map((c) => [c.headerLabel, c]));
           await tx.sheetColumnMapping.createMany({
-            data: columnRows(layout).map((c) => {
-              const old = kept.get(c.headerLabel);
+            data: rows.map((c) => {
+              const mine = own.take(c.headerLabel);
+              const old = mine ?? carried.get(c.headerLabel);
+              if (previous && !mine) {
+                changes.push({ tabName: tab.tabName, kind: 'COLUMN_ADDED', detail: c.headerLabel });
+              }
+              if (mine?.missingFromSheet) {
+                changes.push({
+                  tabName: tab.tabName,
+                  kind: 'COLUMN_RETURNED',
+                  detail: c.headerLabel,
+                });
+              }
+              if (reopened && mine) {
+                // Back in its place (a new position, if it moved), as the admin left it.
+                return {
+                  ...c,
+                  tabMappingId: saved.id,
+                  role: mine.role,
+                  criterionId: mine.criterionId,
+                  proposedName: mine.proposedName,
+                  proposedWeight: mine.proposedWeight,
+                  proposedKey: mine.proposedKey,
+                };
+              }
               return {
                 ...c,
                 tabMappingId: saved.id,
@@ -820,29 +1038,64 @@ export class SheetMappingsService {
               };
             }),
           });
+          const goneColumns = own.rest();
+          for (const gone of goneColumns) {
+            changes.push({
+              tabName: tab.tabName,
+              kind: 'COLUMN_MISSING',
+              detail: gone.headerLabel,
+            });
+          }
+          // A reopened tab keeps them as the admin set them, flagged and with no position, until
+          // its header comes back or the admin confirms dropping them. A never-confirmed draft
+          // was only a proposal: its columns simply follow the sheet.
+          if (reopened && goneColumns.length > 0) {
+            await tx.sheetColumnMapping.createMany({
+              data: goneColumns.map((g) => ({
+                tabMappingId: saved.id,
+                columnIndex: null,
+                missingFromSheet: true,
+                headerLabel: g.headerLabel,
+                groupLabel: g.groupLabel,
+                role: g.role,
+                criterionId: g.criterionId,
+                proposedName: g.proposedName,
+                proposedWeight: g.proposedWeight,
+                proposedKey: g.proposedKey,
+              })),
+            });
+          }
           mapping = await tx.sheetTabMapping.findUniqueOrThrow({
             where: { id: saved.id },
             include: MAPPING_INCLUDE,
           });
         }
+        const headersChanged =
+          mapping.status === 'CONFIRMED' && mapping.headerSignature !== layout.headerSignature;
+        if (headersChanged) {
+          changes.push({ tabName: tab.tabName, kind: 'HEADERS_CHANGED', detail: null });
+        }
         result.push({
           tabName: tab.tabName,
           mapping: toView(mapping, carriedFrom(mapping, active)),
+          audienceSuggestion,
           detected: {
             headerRow: layout.headerRow,
             totalWeight: layout.totalWeight,
             studentRows: layout.studentRows,
             unknownStudents: tab.unknownStudents,
             crossCheck: layout.crossCheck,
-            headersChanged:
-              mapping.status === 'CONFIRMED' && mapping.headerSignature !== layout.headerSignature,
+            headersChanged,
           },
         });
       }
-      // Drafts for tabs that vanished or stopped looking like subjects are stale proposals.
-      const stale = [...existing.values()].filter(
-        (m) => m.status === 'DRAFT' && !detectable.has(m.tabName),
+      // Tabs gone from the sheet. Drafts never confirmed are stale proposals and go; a reopened
+      // tab keeps what the admin set, and confirmed or ignored tabs are left as they are.
+      const gone = [...existing.values()].filter(
+        (m) => m.status !== 'REMOVED' && !detectable.has(m.tabName),
       );
+      for (const m of gone) changes.push({ tabName: m.tabName, kind: 'TAB_GONE', detail: null });
+      const stale = gone.filter((m) => m.status === 'DRAFT' && m.confirmedAt === null);
       if (stale.length > 0) {
         await tx.sheetTabMapping.deleteMany({ where: { id: { in: stale.map((m) => m.id) } } });
       }
@@ -864,12 +1117,13 @@ export class SheetMappingsService {
             tabs: result.map((t) => ({ tab: t.tabName, status: t.mapping?.status ?? null })),
             errors: detection.issues.filter((i) => i.severity === 'ERROR').length,
             warnings: detection.issues.filter((i) => i.severity === 'WARNING').length,
+            changes: changes.length,
           },
           context: meta,
         },
         tx,
       );
-      return result;
+      return { tabs: result, changes };
     });
 
     return {
@@ -880,7 +1134,8 @@ export class SheetMappingsService {
       rosterStudents: detection.roster.length,
       issues: detection.issues.slice(0, DETECT_ISSUE_LIMIT),
       issuesTruncated: detection.issues.length > DETECT_ISSUE_LIMIT,
-      tabs,
+      tabs: tabs.tabs,
+      changes: tabs.changes,
     };
   }
 }

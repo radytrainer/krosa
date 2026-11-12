@@ -42,6 +42,7 @@ import {
 } from '@/components/ui/table';
 import { apiFetch, errorCode } from '@/lib/api';
 import { formatDate, formatDateTime } from '@/lib/format';
+import { requestAutoDetect } from '@/lib/auto-detect';
 import { json, useApi, useApiMutation, useFreshApi } from '@/lib/query';
 import type { GenerationDetail, Source, Term, TermDetail } from '@/lib/types';
 
@@ -215,9 +216,13 @@ function ConnectWorkbookDialog({
     (body: { url: string; label: string }) =>
       apiFetch<Source>(`/admin/terms/${term.id}/sources`, json(body)),
     {
-      success: (s) => `Connected "${s.label}". Detect its tabs next.`,
+      success: (s) => `Connected "${s.label}". Reading its tabs…`,
       invalidate: [`/admin/generations/${generation.id}`],
-      onSuccess: (s) => router.push(`/admin/sources/${s.id}`),
+      // Its tabs are read once, automatically, when its page opens.
+      onSuccess: (s) => {
+        requestAutoDetect(s.id);
+        router.push(`/admin/sources/${s.id}`);
+      },
     },
   );
   const errors = fieldErrors(add.error);

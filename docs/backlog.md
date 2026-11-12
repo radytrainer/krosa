@@ -14,12 +14,15 @@ What is left, most urgent first. Built work is in [progress.md](progress.md).
 
 ## After go-live
 
-| Item                                  | Notes                                                                                        |
-| ------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Skip unchanged tabs (`content_hash`)  | `sheet_tab_mappings.last_content_hash` exists but nothing reads or writes it                 |
-| Carry a tab's audience to a new sheet | A replacement sheet's tabs get a fresh proposal instead of the previous sheet's audience     |
-| Dark mode                             | The white PN logo is ready; the app has no dark theme                                        |
-| Grade scale editor                    | The official scale is seeded per generation (G1); `grade_bands` is ready for an admin editor |
-| Update dated QA records               | `qa/test-plan.md`, `qa/qa-report.md`, `doc-review.md` still say 53 routes and SNA            |
-| Playwright Chromium on Windows        | Its bundled browser version may not match; end-to-end runs use `E2E_CHANNEL=msedge`          |
-| Format check on Windows               | `pnpm format:check` fails on CRLF working trees; not a content problem                       |
+| Item                                  | Notes                                                                                         |
+| ------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Skip unchanged tabs (`content_hash`)  | `sheet_tab_mappings.last_content_hash` exists but nothing reads or writes it                  |
+| Carry a tab's audience to a new sheet | A replacement sheet's tabs get a fresh proposal instead of the previous sheet's audience      |
+| Dark mode                             | The white PN logo is ready; the app has no dark theme                                         |
+| Grade scale editor                    | The official scale is seeded per generation (G1); `grade_bands` is ready for an admin editor  |
+| Update dated QA records               | `qa/test-plan.md`, `qa/qa-report.md`, `doc-review.md` still say 53 routes and SNA             |
+| Playwright Chromium on Windows        | Its bundled browser version may not match; end-to-end runs use `E2E_CHANNEL=msedge`           |
+| Format check on Windows               | `pnpm format:check` fails on CRLF working trees; not a content problem                        |
+| QA config runs the manual specs       | `qa/playwright.qa.config.ts` also picks up `qa/manual/*`; pass `ui.spec.ts session.spec.ts`   |
+| Line endings: add `.gitattributes`    | Separate chore after the current branch merges: `* text=auto eol=lf`, then renormalize once   |
+| Security review: inline styles in CSP | `style-src 'unsafe-inline'` remains for the toast library (charts removed); review, no change |

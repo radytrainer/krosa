@@ -479,21 +479,25 @@ enum ColumnRole {
 }
 
 model SheetColumnMapping {
-  id             String     @id @default(uuid(7)) @db.Uuid
-  tabMappingId   String     @map("tab_mapping_id") @db.Uuid
-  /// 0-based column index (A = 0).
-  columnIndex    Int        @map("column_index")
-  headerLabel    String?    @map("header_label")
+  id               String     @id @default(uuid(7)) @db.Uuid
+  tabMappingId     String     @map("tab_mapping_id") @db.Uuid
+  /// 0-based column index (A = 0). NULL only when missing from the sheet (below).
+  columnIndex      Int?       @map("column_index")
+  headerLabel      String?    @map("header_label")
   /// Nearest group label above the header row (e.g. "MIDTERM (30%)").
-  groupLabel     String?    @map("group_label")
-  role           ColumnRole
+  groupLabel       String?    @map("group_label")
+  role             ColumnRole
   /// role = CRITERION only (CHECK in migration). Set when the mapping is confirmed.
-  criterionId    String?    @map("criterion_id") @db.Uuid
+  criterionId      String?    @map("criterion_id") @db.Uuid
   /// Proposed criterion name and weight (DRAFT); the published scheme is authoritative.
-  proposedName   String?    @map("proposed_name")
-  proposedWeight Decimal?   @map("proposed_weight") @db.Decimal(6, 3)
+  proposedName     String?    @map("proposed_name")
+  proposedWeight   Decimal?   @map("proposed_weight") @db.Decimal(6, 3)
   /// Pending sheets: the criterion key the promoting sync uses.
-  proposedKey    String?    @map("proposed_key")
+  proposedKey      String?    @map("proposed_key")
+  /// A reopened tab's column the sheet no longer has: kept as the admin set it, with no position
+  /// (CHECK: flagged exactly when column_index is NULL). DRAFT tabs only; confirming drops it.
+  /// Sync, preview and scores never read it (decisions.md TD2).
+  missingFromSheet Boolean    @default(false) @map("missing_from_sheet")
 
   tabMapping SheetTabMapping      @relation(fields: [tabMappingId], references: [id], onDelete: Cascade)
   criterion  AssessmentCriterion? @relation(fields: [criterionId], references: [id], onDelete: Restrict)

@@ -13,6 +13,11 @@ export const TERM_FIXTURE_TERM = 1;
 export const LOGIC_COMMENT = 'ពូកែណាស់ សូមបន្ត 👏🏽 <b>not bold</b>';
 /** A replacement workbook for the same term, for changing a term's sheet. */
 export const TERM_FIXTURE_REPLACEMENT_ID = '1TermWorkbookReplacement0000000000000000';
+/**
+ * A second copy of the Term 1 workbook, for a first connection in another generation (a
+ * spreadsheet belongs to one term; `_meta`'s generation code is not checked).
+ */
+export const TERM_FIXTURE_SECOND_ID = '1TermWorkbookSecondCopy00000000000000000';
 
 const STUDENTS = [
   ['PNC2027-001', 'DARA', 'SOK', 'M', 'A'],

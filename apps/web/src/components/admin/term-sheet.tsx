@@ -12,6 +12,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { apiFetch } from '@/lib/api';
+import { requestAutoDetect } from '@/lib/auto-detect';
 import { formatDateTime } from '@/lib/format';
 import { json, useApi, useApiMutation, useFreshApi } from '@/lib/query';
 import type { SheetCheck, Source, TermWorkbooks } from '@/lib/types';
@@ -42,10 +43,14 @@ function SheetForm({
       apiFetch<Source>(`/admin/terms/${termId}/sources${reviewed ? '/change' : ''}`, json(body)),
     {
       success: reviewed
-        ? 'New sheet connected. Review its tabs next.'
-        : 'Sheet connected. Detect its tabs next.',
+        ? 'New sheet connected. Reading its tabs…'
+        : 'Sheet connected. Reading its tabs…',
       invalidate: INVALIDATE,
-      onSuccess: (s) => router.push(`/admin/sources/${s.id}`),
+      // Its tabs are read once, automatically, when its page opens.
+      onSuccess: (s) => {
+        requestAutoDetect(s.id);
+        router.push(`/admin/sources/${s.id}`);
+      },
     },
   );
   const checked = check.data;

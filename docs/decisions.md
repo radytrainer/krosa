@@ -61,6 +61,14 @@ Replaces the D5 placeholder scale (A 85 / B 70 / C 50 / F below 50), which was n
 | T2  | Top scoring: the highest final score among the term's COMPLETE subjects, with name, score and grade; ties all shown in one line; none yet: "No final score yet", never a zero. Withdrawn enrollments never count        | `packages/shared/src/top-scoring.ts` |
 | T3  | Students: released subjects only. Admins: hidden subjects count, marked "Hidden from student". Its grade, beside that final score, is the summary's only grade (G3). The dashboard's highest score uses the same helper | api-specification.md §3              |
 
+## Tab detection (2026-11-11)
+
+| #   | Decision                                                                                                                                                                                                               | Rule in                                      |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| TD1 | Tabs are read once, automatically, right after a sheet is connected (first sheet or each new pending sheet), from either connect form; never on a page load. "Detect tabs" stays. One run per source: a 2-minute lease | `apps/api/src/sheet-mappings/detect-lock.ts` |
+| TD2 | Re-detecting never overwrites what an admin set: a reopened tab keeps its audience and each matched column's role, name and weight; new columns are proposed; another audience is only suggested; changes are listed   | api-specification.md §4 (Tab detection)      |
+| TD3 | Detection never syncs and never changes scores or visibility. If it fails, the sheet stays connected, with a clear error and Try again                                                                                 | api-specification.md §4 (Tab detection)      |
+
 ## Releasing scores from the Sync Center (2026-11-10)
 
 | #   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                   | Rule in                   |

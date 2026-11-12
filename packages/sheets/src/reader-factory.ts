@@ -78,5 +78,6 @@ export async function createSheetsReader(env: SheetsReaderEnv): Promise<SheetsRe
   const testing = await import('./testing/index.js');
   return new testing.InMemorySheetsReader()
     .set(testing.TERM_FIXTURE_SPREADSHEET_ID, testing.termWorkbookFixture())
-    .set(testing.TERM_FIXTURE_REPLACEMENT_ID, testing.replacementWorkbookFixture());
+    .set(testing.TERM_FIXTURE_REPLACEMENT_ID, testing.replacementWorkbookFixture())
+    .set(testing.TERM_FIXTURE_SECOND_ID, testing.termWorkbookFixture());
 }

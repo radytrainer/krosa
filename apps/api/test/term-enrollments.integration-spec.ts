@@ -194,6 +194,46 @@ describe('Term enrollments (integration)', () => {
       ).toEqual(['SHARED', 'SHARED']);
     });
 
+    it('re-detecting a reopened tab keeps the saved audience and only suggests the other (TD2)', async () => {
+      await admin.post(`${V1}/sources/${sources.t2}/detect`).expect(200);
+      const algorithm = (await tabsOf(sources.t2)).find((t) => t.tabName === 'Algorithm')!;
+      expect(algorithm.audience).toBe('WEP');
+      const url = `${V1}/sources/${sources.t2}/mappings/${algorithm.id}`;
+      await admin
+        .post(`${url}/confirm`, confirmBody(algorithm, { audience: 'SHARED' }))
+        .expect(200);
+      await admin.post(`${url}/reopen`).expect(200);
+
+      const res = await admin.post(`${V1}/sources/${sources.t2}/detect`).expect(200);
+      const detected = res.body.tabs.find((t: { tabName: string }) => t.tabName === 'Algorithm');
+      expect(detected.mapping.audience).toBe('SHARED');
+      expect(detected.audienceSuggestion).toBe('WEP');
+      expect(res.body.changes).toContainEqual({
+        tabName: 'Algorithm',
+        kind: 'AUDIENCE_SUGGESTED',
+        detail: 'WEP',
+      });
+      expect((await tabsOf(sources.t2)).find((t) => t.tabName === 'Algorithm')!.audience).toBe(
+        'SHARED',
+      );
+      // A tab never confirmed is only a proposal: it follows the sheet, with no suggestion.
+      const eng = res.body.tabs.find((t: { tabName: string }) => t.tabName === 'ENG');
+      expect(eng.audienceSuggestion).toBeNull();
+
+      // Taking the suggestion is audited, with the old and new audience.
+      const reopened = (await tabsOf(sources.t2)).find((t) => t.tabName === 'Algorithm')!;
+      await admin
+        .post(
+          `${url}/confirm`,
+          confirmBody(reopened, { audience: 'WEP', appliedAudienceSuggestion: true }),
+        )
+        .expect(200);
+      const audit = await ctx.prisma.auditLog.findFirstOrThrow({
+        where: { action: 'mapping.audience_suggestion_applied' },
+      });
+      expect(audit.metadata).toEqual({ tab: 'Algorithm', from: 'SHARED', to: 'WEP' });
+    });
+
     it('is confirmed with the tab, and only a program of the term is accepted', async () => {
       await admin.post(`${V1}/sources/${sources.t2}/detect`).expect(200);
       const tabs = await tabsOf(sources.t2);

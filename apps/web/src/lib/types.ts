@@ -108,7 +108,10 @@ export type ColumnRole =
   | 'IGNORE';
 
 export interface ColumnMapping {
-  columnIndex: number;
+  /** Null only when the column is missing from the sheet. */
+  columnIndex: number | null;
+  /** A reopened tab's column the sheet no longer has (decisions.md TD2); kept until confirmed. */
+  missingFromSheet: boolean;
   headerLabel: string | null;
   groupLabel: string | null;
   role: ColumnRole;
@@ -224,6 +227,8 @@ export interface PreviewIssuePage extends Paginated<SheetIssue> {
 export interface DetectedTab {
   tabName: string;
   mapping: TabMapping | null;
+  /** A reopened tab: the audience the sheet now suggests (never applied), or null. */
+  audienceSuggestion: string | null;
   detected: {
     headerRow: number;
     totalWeight: string | null;
@@ -246,6 +251,21 @@ export interface Detection {
   issues: SheetIssue[];
   issuesTruncated: boolean;
   tabs: DetectedTab[];
+  /** What this run changed or found, against the saved mappings (decisions.md TD2). */
+  changes: DetectionChange[];
+}
+
+export interface DetectionChange {
+  tabName: string;
+  kind:
+    | 'TAB_NEW'
+    | 'TAB_GONE'
+    | 'COLUMN_ADDED'
+    | 'COLUMN_MISSING'
+    | 'COLUMN_RETURNED'
+    | 'HEADERS_CHANGED'
+    | 'AUDIENCE_SUGGESTED';
+  detail: string | null;
 }
 
 export type AccountStatus = 'PENDING' | 'ACTIVE' | 'DISABLED';
