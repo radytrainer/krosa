@@ -91,7 +91,7 @@ REST API backed by PostgreSQL (never from Google Sheets at request time).
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GS-01 | Admin connects one Google Sheet per term. One ACTIVE and one PENDING per term.                                                                                                  |
 | GS-02 | URL validated: `https://docs.google.com/spreadsheets/d/<id>…` only; spreadsheet ID extracted.                                                                                   |
-| GS-03 | Connecting verifies the service account can read the file and that an optional `_meta` tab, when present, names this generation and term. Otherwise rejected.                   |
+| GS-03 | Connecting verifies the service account can read the file and that its required `_meta` tab names this generation and term (decisions.md K1). Otherwise rejected.               |
 | GS-04 | Server-side service-account access, read-only scope. Credentials never reach the browser.                                                                                       |
 | GS-05 | Term workbooks (see `google-sheets-template.md`): tabs are detected and an admin confirms each one. The strict template was removed (D14).                                      |
 | GS-06 | Parser tolerant of whitespace and blank rows. Reordered columns change the header signature, so the tab needs review (`NEEDS_REMAP`). Malformed data gets row or column errors. |
@@ -179,7 +179,7 @@ credentials), sync center, sync job details, audit logs, account settings.
 
 | Risk                                                      | Mitigation                                                                                                                                                             |
 | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Wrong spreadsheet attached to a generation                | `_meta`, when present, must name this generation and term at connect and at every sync (D26).                                                                          |
+| Wrong spreadsheet attached to a generation                | `_meta` is required and must name this generation and term at connect and at every sync (D26, K1).                                                                     |
 | Renamed column header remaps marks to the wrong criterion | A header signature is stored at confirmation. A changed header skips the tab with `NEEDS_REMAP` until it is reviewed.                                                  |
 | Student ID formatting differences (`st001 `, `ST001`)     | Normalization: trim (incl. NBSP and zero-width characters), uppercase; inner whitespace is rejected, never collapsed; validated by regex `^[A-Z0-9][A-Z0-9_-]{0,31}$`. |
 | Numbers stored as text / locale decimals (`8,5`)          | UNFORMATTED_VALUE reads; strings parsed strictly; comma decimals rejected with an explicit error.                                                                      |

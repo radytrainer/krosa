@@ -64,8 +64,8 @@ export interface SheetsReaderEnv extends GoogleEnv {
 }
 
 /**
- * The reader the API and worker use. In end-to-end test mode it serves the fixture workbook
- * under `TERM_FIXTURE_SPREADSHEET_ID`, so tests exercise the real
+ * The reader the API and worker use. In end-to-end test mode it serves the fixture workbooks
+ * (`TERM_FIXTURE_SPREADSHEET_ID` and its copies, see `./testing`), so tests exercise the real
  * services without Google. Test mode is refused with NODE_ENV=production, and the fake is loaded
  * lazily from `./testing`, which production images delete (see docker/), so it cannot be enabled
  * there at all.
@@ -79,5 +79,6 @@ export async function createSheetsReader(env: SheetsReaderEnv): Promise<SheetsRe
   return new testing.InMemorySheetsReader()
     .set(testing.TERM_FIXTURE_SPREADSHEET_ID, testing.termWorkbookFixture())
     .set(testing.TERM_FIXTURE_REPLACEMENT_ID, testing.replacementWorkbookFixture())
-    .set(testing.TERM_FIXTURE_SECOND_ID, testing.termWorkbookFixture());
+    .set(testing.TERM_FIXTURE_SECOND_ID, testing.termWorkbookFixture())
+    .set(testing.TERM_FIXTURE_GEN2028_ID, testing.gen2028WorkbookFixture());
 }

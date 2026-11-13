@@ -1,7 +1,7 @@
 /* eslint-disable -- QA suite: uses expect messages, console evidence and supertest .expect() */
 import { runSourceSync } from '@ssrs/sync';
 import { confirmAllTabs } from '@ssrs/sync/testing';
-import type { FakeSpreadsheet } from '@ssrs/sheets/testing';
+import { termMetaTab, type FakeSpreadsheet } from '@ssrs/sheets/testing';
 import { api, login, type TestContext } from '../support/test-app.js';
 import {
   ADMIN_V1,
@@ -32,7 +32,10 @@ const MARKS = [
 
 function workbook(version: number): FakeSpreadsheet {
   const rows = Array.from({ length: STUDENTS }, (_, i) => [code(i), `F${i}`, `L${i}`, 'F', 'A']);
-  const tabs: FakeSpreadsheet['tabs'] = { ALL: [PROFILE, ...rows] };
+  const tabs: FakeSpreadsheet['tabs'] = {
+    _meta: termMetaTab('GEN2027', 1),
+    ALL: [PROFILE, ...rows],
+  };
   TABS.forEach((name, t) => {
     tabs[name] = [
       [...PROFILE, ...MARKS],

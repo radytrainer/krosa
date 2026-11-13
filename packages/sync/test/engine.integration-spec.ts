@@ -589,8 +589,14 @@ describe('failures before anything is written', () => {
     edit((tabs) => (tabs['_meta']![3]![1] = 2));
     const { outcome, job } = await sync();
     expect(outcome).toEqual({ kind: 'finished', status: 'FAILED' });
-    expect(job).toMatchObject({ status: 'FAILED', failureCode: 'TEMPLATE_INVALID' });
-    expect(job.errors.map((e) => e.code)).toEqual(['TERM_MISMATCH']);
+    expect(job).toMatchObject({
+      status: 'FAILED',
+      failureCode: 'WORKBOOK_MISMATCH',
+      failureMessage:
+        'This workbook is for GEN2027, Term 2. You selected GEN2027, Term 1. ' +
+        'Choose the matching term or check the workbook.',
+    });
+    expect(job.errors.map((e) => e.code)).toEqual(['WORKBOOK_MISMATCH']);
     expect(await prisma.student.count()).toBe(0);
     expect(await prisma.auditLog.count({ where: { action: 'sync.failed' } })).toBe(1);
   });

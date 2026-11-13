@@ -10,6 +10,7 @@ import { DashboardModule } from './dashboard/dashboard.module.js';
 import { GenerationsModule } from './generations/generations.module.js';
 import { HealthModule } from './health/health.module.js';
 import { InfraModule } from './infra/infra.module.js';
+import { MonitoringModule } from './monitoring/monitoring.module.js';
 import { ProgramsModule } from './programs/programs.module.js';
 import { ResultsModule } from './results/results.module.js';
 import { SheetMappingsModule } from './sheet-mappings/sheet-mappings.module.js';
@@ -38,6 +39,7 @@ export class AppModule {
         SheetMappingsModule,
         SyncModule,
         DashboardModule,
+        MonitoringModule,
       ],
     };
   }

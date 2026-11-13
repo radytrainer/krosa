@@ -941,8 +941,8 @@ test.describe('Connect Workbook', () => {
   });
 
   for (const [tc, title, edit, pattern] of [
-    ['071', '_meta tab names another term', 'term', /term/i],
-    ['072', '_meta tab names another generation', 'generation', /generation/i],
+    ['071', '_meta tab names another term', 'term', /This workbook is for .*, Term 2\./],
+    ['072', '_meta tab names another generation', 'generation', /This workbook is for GEN1999/],
   ] as const) {
     test(`TC-${tc} ${title}`, async ({ browser }) => {
       const admin = await asAdmin(browser);
@@ -951,12 +951,12 @@ test.describe('Connect Workbook', () => {
       writeSheet(id_, {
         ...workbook(g.code),
         tabs: {
+          ...workbook(g.code).tabs,
           _meta: [
             ['key', 'value'],
             ['generation_code', edit === 'generation' ? 'GEN1999' : g.code],
             ['education_term', edit === 'term' ? 2 : 1],
           ],
-          ...workbook(g.code).tabs,
         },
       });
       const d = await openConnect(admin.page, g.id);

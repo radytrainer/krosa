@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
-import { termWorkbookFixture, type FakeSpreadsheet } from '@ssrs/sheets/testing';
+import { termMetaTab, termWorkbookFixture, type FakeSpreadsheet } from '@ssrs/sheets/testing';
 import { E2E, ROOT, WEB_URL } from '../../support/stack.js';
 
 export const SHEETS_DIR = path.join(ROOT, 'e2e', 'test-results', 'sheets');
@@ -142,10 +142,13 @@ export const unique = () =>
   `Q${Date.now().toString(36).toUpperCase().slice(-6)}${(counter++).toString(36).toUpperCase()}`;
 export const sheetId = (p: string) => `1QaSheet${p}`.padEnd(40, '0');
 
-/** The synthetic fixture, with student IDs of this case only. */
-export function workbook(prefix: string, edit?: (s: TestSheet) => void): TestSheet {
+/**
+ * The synthetic fixture, with student IDs of this case only. `prefix` is also the generation
+ * code, so `_meta` names that generation and `term`.
+ */
+export function workbook(prefix: string, edit?: (s: TestSheet) => void, term = 1): TestSheet {
   const sheet = termWorkbookFixture() as TestSheet;
-  delete sheet.tabs['_meta'];
+  sheet.tabs['_meta'] = termMetaTab(prefix, term);
   sheet.title = `Test Sheet ${prefix}`;
   for (const grid of Object.values(sheet.tabs)) {
     for (const row of grid) {

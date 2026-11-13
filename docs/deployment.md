@@ -98,6 +98,17 @@ Migrations run automatically (`migrate` must finish before `api` and `worker` st
 forward-only; take a backup first when the release notes mention a migration:
 `ssrs exec backup sh /usr/local/bin/backup.sh --once`.
 
+**Before releasing the `_meta` check (decisions.md K1):** every ACTIVE source's workbook must have
+a `_meta` tab whose `generation_code` and `education_term` match its generation and term, or its
+next sync fails with `META_MISSING` / `WORKBOOK_MISMATCH` (nothing is written). Check each one
+(read-only; needs `pnpm build` and the Google credentials):
+
+```bash
+node scripts/verify-term-workbook.mjs --sheet "<spreadsheet URL>" --generation <code> --term <n>
+```
+
+On 2026-11-13 both live workbooks (GEN2026 Term 1, GEN2027 Term 1) were verified correct.
+
 **Rollback:** check out the previous release (`git checkout <tag>`) and `ssrs up -d --build`. If the
 newer release ran a migration that the older code cannot use, restore the backup taken before the
 update ([operations.md §2](operations.md#2-backups-and-restore)).

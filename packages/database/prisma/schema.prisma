@@ -786,13 +786,23 @@ model GradeScale {
   @@map("grade_scales")
 }
 
+/// Performance level of a grade band, for admin subject monitoring. FAIL is exactly the failing
+/// band: CHECK ((level = 'FAIL') = (NOT is_pass)) in migration 20261114090000_grade_levels.
+enum GradeLevel {
+  VERY_GOOD
+  GOOD
+  FAIR
+  FAIL
+}
+
 /// A total ≥ min_total (and below the next band) earns `letter`.
 model GradeBand {
-  id       String  @id @default(uuid(7)) @db.Uuid
-  scaleId  String  @map("scale_id") @db.Uuid
+  id       String     @id @default(uuid(7)) @db.Uuid
+  scaleId  String     @map("scale_id") @db.Uuid
   letter   String
-  minTotal Decimal @map("min_total") @db.Decimal(5, 2)
-  isPass   Boolean @map("is_pass")
+  minTotal Decimal    @map("min_total") @db.Decimal(5, 2)
+  isPass   Boolean    @map("is_pass")
+  level    GradeLevel
 
   scale GradeScale @relation(fields: [scaleId], references: [id], onDelete: Cascade)
 

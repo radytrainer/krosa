@@ -13,6 +13,9 @@
 --   - the migration record: removed, so `prisma migrate deploy` can apply it again.
 -- Marks, scores and results are not touched (grades are computed on read).
 --
+-- Reverts run newest first: run reverts/20261114090000_grade_levels.sql before this file. This
+-- file inserts bands without `level`, which fails while that column is NOT NULL.
+--
 -- Run only through the guard, against a database you have approval for, for example:
 --   scripts/db-guard.sh ssrs_copy_20261112 "$COPY_URL" psql < packages/database/prisma/reverts/20261113090000_grade_scale_2026_11.sql
 

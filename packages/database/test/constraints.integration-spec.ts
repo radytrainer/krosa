@@ -36,6 +36,14 @@ const bandsOf = async (generationId: string) => {
     bands: scale.bands.map((b) => [b.letter, b.minTotal.toFixed(2), b.isPass]),
   };
 };
+/** A generation's band letters with their levels, highest first. */
+const levelsOf = async (generationId: string) => {
+  const scale = await prisma.gradeScale.findUniqueOrThrow({
+    where: { generationId },
+    include: { bands: { orderBy: { minTotal: 'desc' } } },
+  });
+  return scale.bands.map((b) => [b.letter, b.level]);
+};
 const cacheVersionOf = async (id: string) =>
   (await prisma.generation.findUniqueOrThrow({ where: { id } })).cacheVersion;
 
@@ -530,7 +538,7 @@ describe('term workbooks (delivery plan A.3)', () => {
     const scale = await prisma.gradeScale.create({ data: { generationId: fx.generationId } });
     await expect(
       prisma.gradeBand.create({
-        data: { scaleId: scale.id, letter: 'A', minTotal: '101', isPass: true },
+        data: { scaleId: scale.id, letter: 'A', minTotal: '101', isPass: true, level: 'VERY_GOOD' },
       }),
     ).rejects.toThrow(/grade_bands_min_total_check/);
     await expect(prisma.program.create({ data: { code: 'S', name: 'Too short' } })).rejects.toThrow(
@@ -559,6 +567,15 @@ describe('term workbooks (delivery plan A.3)', () => {
       ['E', '50.00', true],
       ['F', '0.00', false],
     ];
+    // Levels of the old six-band fixture: they must obey CHECK ((level = 'FAIL') = NOT is_pass).
+    const OLD_LEVEL: Record<string, 'VERY_GOOD' | 'GOOD' | 'FAIR' | 'FAIL'> = {
+      A: 'VERY_GOOD',
+      B: 'GOOD',
+      C: 'GOOD',
+      D: 'FAIR',
+      E: 'FAIR',
+      F: 'FAIL',
+    };
     it('replaces a generation’s old bands, confirms its scale and makes cached results stale', async () => {
       // A generation still on the previous scale, not confirmed.
       await prisma.gradeScale.create({
@@ -570,6 +587,7 @@ describe('term workbooks (delivery plan A.3)', () => {
               letter: letter as string,
               minTotal: minTotal as string,
               isPass: isPass as boolean,
+              level: OLD_LEVEL[letter as string]!,
             })),
           },
         },
@@ -596,6 +614,63 @@ describe('term workbooks (delivery plan A.3)', () => {
       await expect(
         prisma.$executeRaw`SELECT ssrs_set_official_grade_bands('01900000-0000-7000-8000-000000000000'::uuid)`,
       ).rejects.toThrow(/does not exist/);
+    });
+  });
+
+  describe('grade levels (migration 20261114090000_grade_levels, monitoring M-decisions)', () => {
+    const LEVELS = [
+      ['A', 'VERY_GOOD'],
+      ['B+', 'VERY_GOOD'],
+      ['B', 'GOOD'],
+      ['C+', 'GOOD'],
+      ['C', 'FAIR'],
+      ['D', 'FAIR'],
+      ['E', 'FAIL'],
+    ];
+
+    it('refuses FAIL on a passing band and a graded level on the failing band', async () => {
+      const scale = await prisma.gradeScale.create({ data: { generationId: fx.generationId } });
+      await expect(
+        prisma.gradeBand.create({
+          data: { scaleId: scale.id, letter: 'E', minTotal: '0', isPass: false, level: 'FAIR' },
+        }),
+      ).rejects.toThrow(/grade_bands_level_pass_check/);
+      await expect(
+        prisma.gradeBand.create({
+          data: { scaleId: scale.id, letter: 'D', minTotal: '50', isPass: true, level: 'FAIL' },
+        }),
+      ).rejects.toThrow(/grade_bands_level_pass_check/);
+      // Changing is_pass alone on an existing band is refused too.
+      const ok = await prisma.gradeBand.create({
+        data: { scaleId: scale.id, letter: 'A', minTotal: '85', isPass: true, level: 'VERY_GOOD' },
+      });
+      await expect(
+        prisma.gradeBand.update({ where: { id: ok.id }, data: { isPass: false } }),
+      ).rejects.toThrow(/grade_bands_level_pass_check/);
+      await expect(
+        prisma.$executeRaw`INSERT INTO grade_bands (id, scale_id, letter, min_total, is_pass)
+          VALUES (gen_random_uuid(), ${scale.id}::uuid, 'B', 70, true)`,
+      ).rejects.toThrow(/level|null/i);
+      await expect(
+        prisma.$executeRaw`INSERT INTO grade_bands (id, scale_id, letter, min_total, is_pass, level)
+          VALUES (gen_random_uuid(), ${scale.id}::uuid, 'B', 70, true, 'EXCELLENT')`,
+      ).rejects.toThrow(/GradeLevel|invalid input value/i);
+    });
+
+    it('ssrs_set_official_grade_bands writes every level', async () => {
+      await prisma.$executeRaw`SELECT ssrs_set_official_grade_bands(${fx.generationId}::uuid)`;
+      expect(await levelsOf(fx.generationId)).toEqual(LEVELS);
+    });
+
+    it('a new generation through applyGradeDefaults gets the levels', async () => {
+      const created = await prisma.generation.create({
+        data: { code: 'GEN2032', name: 'Generation 2032', startDate: new Date('2032-01-05') },
+      });
+      await applyGradeDefaults(prisma, created.id);
+      expect(await levelsOf(created.id)).toEqual(LEVELS);
+      const [row] = await prisma.$queryRaw<{ n: bigint }[]>`
+        SELECT count(*) AS n FROM grade_bands WHERE (level = 'FAIL') <> (NOT is_pass)`;
+      expect(Number(row!.n)).toBe(0);
     });
   });
 });

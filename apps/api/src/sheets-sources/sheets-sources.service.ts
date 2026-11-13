@@ -2,11 +2,19 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { Prisma } from '@ssrs/database';
-import { checkTermWorkbook, parseSpreadsheetUrl, type SheetsReader } from '@ssrs/sheets';
+import {
+  checkTermWorkbook,
+  capMetaValue,
+  isMetaIssueCode,
+  parseSpreadsheetUrl,
+  type SheetsReader,
+  type TermWorkbookCheck,
+} from '@ssrs/sheets';
 import { AcademicGuardService } from '../academic/academic-guard.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
@@ -24,6 +32,39 @@ import type {
 
 /** Issues returned by tab detection are capped to keep responses bounded. */
 export const DETECT_ISSUE_LIMIT = 500;
+
+/** Audit action for a sheet refused because its `_meta` is missing or names another term. */
+export const CONNECT_BLOCKED_ACTION = 'source.connect.blocked';
+/**
+ * A /change or connect refused for the same reason as the same admin's last /check of that sheet
+ * (same term, spreadsheet, code and `_meta` values) within this window is the same attempt and is
+ * not audited again. Repeated /check, /change or connect requests each record an entry.
+ */
+export const CONNECT_BLOCKED_DEDUP_MS = 10 * 60 * 1000;
+
+/** Which route tried to use a sheet; recorded with a blocked attempt. */
+export type ConnectRoute = 'connect' | 'check' | 'change';
+
+interface ConnectAttempt {
+  route: ConnectRoute;
+  actor: AuthUser;
+  meta: RequestMeta;
+}
+
+/** The parts of a `source.connect.blocked` entry compared for de-duplication. */
+interface BlockedMetadata {
+  route?: unknown;
+  spreadsheetId?: unknown;
+  code?: unknown;
+  found?: { generationCode?: unknown; term?: unknown } | null;
+}
+
+interface CheckedTerm {
+  id: string;
+  number: number;
+  generationId: string;
+  generation: { id: string; code: string; name: string };
+}
 
 const SOURCE_INCLUDE = {
   generation: { select: { id: true, code: true, name: true } },
@@ -99,6 +140,8 @@ function toView(s: SourceRow): SourceView {
 
 @Injectable()
 export class SheetsSourcesService {
+  private readonly logger = new Logger(SheetsSourcesService.name);
+
   constructor(
     @Inject(SHEETS_READER) private readonly reader: SheetsReader,
     private readonly prisma: PrismaService,
@@ -188,7 +231,8 @@ export class SheetsSourcesService {
     });
   }
 
-  private async sheetCheck(termId: string, url: string, rosterTab: string) {
+  /** Valid link, existing term, editable generation. Reads nothing from Google. */
+  private async resolveTerm(termId: string, url: string) {
     const parsed = parseSpreadsheetUrl(url);
     if (!parsed.ok)
       throw new UnprocessableEntityException({ code: parsed.code, message: parsed.message });
@@ -198,9 +242,23 @@ export class SheetsSourcesService {
     });
     if (!term) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Term not found' });
     await this.guard.assertGenerationEditable(term.generationId);
+    return { spreadsheetId: parsed.spreadsheetId, term };
+  }
+
+  /**
+   * Reads the workbook's metadata and `_meta` and refuses it (422) unless it is a term workbook
+   * of exactly this generation and term. Each route calls it once per request, so a refusal
+   * caused by `_meta` is audited at most once per request.
+   */
+  private async verifyWorkbook(
+    term: CheckedTerm,
+    spreadsheetId: string,
+    rosterTab: string,
+    attempt: ConnectAttempt,
+  ): Promise<TermWorkbookCheck> {
     let check;
     try {
-      check = await checkTermWorkbook(this.reader, parsed.spreadsheetId, {
+      check = await checkTermWorkbook(this.reader, spreadsheetId, {
         generationCode: term.generation.code,
         termNumber: term.number,
         rosterTab,
@@ -209,19 +267,127 @@ export class SheetsSourcesService {
       throw toHttpError(err);
     }
     if (!check.ok) {
-      const first = check.issues.find((i) => i.severity === 'ERROR');
+      await this.recordBlocked(term, spreadsheetId, check, attempt);
+      // A `_meta` refusal is the one to fix first: it means this is not the term's workbook.
+      const first =
+        check.issues.find((i) => i.severity === 'ERROR' && isMetaIssueCode(i.code)) ??
+        check.issues.find((i) => i.severity === 'ERROR');
       throw new UnprocessableEntityException({
         code: first?.code ?? 'TEMPLATE_INVALID',
         message: first?.message ?? 'The spreadsheet cannot be used as a term workbook.',
         details: check.issues.map((i) => ({ field: i.sheetTab, message: i.message })),
       });
     }
-    return { spreadsheetId: parsed.spreadsheetId, term, check };
+    return check;
+  }
+
+  /**
+   * Audits a sheet refused because of `_meta`, outside any transaction (the request fails). At
+   * most once per request; a /change or connect that repeats the admin's last /check is skipped.
+   */
+  private async recordBlocked(
+    term: CheckedTerm,
+    spreadsheetId: string,
+    check: TermWorkbookCheck,
+    attempt: ConnectAttempt,
+  ): Promise<void> {
+    const issue = check.issues.find(
+      (i) => i.severity === 'ERROR' && i.scope === 'FILE' && isMetaIssueCode(i.code),
+    );
+    if (!issue) return;
+    const found = {
+      generationCode: capMetaValue(check.metaFound.generationCode),
+      term: capMetaValue(check.metaFound.term),
+    };
+    try {
+      await this.recordBlockedOnce(term, spreadsheetId, issue.code, found, attempt);
+    } catch (err) {
+      // Auditing never turns the refusal into a server error.
+      this.logger.error(
+        `Failed to audit ${CONNECT_BLOCKED_ACTION}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private async recordBlockedOnce(
+    term: CheckedTerm,
+    spreadsheetId: string,
+    code: string,
+    found: { generationCode: string | null; term: string | null },
+    attempt: ConnectAttempt,
+  ): Promise<void> {
+    // A /check always records. A /change or connect right after the admin's /check of the same
+    // refused sheet is that same attempt. Two exactly simultaneous identical requests may both
+    // record: there is deliberately no lock, a rare extra entry is harmless.
+    if (attempt.route !== 'check') {
+      const recent = await this.prisma.client.auditLog.findMany({
+        where: {
+          action: CONNECT_BLOCKED_ACTION,
+          actorUserId: attempt.actor.userId,
+          entityType: 'term',
+          entityId: term.id,
+          createdAt: { gte: new Date(Date.now() - CONNECT_BLOCKED_DEDUP_MS) },
+        },
+        select: { metadata: true },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: 50,
+      });
+      const latest = recent
+        .map(({ metadata }) => metadata as BlockedMetadata | null)
+        .find(
+          (m) =>
+            m?.spreadsheetId === spreadsheetId &&
+            m.code === code &&
+            (m.found?.generationCode ?? null) === found.generationCode &&
+            (m.found?.term ?? null) === found.term,
+        );
+      if (latest?.route === 'check') return;
+    }
+    await this.audit.record({
+      action: CONNECT_BLOCKED_ACTION,
+      actorUserId: attempt.actor.userId,
+      entityType: 'term',
+      entityId: term.id,
+      metadata: {
+        route: attempt.route,
+        generationCode: term.generation.code,
+        termNumber: term.number,
+        found,
+        code,
+        spreadsheetId,
+      },
+      context: attempt.meta,
+    });
+  }
+
+  private async sheetCheck(
+    termId: string,
+    url: string,
+    rosterTab: string,
+    attempt: ConnectAttempt,
+  ) {
+    const { spreadsheetId, term } = await this.resolveTerm(termId, url);
+    const check = await this.verifyWorkbook(term, spreadsheetId, rosterTab, attempt);
+    return { spreadsheetId, term, check };
   }
 
   /** Validates a new sheet for a term and shows what it holds. Changes nothing. */
-  async checkSheet(termId: string, dto: CheckSheetDto): Promise<SheetCheck> {
-    const { spreadsheetId, check } = await this.sheetCheck(termId, dto.url, dto.rosterTab ?? 'ALL');
+  async checkSheet(
+    termId: string,
+    dto: CheckSheetDto,
+    actor: AuthUser,
+    meta: RequestMeta,
+  ): Promise<SheetCheck> {
+    const { spreadsheetId, check } = await this.sheetCheck(
+      termId,
+      dto.url,
+      dto.rosterTab ?? 'ALL',
+      {
+        route: 'check',
+        actor,
+        meta,
+      },
+    );
     const known = await this.prisma.client.googleSheetSource.findUnique({
       where: { spreadsheetId },
       select: { termId: true, status: true },
@@ -257,7 +423,11 @@ export class SheetsSourcesService {
     meta: RequestMeta,
   ): Promise<SourceView> {
     const rosterTab = dto.rosterTab ?? 'ALL';
-    const { spreadsheetId, term, check } = await this.sheetCheck(termId, dto.url, rosterTab);
+    const { spreadsheetId, term, check } = await this.sheetCheck(termId, dto.url, rosterTab, {
+      route: 'change',
+      actor,
+      meta,
+    });
     await this.assertTermIdle(termId);
     const db = this.prisma.client;
     const known = await db.googleSheetSource.findUnique({ where: { spreadsheetId } });
@@ -355,7 +525,7 @@ export class SheetsSourcesService {
 
   /**
    * Connects a term workbook (one spreadsheet per term, one tab per subject): valid URL,
-   * readable, roster tab present, `_meta` (when present) naming this generation and term. One
+   * readable, roster tab present, `_meta` naming this generation and term. One
    * active workbook per term. Subject tabs are mapped afterwards (`POST /sources/:id/detect`).
    */
   async createForTerm(
@@ -364,19 +534,10 @@ export class SheetsSourcesService {
     actor: AuthUser,
     meta: RequestMeta,
   ): Promise<SourceView> {
-    const parsed = parseSpreadsheetUrl(dto.url);
-    if (!parsed.ok)
-      throw new UnprocessableEntityException({ code: parsed.code, message: parsed.message });
-
-    const term = await this.prisma.client.term.findUnique({
-      where: { id: termId },
-      include: { generation: { select: { id: true, code: true } } },
-    });
-    if (!term) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Term not found' });
-    await this.guard.assertGenerationEditable(term.generationId);
-
+    // Conflicts are checked before Google is read.
+    const { spreadsheetId, term } = await this.resolveTerm(termId, dto.url);
     const existing = await this.prisma.client.googleSheetSource.findUnique({
-      where: { spreadsheetId: parsed.spreadsheetId },
+      where: { spreadsheetId },
       include: { generation: { select: { code: true } } },
     });
     // A sheet removed from this same term can come back; its record is reused below.
@@ -400,24 +561,11 @@ export class SheetsSourcesService {
     }
 
     const rosterTab = dto.rosterTab ?? 'ALL';
-    let check;
-    try {
-      check = await checkTermWorkbook(this.reader, parsed.spreadsheetId, {
-        generationCode: term.generation.code,
-        termNumber: term.number,
-        rosterTab,
-      });
-    } catch (err) {
-      throw toHttpError(err);
-    }
-    if (!check.ok) {
-      const first = check.issues.find((i) => i.severity === 'ERROR');
-      throw new UnprocessableEntityException({
-        code: first?.code ?? 'TEMPLATE_INVALID',
-        message: first?.message ?? 'The spreadsheet cannot be used as a term workbook.',
-        details: check.issues.map((i) => ({ field: i.sheetTab, message: i.message })),
-      });
-    }
+    const check = await this.verifyWorkbook(term, spreadsheetId, rosterTab, {
+      route: 'connect',
+      actor,
+      meta,
+    });
 
     try {
       const created = await this.prisma.client.$transaction(async (tx) => {
@@ -431,7 +579,7 @@ export class SheetsSourcesService {
                 generationId: term.generationId,
                 termId,
                 rosterTab,
-                spreadsheetId: parsed.spreadsheetId,
+                spreadsheetId,
                 label: dto.label,
                 spreadsheetTitle: check.spreadsheetTitle || null,
                 createdById: actor.userId,

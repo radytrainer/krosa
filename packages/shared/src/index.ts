@@ -6,3 +6,4 @@ export * from './results.js';
 export * from './latest-term.js';
 export * from './top-scoring.js';
 export * from './terms.js';
+export * from './monitoring.js';

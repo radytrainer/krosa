@@ -247,7 +247,7 @@ function ConnectWorkbookDialog({
             <DialogTitle>Connect the {term.name} workbook</DialogTitle>
             <DialogDescription>
               One workbook per term, one tab per subject, with the student list in the{' '}
-              <code>ALL</code> tab. If it has a <code>_meta</code> tab, that tab must say{' '}
+              <code>ALL</code> tab. Its <code>_meta</code> tab must say{' '}
               <code>{generation.code}</code> and term {term.number}.
             </DialogDescription>
           </DialogHeader>

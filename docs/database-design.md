@@ -424,6 +424,17 @@ bands with them (migration `20261113090000_grade_scale_2026_11` ran it for every
 supersedes the scale of `20261110090000_grade_scale`). The letter is computed on
 read (`gradeFor` in `packages/shared`), never stored. No admin editor yet.
 
+Each band also has a `level` (enum `GradeLevel`: VERY_GOOD, GOOD, FAIR, FAIL; NOT NULL), the
+performance level admin subject monitoring counts. Migration `20261114090000_grade_levels`
+added it and filled it by letter: A and B+ VERY_GOOD, B and C+ GOOD, C and D FAIR, E FAIL.
+CHECK `grade_bands_level_pass_check`: `(level = 'FAIL') = (NOT is_pass)`, so FAIL is exactly
+the failing band. `ssrs_set_official_grade_bands` writes the level with each band, so a new
+generation (through `ssrs_apply_grade_defaults`) gets levels too. Code never names letters: it
+reads the level from the bands (`levelFor` in `packages/shared`). A result that is not COMPLETE
+has no band; monitoring shows it as INCOMPLETE, never FAIL. Revert:
+`packages/database/prisma/reverts/20261114090000_grade_levels.sql`. Reverts run newest first: this
+one before `reverts/20261113090000_grade_scale_2026_11.sql`, which inserts bands without a level.
+
 ### participation_records
 
 **Not created in v1.** Participation is a criterion (category PARTICIPATION) whose mark is entered

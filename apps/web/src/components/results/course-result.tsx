@@ -53,7 +53,7 @@ function Contribution({ c }: { c: CriterionResultView }) {
 }
 
 /** The teacher's comment. Rendered as a text node, so markup in the sheet shows as plain text. */
-function TeacherComment({ text }: { text: string }) {
+export function TeacherComment({ text }: { text: string }) {
   return (
     <figure className="rounded-lg bg-muted/50 p-3 text-sm">
       <figcaption className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">

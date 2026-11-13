@@ -61,7 +61,8 @@ E2E_CHANNEL=msedge pnpm test:e2e
 
 - **The `ALL` tab is the roster and the authority**: student ID, name, gender, class, and from
   Term 2 the program (class → program through the term's class list; `CLASS 2` cross-checks).
-  Score columns in `ALL` are ignored. `_meta` is ignored except its term number.
+  Score columns in `ALL` are ignored. `_meta` identifies the workbook's generation and term. It
+  is checked when connecting and syncing, and never imported.
 - A later term's sync never changes an earlier term's enrollments or marks.
 - Never delete marks or enrollments: flag, withdraw (with a reason) or keep history.
 - Students see only their own data, and only released terms.

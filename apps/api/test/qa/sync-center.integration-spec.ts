@@ -31,10 +31,10 @@ interface Issue {
   source: { id: string; label: string } | null;
 }
 
-/** A workbook for any term: no _meta, `bad` invalid cells on Logic. */
-function sheetFor(bad: number): FakeSpreadsheet {
+/** A GEN2027 workbook for `term`: its own _meta, `bad` invalid cells on Logic. */
+function sheetFor(bad: number, term = 1): FakeSpreadsheet {
   const sheet = termWorkbookFixture();
-  delete sheet.tabs['_meta'];
+  sheet.tabs['_meta']![3]![1] = term;
   const logic = sheet.tabs['Logic']!;
   for (let i = 0; i < bad; i++) {
     const row = logic[1 + (i % 3)]!;
@@ -126,7 +126,7 @@ describe('QA E: Sync Center', () => {
 
     it('E-03 all generations + term 2 covers exactly the term 2 sources', async () => {
       await connectTerm(1, SHEET_A, sheetFor(0));
-      const t2 = await connectTerm(2, SHEET_T2, sheetFor(0));
+      const t2 = await connectTerm(2, SHEET_T2, sheetFor(0, 2));
       const { jobId } = (
         await h.admin.post(`${ADMIN_V1}/sync`, { scope: 'ALL', termNumber: 2 }).expect(202)
       ).body;
@@ -158,8 +158,8 @@ describe('QA E: Sync Center', () => {
 
   describe('issues roll-up', () => {
     async function twoSourceJob() {
-      const a = await connectTerm(2, SHEET_T2, sheetFor(6));
-      const b = await connectTerm(3, SHEET_T3, sheetFor(5));
+      const a = await connectTerm(2, SHEET_T2, sheetFor(6, 2));
+      const b = await connectTerm(3, SHEET_T3, sheetFor(5, 3));
       const { jobId } = (
         await h.admin
           .post(`${ADMIN_V1}/sync`, { scope: 'GENERATION', generationId: h.generationId })
@@ -231,8 +231,8 @@ describe('QA E: Sync Center', () => {
     });
 
     it('E-08c a busy source shows as a job-level warning and is counted', async () => {
-      const a = await connectTerm(2, SHEET_T2, sheetFor(1));
-      await connectTerm(3, SHEET_T3, sheetFor(1));
+      const a = await connectTerm(2, SHEET_T2, sheetFor(1, 2));
+      await connectTerm(3, SHEET_T3, sheetFor(1, 3));
       const running = (
         await h.admin.post(`${ADMIN_V1}/sync`, { scope: 'SOURCE', sourceId: a }).expect(202)
       ).body.jobId;

@@ -310,11 +310,13 @@ describe('Changing the sheet of a term (integration)', () => {
       expect(closed.body.error.code).toBe('SHEET_NOT_SHARED');
     });
 
-    it('keeps _meta for another term a hard error', async () => {
+    it('keeps _meta for another term a hard error, and the active sheet stays active', async () => {
       const wrong = sheetB();
       wrong.tabs['_meta']![3]![1] = 2;
       reader.set(SHEET_B, wrong);
-      expect((await change().expect(422)).body.error.code).toBe('TERM_MISMATCH');
+      expect((await change().expect(422)).body.error.code).toBe('WORKBOOK_MISMATCH');
+      expect(await statusOf(SHEET_A)).toBe('ACTIVE');
+      expect(await ctx.prisma.googleSheetSource.count()).toBe(1);
     });
   });
 
@@ -369,10 +371,10 @@ describe('Changing the sheet of a term (integration)', () => {
 
     it('refuses the active sheet itself, and a sheet used by another term', async () => {
       expect((await change(SHEET_A).expect(409)).body.error.code).toBe('SAME_SHEET');
-      // Without _meta the sheet passes the term check and reaches the "already used" rule.
-      const noMeta = termWorkbookFixture();
-      delete noMeta.tabs['_meta'];
-      reader.set(SHEET_A, noMeta);
+      // With a Term 2 _meta the sheet passes the term check and reaches the "already used" rule.
+      const term2Meta = termWorkbookFixture();
+      term2Meta.tabs['_meta']![3]![1] = 2;
+      reader.set(SHEET_A, term2Meta);
       const terms = await admin.get(`${V1}/generations/${generationId}/terms`).expect(200);
       const term2 = terms.body[1].id as string;
       const res = await admin
@@ -411,9 +413,9 @@ describe('Changing the sheet of a term (integration)', () => {
       const term2 = terms.body[1].id as string;
       const connect = () =>
         admin.post(`${V1}/terms/${term2}/sources`, { url: urlFor(SHEET_C), label: 'Term 2' });
-      const noMeta = termWorkbookFixture();
-      delete noMeta.tabs['_meta'];
-      reader.set(SHEET_C, noMeta);
+      const term2Sheet = termWorkbookFixture();
+      term2Sheet.tabs['_meta']![3]![1] = 2;
+      reader.set(SHEET_C, term2Sheet);
       const source = (await connect().expect(201)).body as { id: string; status: string };
       await admin.patch(`${V1}/sources/${source.id}`, { status: 'DISABLED' }).expect(200);
       const again = (await connect().expect(201)).body as { id: string; status: string };

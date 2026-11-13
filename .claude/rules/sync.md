@@ -6,7 +6,10 @@ Full rules for teachers and admins: `docs/google-sheets-template.md` §2–§3. 
 ## Roster and profiles
 
 - `ALL` is the authority for student ID, name, gender and class (and `CLASS 2` from Term 2).
-  Its score columns are ignored. `_meta`: only `education_term` is checked.
+  Its score columns are ignored.
+- `_meta` identifies the workbook's generation and term. It is checked when connecting and
+  syncing, and never imported. It is required, with `generation_code` and `education_term`;
+  errors: `META_MISSING`, `WORKBOOK_MISMATCH`.
 - A student in a subject tab but not in `ALL` is rejected (`UNKNOWN_STUDENT`).
 - A student ID twice in `ALL`: every copy rejected, and a `DUPLICATE_IN_ROSTER` student issue.
 

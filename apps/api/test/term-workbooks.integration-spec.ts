@@ -229,15 +229,21 @@ describe('Term workbooks (integration)', () => {
       expect(await ctx.prisma.googleSheetSource.count()).toBe(0);
     });
 
-    it('refuses the wrong term and a workbook without a roster; ignores _meta generation', async () => {
-      expect((await connect(2).expect(422)).body.error.code).toBe('TERM_MISMATCH');
+    it('refuses the wrong term, another generation and a workbook without a roster', async () => {
+      expect((await connect(2).expect(422)).body.error.code).toBe('WORKBOOK_MISMATCH');
 
-      // _meta's generation_code is ignored: only its term is checked.
+      // _meta's generation_code must name this generation too.
       const otherGeneration = termWorkbookFixture();
       otherGeneration.tabs['_meta']![2]![1] = 'GEN2026';
       reader.set(ID, otherGeneration);
-      const source = (await connect().expect(201)).body as { id: string };
-      await ctx.prisma.googleSheetSource.delete({ where: { id: source.id } });
+      const res = await connect().expect(422);
+      expect(res.body.error).toMatchObject({
+        code: 'WORKBOOK_MISMATCH',
+        message:
+          'This workbook is for GEN2026, Term 1. You selected GEN2027, Term 1. ' +
+          'Choose the matching term or check the workbook.',
+      });
+      expect(await ctx.prisma.googleSheetSource.count()).toBe(0);
 
       const noRoster = termWorkbookFixture();
       delete noRoster.tabs['ALL'];

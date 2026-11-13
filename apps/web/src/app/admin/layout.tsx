@@ -2,6 +2,7 @@
 
 import {
   CalendarRange,
+  ChartNoAxesColumn,
   LayoutDashboard,
   RefreshCw,
   ScrollText,
@@ -14,6 +15,7 @@ const NAV: NavItem[] = [
   { href: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true },
   { href: '/admin/generations', label: 'Generations', icon: CalendarRange },
   { href: '/admin/students', label: 'Students', icon: Users },
+  { href: '/admin/monitoring', label: 'Subject monitoring', icon: ChartNoAxesColumn },
   { href: '/admin/sync', label: 'Sync center', icon: RefreshCw },
   { href: '/admin/audit', label: 'Audit log', icon: ScrollText },
 ];

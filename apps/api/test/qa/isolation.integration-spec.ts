@@ -1,5 +1,5 @@
 /* eslint-disable -- QA suite: uses expect messages, console evidence and supertest .expect() */
-import { termWorkbookFixture } from '@ssrs/sheets/testing';
+import { gen2028WorkbookFixture, termWorkbookFixture } from '@ssrs/sheets/testing';
 import { confirmAllTabs } from '@ssrs/sync/testing';
 import request from 'supertest';
 import { login, WEB_ORIGIN, type TestContext } from '../support/test-app.js';
@@ -49,11 +49,42 @@ describe('QA B: authorization and data isolation', () => {
   const offerings = (r: Results) => r.terms.flatMap((t) => t.courses);
 
   describe('route coverage', () => {
-    it('sanity: the live route list matches the documented 64 routes', () => {
+    // Counted from the controllers: generations 9, programs 7, sheets-sources 11, sync 8,
+    // audit-logs 1, dashboard 1, monitoring 4, sheet-mappings 9, students 6 = 56 admin;
+    // + auth 5, health 2, student/me 5 = 68.
+    const MONITORING_ROUTES = [
+      '/api/v1/admin/monitoring/generations',
+      '/api/v1/admin/monitoring/terms/:generationId/:termNumber/subjects',
+      '/api/v1/admin/monitoring/subjects/summary',
+      '/api/v1/admin/monitoring/subjects/students',
+    ];
+    it('sanity: the live route list matches the documented 68 routes', () => {
       const routes = liveRoutes(ctx);
-      expect(routes.filter((r) => r.path.startsWith('/api/v1/admin'))).toHaveLength(52);
+      expect(routes.filter((r) => r.path.startsWith('/api/v1/admin'))).toHaveLength(56);
       expect(routes.filter((r) => r.path.startsWith('/api/v1/student'))).toHaveLength(5);
-      expect(routes).toHaveLength(64);
+      expect(routes).toHaveLength(68);
+      // The four monitoring routes are live GETs, so B-01 and B-02 below cover them.
+      const gets = new Set(routes.filter((r) => r.method === 'get').map((r) => r.path));
+      for (const path of MONITORING_ROUTES) expect(gets.has(path), path).toBe(true);
+    });
+
+    it('B-01m a student token is refused on every monitoring route, with valid parameters', async () => {
+      const term1 = await ctx.prisma.courseOffering.findFirstOrThrow({ where: { title: 'ENG' } });
+      const q = `generationId=${h.generationId}&termNumber=1&subjectId=${term1.courseId}`;
+      const urls = [
+        `${ADMIN_V1}/monitoring/generations`,
+        `${ADMIN_V1}/monitoring/terms/${h.generationId}/1/subjects`,
+        `${ADMIN_V1}/monitoring/subjects/summary?${q}`,
+        `${ADMIN_V1}/monitoring/subjects/students?${q}`,
+      ];
+      for (const url of urls) {
+        const res = await aAgent().get(url);
+        expect(res.status, url).toBe(403);
+        expect(JSON.stringify(res.body), url).not.toMatch(/PNC2027|studentCode|fullName/);
+        const anon = await request(ctx.app.getHttpServer()).get(url);
+        expect(anon.status, url).toBe(401);
+        expect((await h.admin.get(url)).status, url).toBe(200);
+      }
     });
 
     it('B-01 a student token is refused on every admin route', async () => {
@@ -200,16 +231,8 @@ describe('QA B: authorization and data isolation', () => {
       ).body;
       const terms = (await h.admin.get(`${ADMIN_V1}/generations/${gen.id}/terms`).expect(200)).body;
       const sheetId = '1QaOtherGenerationSheet00000000000000000';
-      const sheet = termWorkbookFixture();
-      sheet.tabs['_meta']![2]![1] = 'GEN2028';
-      for (const tab of ['ALL', 'Logic', 'ENG', 'PL', 'BCU', 'MsOffice']) {
-        for (const row of sheet.tabs[tab]!) {
-          if (typeof row[0] === 'string' && row[0].startsWith('PNC2027')) {
-            row[0] = row[0].replace('PNC2027', 'PNC2028');
-          }
-        }
-      }
-      h.reader.set(sheetId, sheet);
+      // _meta names GEN2028, Term 1; student IDs are PNC2028-…
+      h.reader.set(sheetId, gen2028WorkbookFixture());
       const source = (
         await h.admin
           .post(`${ADMIN_V1}/terms/${terms[0].id}/sources`, {

@@ -2,7 +2,7 @@ import { expect, test, type Browser, type Page } from '@playwright/test';
 import {
   LOGIC_COMMENT,
   TERM_FIXTURE_REPLACEMENT_ID,
-  TERM_FIXTURE_SECOND_ID,
+  TERM_FIXTURE_GEN2028_ID,
   TERM_FIXTURE_SPREADSHEET_ID,
 } from '@ssrs/sheets/testing';
 import { createPrismaClient } from '@ssrs/database';
@@ -951,7 +951,7 @@ test('13. a first sheet connected from the Edit term form is read once, by itsel
   const dialog = admin.getByRole('dialog');
   await dialog
     .getByLabel(/Spreadsheet URL/)
-    .fill(`https://docs.google.com/spreadsheets/d/${TERM_FIXTURE_SECOND_ID}/edit`);
+    .fill(`https://docs.google.com/spreadsheets/d/${TERM_FIXTURE_GEN2028_ID}/edit`);
   await dialog.getByRole('button', { name: 'Check sheet' }).click();
   detections = countDetections(admin);
   await dialog.getByRole('button', { name: 'Connect sheet' }).click();

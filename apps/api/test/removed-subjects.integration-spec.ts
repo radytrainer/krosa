@@ -467,10 +467,22 @@ describe('Subjects removed from a term sheet (integration)', () => {
     });
 
     it.each([
-      ['an empty tab list', () => ({ title: 'x', tabs: {} }), 'TEMPLATE_INVALID'],
+      // _meta is required: without it the job fails on that before anything else.
+      ['an empty tab list', () => ({ title: 'x', tabs: {} }), 'META_MISSING'],
+      [
+        'only the _meta tab',
+        () => ({ title: 'x', tabs: { _meta: termWorkbookFixture().tabs['_meta']! } }),
+        'TEMPLATE_INVALID',
+      ],
       [
         'only the roster tab',
-        () => ({ title: 'x', tabs: { ALL: termWorkbookFixture().tabs['ALL']! } }),
+        () => ({
+          title: 'x',
+          tabs: {
+            _meta: termWorkbookFixture().tabs['_meta']!,
+            ALL: termWorkbookFixture().tabs['ALL']!,
+          },
+        }),
         'REMOVALS_CHANGED',
       ],
     ])('fails on %s', async (_name, sheet, code) => {
@@ -484,7 +496,13 @@ describe('Subjects removed from a term sheet (integration)', () => {
     });
 
     it('cannot be previewed into a removal when only the roster is left', async () => {
-      reader.set(SHEET_A, { title: 'x', tabs: { ALL: termWorkbookFixture().tabs['ALL']! } });
+      reader.set(SHEET_A, {
+        title: 'x',
+        tabs: {
+          _meta: termWorkbookFixture().tabs['_meta']!,
+          ALL: termWorkbookFixture().tabs['ALL']!,
+        },
+      });
       const p = await preview(sourceA);
       expect(p.summary.comparison.removed).toEqual([]);
       expect(p.summary.canConfirm).toBe(false);
