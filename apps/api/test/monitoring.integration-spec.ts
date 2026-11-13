@@ -31,6 +31,7 @@ import {
   seedUser,
   type TestContext,
 } from './support/test-app.js';
+import { testAdminPassword, testStudentPassword } from './support/credentials.js';
 
 /**
  * Admin subject monitoring (docs/decisions.md "Subject monitoring" M1–M8), through the API, with
@@ -40,8 +41,8 @@ import {
  * its tab, a NEEDS_REVIEW mark, a CLEARED mark, a blank component and an archived subject.
  */
 
-const ADMIN = { username: 'admin', password: 'Admin-Monitoring-Pass-2026' };
-const STUDENT_PASSWORD = 'River-Lantern-Morning-48';
+const ADMIN = { username: 'admin', password: testAdminPassword() };
+const STUDENT_PASSWORD = testStudentPassword();
 const V1 = '/api/v1';
 const A = `${V1}/admin`;
 const M = `${A}/monitoring`;

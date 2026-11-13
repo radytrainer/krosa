@@ -28,6 +28,7 @@ import {
   writeSheet,
   type Session,
 } from './support.js';
+import { testPassword } from '../../support/credentials.js';
 
 const main = (page: Page) => page.locator('main:visible').last();
 test.beforeEach(() => clearLimits());
@@ -247,7 +248,7 @@ test.describe('Students', () => {
     await page.goto('/login');
     for (let i = 0; i < 5; i++) {
       await page.getByLabel(/Username or student ID/).fill(code);
-      await page.locator('input[name=password]').fill('wrong-password-1');
+      await page.locator('input[name=password]').fill(testPassword('wrong'));
       const answer = page.waitForResponse((r) => r.url().includes('/auth/login'));
       await page.getByRole('button', { name: 'Sign in' }).click();
       await answer;

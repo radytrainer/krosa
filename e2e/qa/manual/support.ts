@@ -4,11 +4,12 @@ import path from 'node:path';
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { termMetaTab, termWorkbookFixture, type FakeSpreadsheet } from '@ssrs/sheets/testing';
 import { E2E, ROOT, WEB_URL } from '../../support/stack.js';
+import { testPassword, testStudentPassword } from '../../support/credentials.js';
 
 export const SHEETS_DIR = path.join(ROOT, 'e2e', 'test-results', 'sheets');
 export const V1 = '/api/v1';
-export const DEMO_PASSWORD = 'Student-Pass-2026x';
-export const NEW_PASSWORD = 'River-Lantern-Morning-48';
+export const DEMO_PASSWORD = testPassword('demo');
+export const NEW_PASSWORD = testStudentPassword();
 const PG = process.env['QA_POSTGRES_CONTAINER'] ?? 'ssrs-qa-postgres-1';
 const REDIS = process.env['QA_REDIS_CONTAINER'] ?? 'ssrs-qa-redis-1';
 const dbUrl = new URL(process.env['TEST_DATABASE_URL']!);
@@ -355,16 +356,21 @@ export const noJunk = async (page: Page) => {
   expect(text).not.toMatch(/\bundefined\b|\bNaN\b|\[object Object\]|Invalid Date/);
 };
 
+/** Loads the demo data with this run's generated demo password (not the documented default). */
 export function seedDemo() {
-  const res = spawnSync(process.execPath, ['apps/api/dist/cli/seed-demo.js'], {
-    cwd: ROOT,
-    env: {
-      ...process.env,
-      NODE_ENV: 'test',
-      DATABASE_URL: process.env['TEST_DATABASE_URL'],
-      REDIS_URL: process.env['TEST_REDIS_URL'],
+  const res = spawnSync(
+    process.execPath,
+    ['apps/api/dist/cli/seed-demo.js', '--student-password', DEMO_PASSWORD],
+    {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        NODE_ENV: 'test',
+        DATABASE_URL: process.env['TEST_DATABASE_URL'],
+        REDIS_URL: process.env['TEST_REDIS_URL'],
+      },
+      encoding: 'utf8',
     },
-    encoding: 'utf8',
-  });
+  );
   expect(res.status, res.stderr || res.stdout).toBe(0);
 }

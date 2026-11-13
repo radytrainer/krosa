@@ -27,6 +27,7 @@ import {
   workbook,
   writeSheet,
 } from './support.js';
+import { testPassword, commonPassword } from '../../support/credentials.js';
 
 const WRONG = 'The username / student ID or password is incorrect.';
 const LOCKED = 'Too many sign-in attempts. Please wait a moment and try again.';
@@ -34,7 +35,7 @@ const password = (p: Page) => p.locator('input[name=password]');
 const id = (p: Page) => p.getByLabel(/Username or student ID/);
 const signInBtn = (p: Page) => p.getByRole('button', { name: 'Sign in' });
 
-async function wrongLogin(p: Page, user: string, pw = 'wrong-password-1') {
+async function wrongLogin(p: Page, user: string, pw = testPassword('wrong')) {
   await id(p).fill(user);
   await password(p).fill(pw);
   await signInBtn(p).click();
@@ -173,7 +174,7 @@ test.describe('Login', () => {
   });
 
   test('TC-012 Pending account has no usable password', async ({ page }) => {
-    await uiLogin(page, 'GEN26-0003', 'any-password-here');
+    await uiLogin(page, 'GEN26-0003', testPassword('wrong'));
     await expect(page.getByText(WRONG)).toBeVisible();
     await expect(page).toHaveURL(/\/login/);
   });
@@ -296,7 +297,7 @@ test.describe('Forced Password Change', () => {
     const s = await synced(admin);
     const temp = await issueTemp(admin, s.students[0]);
     await forcedPage(page, s.students[0], temp);
-    await forcedFill(page, temp, NEW_PASSWORD, 'Different-Value-Here-11');
+    await forcedFill(page, temp, NEW_PASSWORD, testPassword('mismatch'));
     await expect(page.getByText('The passwords do not match.')).toBeVisible();
     clearLimits();
     const other = await browser.newPage();
@@ -309,7 +310,7 @@ test.describe('Forced Password Change', () => {
     const s = await synced(admin);
     const temp = await issueTemp(admin, s.students[0]);
     await forcedPage(page, s.students[0], temp);
-    await forcedFill(page, 'not-the-temp-password', NEW_PASSWORD);
+    await forcedFill(page, testPassword('wrong'), NEW_PASSWORD);
     await expect(page.getByText('This is not your current password.')).toBeVisible();
   });
 
@@ -337,7 +338,7 @@ test.describe('Change Password', () => {
 
   test('TC-023 Student changes password from Profile', async ({ browser }) => {
     const u = await student(browser);
-    const next = 'Another-Long-Phrase-2026';
+    const next = testPassword('new-password');
     await profileFill(u.page, NEW_PASSWORD, next);
     await expect(u.page.getByText('Password changed.').first()).toBeVisible();
     await expect(u.page).toHaveURL(/\/student\/profile$/);
@@ -362,14 +363,14 @@ test.describe('Change Password', () => {
           DATABASE_URL: process.env['TEST_DATABASE_URL'],
           REDIS_URL: process.env['TEST_REDIS_URL'],
         },
-        input: 'Second-Admin-Pass-2026',
+        input: testPassword('second-admin'),
         encoding: 'utf8',
       },
     );
     expect(made.status, made.stderr).toBe(0);
-    const second = await apiLogin(browser, username, 'Second-Admin-Pass-2026');
+    const second = await apiLogin(browser, username, testPassword('second-admin'));
     await second.page.goto('/admin/account');
-    await profileFill(second.page, 'Second-Admin-Pass-2026', 'Second-Admin-Pass-2027');
+    await profileFill(second.page, testPassword('second-admin'), testPassword('second-admin-new'));
     await expect(
       second.page.getByText('Password changed. Other sessions were signed out.').first(),
     ).toBeVisible();
@@ -381,7 +382,7 @@ test.describe('Change Password', () => {
     const two = await apiLogin(browser, u.code, NEW_PASSWORD);
     await two.page.goto('/student/results');
     await expect(two.page).toHaveURL(/\/student\/results$/);
-    await profileFill(u.page, NEW_PASSWORD, 'Another-Long-Phrase-2026');
+    await profileFill(u.page, NEW_PASSWORD, testPassword('new-password'));
     await expect(u.page.getByText('Password changed.').first()).toBeVisible();
     await two.page.goto('/student/results');
     await expect(two.page).toHaveURL(/\/login/);
@@ -391,7 +392,7 @@ test.describe('Change Password', () => {
 
   test('TC-026 Boundary: 10 and 128 character passwords', async ({ browser }) => {
     const u = await student(browser);
-    const ten = 'Kv7-pLm2Qz';
+    const ten = testPassword('ten').slice(0, 10);
     await profileFill(u.page, NEW_PASSWORD, ten);
     await expect(u.page.getByText('Password changed.').first()).toBeVisible();
     await u.page.reload();
@@ -405,7 +406,7 @@ test.describe('Change Password', () => {
 
   test('TC-027 Password of 9 characters', async ({ browser }) => {
     const u = await student(browser);
-    await profileFill(u.page, NEW_PASSWORD, 'Kv7-pLm2Q');
+    await profileFill(u.page, NEW_PASSWORD, testPassword('nine').slice(0, 9));
     await expect(u.page.getByText(/at least 10|10.*characters|minimum/i).first()).toBeVisible();
     clearLimits();
     await apiLogin(browser, u.code, NEW_PASSWORD);
@@ -413,7 +414,7 @@ test.describe('Change Password', () => {
 
   test('TC-028 Password contains the username or student ID', async ({ browser }) => {
     const u = await student(browser);
-    await profileFill(u.page, NEW_PASSWORD, `x-${u.code}-pass`);
+    await profileFill(u.page, NEW_PASSWORD, `${u.code.toLowerCase()}-and-more`);
     await expect(
       u.page.getByText('Password must not contain your username or student ID.'),
     ).toBeVisible();
@@ -422,15 +423,15 @@ test.describe('Change Password', () => {
   test('TC-029 Common password', async ({ browser }) => {
     const u = await student(browser);
     const message = 'This password is too common. Choose something less predictable.';
-    await profileFill(u.page, NEW_PASSWORD, 'password123');
+    await profileFill(u.page, NEW_PASSWORD, commonPassword());
     await expect(u.page.getByText(message)).toBeVisible();
-    await profileFill(u.page, NEW_PASSWORD, 'PASSWORD123');
+    await profileFill(u.page, NEW_PASSWORD, commonPassword().toUpperCase());
     await expect(u.page.getByText(message)).toBeVisible();
   });
 
   test('TC-030 Single repeated character', async ({ browser }) => {
     const u = await student(browser);
-    await profileFill(u.page, NEW_PASSWORD, 'aaaaaaaaaaaa');
+    await profileFill(u.page, NEW_PASSWORD, 'z'.repeat(12));
     await expect(
       u.page.getByText('Password must not be a single repeated character.'),
     ).toBeVisible();
@@ -438,7 +439,7 @@ test.describe('Change Password', () => {
 
   test('TC-031 Wrong current password', async ({ browser }) => {
     const u = await student(browser);
-    await profileFill(u.page, 'not-my-password-1', 'Another-Long-Phrase-2026');
+    await profileFill(u.page, testPassword('wrong'), testPassword('new-password'));
     await expect(u.page.getByText('This is not your current password.')).toBeVisible();
   });
 
@@ -448,7 +449,7 @@ test.describe('Change Password', () => {
     await expect(hint).toContainText(/username or student ID/);
     await expect(hint).toContainText(/common/);
     expect(await hint.innerText()).not.toMatch(/capital|uppercase|symbol/i);
-    await profileFill(u.page, NEW_PASSWORD, 'lowercase words only here');
+    await profileFill(u.page, NEW_PASSWORD, `${testPassword('phrase')} and more words`);
     await expect(u.page.getByText('Password changed.').first()).toBeVisible();
   });
 });

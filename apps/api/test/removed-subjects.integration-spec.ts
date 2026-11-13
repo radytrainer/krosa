@@ -14,8 +14,9 @@ import {
   seedUser,
   type TestContext,
 } from './support/test-app.js';
+import { testAdminPassword, testStudentPassword } from './support/credentials.js';
 
-const ADMIN = { username: 'admin', password: 'Admin-Initial-Pass-2026' };
+const ADMIN = { username: 'admin', password: testAdminPassword() };
 const V1 = '/api/v1/admin';
 const SHEET_A = TERM_FIXTURE_SPREADSHEET_ID;
 const SHEET_B = '1NewTermWorkbookSheetB000000000000000000';
@@ -235,7 +236,7 @@ describe('Subjects removed from a term sheet (integration)', () => {
     await student
       .post('/api/v1/auth/change-password', {
         currentPassword: issued.body.temporaryPassword,
-        newPassword: 'River-Lantern-Morning-48',
+        newPassword: testStudentPassword(),
       })
       .expect(204);
   });

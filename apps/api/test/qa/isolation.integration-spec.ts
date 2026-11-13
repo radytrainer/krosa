@@ -15,6 +15,7 @@ import {
   type Api,
   type Harness,
 } from './support.js';
+import { testPassword } from '../support/credentials.js';
 
 /** QA suite, area B. Routes come from the running app, so a new route is covered by itself. */
 
@@ -307,7 +308,7 @@ describe('QA B: authorization and data isolation', () => {
       expect(patchGen.status).toBe(400);
       const pw = await a.post(`${V1}/auth/change-password`, {
         currentPassword: STUDENT_PASSWORD,
-        newPassword: 'Yet-Another-Phrase-2026',
+        newPassword: testPassword('new-password'),
         role: 'ADMIN',
       });
       expect(pw.status).toBe(400);

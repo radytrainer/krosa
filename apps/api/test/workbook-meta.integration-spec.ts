@@ -18,9 +18,10 @@ import {
   seedUser,
   type TestContext,
 } from './support/test-app.js';
+import { testPassword, testAdminPassword } from './support/credentials.js';
 
-const ADMIN = { username: 'admin', password: 'Admin-Initial-Pass-2026' };
-const OTHER_ADMIN = { username: 'admin2', password: 'Admin-Second-Pass-2026' };
+const ADMIN = { username: 'admin', password: testAdminPassword() };
+const OTHER_ADMIN = { username: 'admin2', password: testPassword('other-admin') };
 const V1 = '/api/v1/admin';
 const ID = TERM_FIXTURE_SPREADSHEET_ID;
 /** Starts with a GEN2027 Term 1 `_meta`; tests replace it. */

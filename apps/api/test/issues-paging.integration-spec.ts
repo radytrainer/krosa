@@ -13,8 +13,9 @@ import {
   seedUser,
   type TestContext,
 } from './support/test-app.js';
+import { testAdminPassword } from './support/credentials.js';
 
-const ADMIN = { username: 'admin', password: 'Admin-Initial-Pass-2026' };
+const ADMIN = { username: 'admin', password: testAdminPassword() };
 const V1 = '/api/v1/admin';
 const SHEET = TERM_FIXTURE_SPREADSHEET_ID;
 const urlFor = (id: string) => `https://docs.google.com/spreadsheets/d/${id}/edit`;

@@ -8,6 +8,7 @@ import {
 import { createPrismaClient } from '@ssrs/database';
 import { loadRootEnv } from '@ssrs/shared/node';
 import { E2E } from '../support/stack.js';
+import { testStudentPassword } from '../support/credentials.js';
 
 /**
  * The core journey, end to end through the real web app, API, queue and worker (only the Google
@@ -22,7 +23,7 @@ test.describe.configure({ mode: 'serial' });
 const STUDENT = {
   id: 'PNC2027-001',
   name: 'DARA SOK',
-  newPassword: 'River-Lantern-Morning-48',
+  newPassword: testStudentPassword(),
 };
 let admin: Page;
 let student: Page;

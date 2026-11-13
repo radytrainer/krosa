@@ -8,8 +8,11 @@ export const PASSWORD_MAX_LENGTH = 128;
 export type PasswordPolicyViolation =
   'TOO_SHORT' | 'TOO_LONG' | 'CONTAINS_USERNAME' | 'TOO_COMMON' | 'REPEATED_CHARACTER';
 
-/** Frequently breached passwords that satisfy the length rule. Compared case-insensitively. */
-const COMMON_PASSWORDS = new Set([
+/**
+ * Frequently breached passwords that satisfy the length rule. Compared case-insensitively.
+ * Exported for tests of this rule, so they need no password literals of their own.
+ */
+export const COMMON_PASSWORDS: ReadonlySet<string> = new Set([
   '0000000000',
   '0123456789',
   '1111111111',

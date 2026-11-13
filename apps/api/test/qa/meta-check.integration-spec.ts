@@ -19,14 +19,15 @@ import {
   seedUser,
   type TestContext,
 } from '../support/test-app.js';
+import { testPassword, testAdminPassword, testStudentPassword } from '../support/credentials.js';
 
 /**
  * QA (independent of workbook-meta.integration-spec.ts): `_meta` must name the generation and
  * term the admin selected, on connect, check/change, preview and sync; blocked attempts audited
  * once; earlier terms untouched. Fixture data only (synthetic IDs), ssrs_test only.
  */
-const ADMIN = { username: 'qa-meta-admin', password: 'Qa-Meta-Admin-Pass-2026' };
-const STUDENT = { username: 'qa-meta-stu-01', password: 'Qa-Meta-Student-Pass-2026' };
+const ADMIN = { username: 'qa-meta-admin', password: testAdminPassword() };
+const STUDENT = { username: 'qa-meta-stu-01', password: testStudentPassword() };
 const V1 = '/api/v1/admin';
 const MAIN = TERM_FIXTURE_SPREADSHEET_ID;
 const ALT = '1QaMetaAltWorkbook0000000000000000000000';
@@ -454,8 +455,8 @@ describe('QA: _meta must name the selected generation and term', () => {
       reader.set(ALT, fixture('GEN2026', 1));
       await check(1).expect(422);
       // Another admin's change is not the same attempt.
-      await seedUser(ctx, { username: 'qa-meta-admin2', password: 'Qa-Meta-Admin2-Pass-2026' });
-      const other = api(await login(ctx, 'qa-meta-admin2', 'Qa-Meta-Admin2-Pass-2026'));
+      await seedUser(ctx, { username: 'qa-meta-admin2', password: testPassword('other-admin') });
+      const other = api(await login(ctx, 'qa-meta-admin2', testPassword('other-admin')));
       await other
         .post(`${V1}/terms/${termIds[1]}/sources/change`, { url: urlFor(ALT), label: 'QA' })
         .expect(422);

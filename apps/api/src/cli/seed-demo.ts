@@ -1,5 +1,7 @@
 /**
- * Loads a small demo dataset for local testing (never in production):
+ * Loads a small demo dataset for local testing (never in production). It runs only against a
+ * local database, never with NODE_ENV=production, and refuses `ssrs` unless `--allow-ssrs` is
+ * passed after explicit approval (seed-guard.ts):
  *
  *   pnpm demo:seed                       # students sign in with the default demo password
  *   pnpm demo:seed -- --student-password "Another-Pass-2026"
@@ -21,6 +23,7 @@ import { loadRootEnv, lockedPasswordHash } from '@ssrs/shared/node';
 import { z } from 'zod';
 import { checkPasswordPolicy, PASSWORD_POLICY_MESSAGES } from '../auth/password-policy.js';
 import { PasswordService } from '../auth/password.service.js';
+import { seedRefusal } from './seed-guard.js';
 
 const DEFAULT_STUDENT_PASSWORD = 'Student-Pass-2026x';
 const GENERATION = { code: 'GEN2026', name: 'Generation 2026', start: '2026-01-05' };
@@ -75,7 +78,7 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const { values } = parseArgs({
     args: argv[0] === '--' ? argv.slice(1) : argv,
-    options: { 'student-password': { type: 'string' } },
+    options: { 'student-password': { type: 'string' }, 'allow-ssrs': { type: 'boolean' } },
     strict: true,
   });
 
@@ -84,7 +87,12 @@ async function main(): Promise<void> {
     z.object({ NODE_ENV: envFields.nodeEnv, DATABASE_URL: envFields.postgresUrl }),
     process.env,
   );
-  if (env.NODE_ENV === 'production') fail('Refusing to load demo data with NODE_ENV=production.');
+  const refusal = seedRefusal({
+    nodeEnv: env.NODE_ENV,
+    databaseUrl: env.DATABASE_URL,
+    allowSsrs: values['allow-ssrs'] === true,
+  });
+  if (refusal) fail(refusal);
 
   const studentPassword = values['student-password'] ?? DEFAULT_STUDENT_PASSWORD;
   for (const s of STUDENTS) {

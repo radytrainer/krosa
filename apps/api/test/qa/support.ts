@@ -18,9 +18,10 @@ import {
   type TestAppOptions,
   type TestContext,
 } from '../support/test-app.js';
+import { testAdminPassword, testStudentPassword } from '../support/credentials.js';
 
-export const ADMIN = { username: 'admin', password: 'Qa-Admin-Pass-2026-river' };
-export const STUDENT_PASSWORD = 'River-Lantern-Morning-48';
+export const ADMIN = { username: 'admin', password: testAdminPassword() };
+export const STUDENT_PASSWORD = testStudentPassword();
 export const V1 = '/api/v1';
 export const ADMIN_V1 = `${V1}/admin`;
 export const SHEET_A = TERM_FIXTURE_SPREADSHEET_ID;

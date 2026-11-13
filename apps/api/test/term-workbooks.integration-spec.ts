@@ -21,8 +21,9 @@ import {
   WEB_ORIGIN,
   type TestContext,
 } from './support/test-app.js';
+import { testAdminPassword, testStudentPassword } from './support/credentials.js';
 
-const ADMIN = { username: 'admin', password: 'Admin-Initial-Pass-2026' };
+const ADMIN = { username: 'admin', password: testAdminPassword() };
 const V1 = '/api/v1/admin';
 const SA_EMAIL = 'ssrs-sync@example-project.iam.gserviceaccount.com';
 const ID = TERM_FIXTURE_SPREADSHEET_ID;
@@ -797,7 +798,7 @@ describe('Term workbooks (integration)', () => {
       await session
         .post('/api/v1/auth/change-password', {
           currentPassword: issued.body.temporaryPassword,
-          newPassword: 'River-Lantern-Morning-48',
+          newPassword: testStudentPassword(),
         })
         .expect(204);
 

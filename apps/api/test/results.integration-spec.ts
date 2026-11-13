@@ -9,10 +9,11 @@ import {
   seedUser,
   type TestContext,
 } from './support/test-app.js';
+import { testPassword, testAdminPassword, testStudentPassword } from './support/credentials.js';
 
-const ADMIN = { username: 'admin', password: 'Admin-Initial-Pass-2026' };
-const ALICE = { username: 'GEN26-0001', password: 'Student-Alice-Pass-2026' };
-const BOB = { username: 'GEN26-0002', password: 'Student-Bob-Pass-2026' };
+const ADMIN = { username: 'admin', password: testAdminPassword() };
+const ALICE = { username: 'GEN26-0001', password: testStudentPassword() };
+const BOB = { username: 'GEN26-0002', password: testPassword('second-student') };
 const ME = '/api/v1/student/me';
 
 const allCourses = (body: { terms: { courses: Record<string, unknown>[] }[] }) =>
