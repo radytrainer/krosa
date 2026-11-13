@@ -1,12 +1,13 @@
 import { SignJWT } from 'jose';
 import { loadApiEnv } from '../config/env.js';
 import { JWT_AUDIENCE, JWT_ISSUER, TokenService } from './token.service.js';
+import { testSecret } from '../../test/support/credentials.js';
 
 const env = loadApiEnv({
   DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
   REDIS_URL: 'redis://:p@localhost:6379/0',
   WEB_ORIGIN: 'http://localhost:3000',
-  JWT_ACCESS_SECRET: 'unit-test-secret-unit-test-secret-0001',
+  JWT_ACCESS_SECRET: testSecret('jwt'),
 });
 const tokens = new TokenService(env);
 const user = {

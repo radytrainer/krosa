@@ -30,6 +30,14 @@ export function testPassword(label: string): string {
   return `Kt${createHmac('sha256', seed()).update(label).digest('base64url').slice(0, 22)}`;
 }
 
+/**
+ * A signing secret for `label` (for example the API's JWT_ACCESS_SECRET): 43 characters, derived
+ * from the same per-run seed, so the services started by a test and the test itself agree.
+ */
+export function testSecret(label: string): string {
+  return createHmac('sha256', seed()).update(`secret:${label}`).digest('base64url');
+}
+
 export const testAdminPassword = (): string => testPassword('admin');
 export const testStudentPassword = (): string => testPassword('student');
 

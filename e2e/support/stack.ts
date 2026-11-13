@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, openSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { testAdminPassword } from './credentials.js';
+import { testAdminPassword, testSecret } from './credentials.js';
 
 /** Repository root (this file is e2e/support/stack.ts). */
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -35,7 +35,7 @@ export function serviceEnv(): NodeJS.ProcessEnv {
     WEB_ORIGIN: WEB_URL,
     COOKIE_SECURE: 'false',
     SWAGGER_ENABLED: 'false',
-    JWT_ACCESS_SECRET: 'e2e-secret-e2e-secret-e2e-secret-e2e-secret',
+    JWT_ACCESS_SECRET: testSecret('jwt'),
     // The scenario signs in a few times from one IP; keep login limits but lift the global one.
     RATE_LIMIT_PER_MINUTE: '10000',
     // Serve the fixture workbook; takes precedence over any Google credentials in .env.

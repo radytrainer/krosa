@@ -16,14 +16,14 @@ import {
   type TestContext,
 } from '../support/test-app.js';
 import { createHarness, V1, type Harness } from './support.js';
-import { testPassword, testStudentPassword } from '../support/credentials.js';
+import { testPassword, testStudentPassword, testSecret } from '../support/credentials.js';
 
 /** QA suite, area A. */
 
 const STUDENT = { username: 'QA-0001', password: testStudentPassword() };
 const OTHER = { username: 'QA-0002', password: testPassword('other-student') };
 const LOGIN = `${V1}/auth/login`;
-const SECRET = 'integration-test-secret-integration-test-secret';
+const SECRET = testSecret('jwt');
 
 function loginRaw(ctx: TestContext, identifier: unknown, password: unknown, ip?: string) {
   const req = request(ctx.app.getHttpServer()).post(LOGIN).set('Origin', WEB_ORIGIN);

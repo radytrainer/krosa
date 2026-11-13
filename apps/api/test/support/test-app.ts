@@ -23,6 +23,7 @@ import { PrismaService } from '../../src/infra/prisma.service.js';
 import { RedisService } from '../../src/infra/redis.service.js';
 import { SHEETS_READER } from '../../src/sheets-sources/sheets-reader.provider.js';
 import { TestRoutesController } from './test-routes.controller.js';
+import { testSecret } from './credentials.js';
 
 export const WEB_ORIGIN = 'http://localhost:3000';
 
@@ -50,7 +51,7 @@ function testEnv(overrides: Record<string, string> = {}): ApiEnv {
     DATABASE_URL: dbUrl,
     REDIS_URL: redisUrl,
     WEB_ORIGIN,
-    JWT_ACCESS_SECRET: 'integration-test-secret-integration-test-secret',
+    JWT_ACCESS_SECRET: testSecret('jwt'),
     SWAGGER_ENABLED: 'false',
     COOKIE_SECURE: 'false',
     // High enough that ordinary suites never hit the global limit; throttling tests lower it.
