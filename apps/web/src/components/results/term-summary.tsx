@@ -1,26 +1,22 @@
-import { trimDecimal } from '@/lib/format';
-import type { TermSummary } from '@/lib/types';
+import { EyeOff } from 'lucide-react';
+import { Fragment } from 'react';
+import { StatusPill } from '@/components/app/status';
+import { cn } from '@/lib/utils';
+import { gradeScoreClass, gradeToneAttr } from './grade-tone';
+import type { TermSummaryView } from '@/lib/types';
 
-/** Average (or provisional average) plus completion counts for one term or overall. */
-export function TermSummaryBar({
-  summary,
-  label = 'Term average',
-}: {
-  summary: TermSummary;
-  label?: string;
-}) {
+/**
+ * One term's summary (decisions.md T1–T3): Courses complete and Top scoring. No average and no
+ * credits. Top scoring's grade is the only grade here, and it sits beside that final score.
+ * Admin views mark a subject hidden from the student; student views never contain one.
+ */
+export function TermSummaryBar({ summary }: { summary: TermSummaryView }) {
   if (summary.status === 'EMPTY') {
     return <p className="text-sm text-muted-foreground">No courses in this term yet.</p>;
   }
-  const average = summary.average ?? summary.provisionalAverage;
+  const top = summary.topScoring;
   return (
-    <dl className="grid grid-cols-3 divide-x rounded-xl bg-card text-sm ring-1 ring-foreground/10 [&>div]:px-4 [&>div]:py-3.5">
-      <div>
-        <dt className="text-xs text-muted-foreground">
-          {summary.average ? label : `Provisional ${label.toLowerCase()}`}
-        </dt>
-        <dd className="text-xl font-semibold tabular-nums">{average ?? '—'}</dd>
-      </div>
+    <dl className="grid divide-y rounded-xl bg-card text-sm ring-1 ring-foreground/10 sm:grid-cols-[auto_1fr] sm:divide-x sm:divide-y-0 [&>div]:px-4 [&>div]:py-3.5">
       <div>
         <dt className="text-xs text-muted-foreground">Courses complete</dt>
         <dd className="text-xl font-semibold tabular-nums">
@@ -31,15 +27,46 @@ export function TermSummaryBar({
           </span>
         </dd>
       </div>
-      <div>
-        <dt className="text-xs text-muted-foreground">Credits complete</dt>
-        <dd className="text-xl font-semibold tabular-nums">
-          {trimDecimal(summary.creditsCompleted)}
-          <span className="text-sm font-normal text-muted-foreground">
-            {' '}
-            / {trimDecimal(summary.creditsTotal)}
-          </span>
-        </dd>
+      <div className="min-w-0">
+        <dt className="text-xs text-muted-foreground">Top scoring</dt>
+        {top ? (
+          <dd data-slot="top-scoring" className="break-words">
+            {/* Ties: every subject on that score, in one line. */}
+            {top.subjects.map((s, i) => (
+              <Fragment key={s.offeringId}>
+                {i > 0 ? ', ' : null}
+                <span className="font-medium">{s.title}</span>
+                {s.hiddenFromStudent ? (
+                  <StatusPill tone="neutral" icon={<EyeOff aria-hidden />} className="ml-1.5">
+                    Hidden from student
+                  </StatusPill>
+                ) : null}
+              </Fragment>
+            ))}
+            :{' '}
+            <span
+              data-slot="top-scoring-score"
+              data-grade-tone={gradeToneAttr(top.finalGrade)}
+              className={cn('text-xl font-semibold tabular-nums', gradeScoreClass(top.finalGrade))}
+            >
+              {top.finalScore}
+            </span>
+            {top.finalGrade ? (
+              <span
+                data-slot="top-scoring-grade"
+                data-grade-tone={gradeToneAttr(top.finalGrade)}
+                className={cn('text-xl font-semibold', gradeScoreClass(top.finalGrade))}
+              >
+                {' '}
+                ({top.finalGrade})
+              </span>
+            ) : null}
+          </dd>
+        ) : (
+          <dd data-slot="top-scoring-empty" className="text-muted-foreground">
+            No final score yet
+          </dd>
+        )}
       </div>
     </dl>
   );

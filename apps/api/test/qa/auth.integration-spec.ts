@@ -16,13 +16,14 @@ import {
   type TestContext,
 } from '../support/test-app.js';
 import { createHarness, V1, type Harness } from './support.js';
+import { testPassword, testStudentPassword, testSecret } from '../support/credentials.js';
 
 /** QA suite, area A. */
 
-const STUDENT = { username: 'QA-0001', password: 'Plain-Meadow-Quartz-77' };
-const OTHER = { username: 'QA-0002', password: 'Plain-Meadow-Quartz-78' };
+const STUDENT = { username: 'QA-0001', password: testStudentPassword() };
+const OTHER = { username: 'QA-0002', password: testPassword('other-student') };
 const LOGIN = `${V1}/auth/login`;
-const SECRET = 'integration-test-secret-integration-test-secret';
+const SECRET = testSecret('jwt');
 
 function loginRaw(ctx: TestContext, identifier: unknown, password: unknown, ip?: string) {
   const req = request(ctx.app.getHttpServer()).post(LOGIN).set('Origin', WEB_ORIGIN);
@@ -49,9 +50,9 @@ describe('QA A: authentication and sessions', () => {
 
   it('A-01 unknown user and wrong password give the same status, body and headers', async () => {
     await seedStudent();
-    const wrong = await loginRaw(ctx, STUDENT.username, 'not-the-password');
+    const wrong = await loginRaw(ctx, STUDENT.username, testPassword('wrong'));
     await clearRateLimits(ctx);
-    const unknown = await loginRaw(ctx, 'NOBODY-9999', 'not-the-password');
+    const unknown = await loginRaw(ctx, 'NOBODY-9999', testPassword('wrong'));
     expect(wrong.status).toBe(401);
     expect(unknown.status).toBe(401);
     const shape = (r: request.Response) => ({
@@ -227,7 +228,7 @@ describe('QA A: authentication and sessions', () => {
   });
 
   describe('forced password change', () => {
-    const TEMP = 'Temp-Pass-Forced-2026';
+    const TEMP = testPassword('temporary');
 
     it('A-17 every student and admin route is refused until the password is changed', async () => {
       await seedStudent({ password: TEMP, mustChangePassword: true });
@@ -288,7 +289,7 @@ describe('QA A: authentication and sessions', () => {
       });
       const res = await session.post(`${V1}/auth/change-password`, {
         currentPassword: TEMP,
-        newPassword: 'Another-Long-Phrase-2026',
+        newPassword: testPassword('new-password'),
       });
       expect(res.status).toBe(403);
       expect(res.body.error.code).toBe('TEMPORARY_PASSWORD_EXPIRED');
@@ -474,7 +475,7 @@ describe('QA A: authentication and sessions', () => {
     await a
       .post(`${V1}/auth/change-password`, {
         currentPassword: STUDENT.password,
-        newPassword: 'Another-Long-Phrase-2026',
+        newPassword: testPassword('new-password'),
       })
       .expect(204);
     await b.get(`${V1}/auth/me`).expect(401);
@@ -485,7 +486,7 @@ describe('QA A: authentication and sessions', () => {
         (
           await a.post(`${V1}/auth/change-password`, {
             currentPassword: 'wrong',
-            newPassword: 'Another-Long-Phrase-2027',
+            newPassword: testPassword('newer-password'),
           })
         ).status,
       );
@@ -530,7 +531,7 @@ describe('QA A: timing and Secure cookies', () => {
         data: { failedLoginCount: 0, lockedUntil: null },
       });
       const t = performance.now();
-      await loginRaw(h.ctx, identifier, 'wrong-password-value');
+      await loginRaw(h.ctx, identifier, testPassword('wrong'));
       return performance.now() - t;
     };
     const known: number[] = [];

@@ -5,22 +5,24 @@ import Link from 'next/link';
 import { PageHeader, Section } from '@/components/app/page-header';
 import { CourseStatusPill } from '@/components/app/status';
 import { FinalGrade } from '@/components/results/course-result';
+import { gradeScoreClass, gradeToneAttr } from '@/components/results/grade-tone';
 import { EmptyState, ErrorState, LoadingRows } from '@/components/app/states';
-import { TermChart } from '@/components/results/term-chart';
+import { UrlNotice } from '@/components/app/url-notice';
 import { OverallSummary } from '@/components/results/overall-summary';
 import { buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { trimDecimal } from '@/lib/format';
-import { useApi } from '@/lib/query';
+import { useFreshApi } from '@/lib/query';
 import type { StudentCourseListItem, StudentSummaryView } from '@/lib/types';
 
-export default function StudentDashboardPage() {
-  const summary = useApi<StudentSummaryView>('/student/me/summary');
-  const courses = useApi<StudentCourseListItem[]>('/student/me/courses');
+function Dashboard() {
+  // Released results can be hidden at any time: never shown from an earlier visit.
+  const summary = useFreshApi<StudentSummaryView>('/student/me/summary');
+  const courses = useFreshApi<StudentCourseListItem[]>('/student/me/courses');
 
   if (summary.error) return <ErrorState error={summary.error} onRetry={() => summary.refetch()} />;
   if (!summary.data) return <LoadingRows rows={4} />;
-  const { student, terms, overall } = summary.data;
+  const { student, overall } = summary.data;
   const firstName = student.fullName.split(' ')[0] ?? student.fullName;
 
   return (
@@ -45,15 +47,6 @@ export default function StudentDashboardPage() {
           <Section title="Overall">
             <OverallSummary summary={summary.data} />
           </Section>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Averages by term</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <TermChart terms={terms} />
-            </CardContent>
-          </Card>
 
           <Section title="Courses">
             {courses.error ? (
@@ -80,7 +73,13 @@ export default function StudentDashboardPage() {
                           <CourseStatusPill status={c.status} />
                           {c.finalScore ? (
                             <span className="text-lg font-semibold tabular-nums">
-                              {c.finalScore}
+                              <span
+                                data-slot="final-score"
+                                data-grade-tone={gradeToneAttr(c.finalGrade)}
+                                className={gradeScoreClass(c.finalGrade)}
+                              >
+                                {c.finalScore}
+                              </span>
                               <FinalGrade course={c} />
                             </span>
                           ) : null}
@@ -94,6 +93,16 @@ export default function StudentDashboardPage() {
           </Section>
         </div>
       )}
+    </>
+  );
+}
+
+export default function StudentDashboardPage() {
+  return (
+    <>
+      {/* Shown in every state of the page, also while it loads. */}
+      <UrlNotice />
+      <Dashboard />
     </>
   );
 }

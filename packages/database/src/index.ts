@@ -22,8 +22,8 @@ export async function applyTermDefaults(
 }
 
 /**
- * Gives a generation the official letter-grade scale, confirmed (migration
- * 20261110090000_grade_scale holds it). A generation that already has bands is left alone.
+ * Gives a generation the official letter-grade scale, confirmed (decisions.md G5; migration
+ * 20261113090000_grade_scale_2026_11 holds it). A generation that already has bands is left alone.
  */
 export async function applyGradeDefaults(
   db: Pick<PrismaClient, '$executeRaw'>,

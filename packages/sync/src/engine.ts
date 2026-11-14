@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Prisma, PrismaClient, SyncStatus } from '@ssrs/database';
 import {
+  isMetaIssueCode,
   readTermWorkbook,
   SheetsAccessError,
   type ParsedCourse,
@@ -402,18 +403,24 @@ async function execute(
   const counts = emptyCounts();
   let issues: SyncIssue[] = [...workbook.issues];
   countParseRejections(workbook.issues, workbook.rosterTab, counts);
+  if (workbook.fatal) {
+    // A workbook of another generation or term (or without `_meta`) says so in the failure itself.
+    const meta = workbook.issues.find(
+      (i) => i.severity === 'ERROR' && i.scope === 'FILE' && isMetaIssueCode(i.code),
+    );
+    return finish('FAILED', {
+      failureCode: meta?.code ?? 'TEMPLATE_INVALID',
+      failureMessage:
+        meta?.message ?? 'The spreadsheet has file-level errors; nothing was imported.',
+      counts,
+      issues,
+    });
+  }
+  // Only a usable workbook renames the source: a wrong one (another term, say) never does.
   if (workbook.spreadsheetTitle && workbook.spreadsheetTitle !== source.spreadsheetTitle) {
     await prisma.googleSheetSource.update({
       where: { id: source.id },
       data: { spreadsheetTitle: workbook.spreadsheetTitle },
-    });
-  }
-  if (workbook.fatal) {
-    return finish('FAILED', {
-      failureCode: 'TEMPLATE_INVALID',
-      failureMessage: 'The spreadsheet has file-level errors; nothing was imported.',
-      counts,
-      issues,
     });
   }
 

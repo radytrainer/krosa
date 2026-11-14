@@ -4,6 +4,7 @@ import { ExternalLink, Pencil, Power, TriangleAlert } from 'lucide-react';
 import { useParams } from 'next/navigation';
 import { useState } from 'react';
 import { SyncJobsTable } from '@/components/admin/sync-jobs-table';
+import { useRefreshOnJobFinish } from '@/components/admin/use-refresh-on-job-finish';
 import { SheetPreviewPanel } from '@/components/admin/sheet-preview';
 import { SyncActiveSheet, SyncPendingSheet } from '@/components/admin/sync-confirm';
 import { TermMappings } from '@/components/admin/term-mappings';
@@ -27,7 +28,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { apiFetch } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
-import { json, qs, useApi, useApiMutation } from '@/lib/query';
+import { json, qs, useApi, useApiMutation, useFreshApi } from '@/lib/query';
 import type { Paginated, SheetPreview, Source, SyncJob, TermWorkbooks } from '@/lib/types';
 
 function RenameDialog({ source }: { source: Source }) {
@@ -73,7 +74,8 @@ function RenameDialog({ source }: { source: Source }) {
 export default function SourceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [page, setPage] = useState(1);
-  const { data: s, error, isPending, refetch } = useApi<Source>(`/admin/sources/${id}`);
+  // Fresh on every visit: a sync may have promoted this sheet since it was last shown.
+  const { data: s, error, refetch } = useFreshApi<Source>(`/admin/sources/${id}`);
   const history = useApi<Paginated<SyncJob>>(
     `/admin/sources/${id}/sync-history${qs({ page, pageSize: 10 })}`,
     {
@@ -81,7 +83,8 @@ export default function SourceDetailPage() {
     },
   );
   const preview = useApi<SheetPreview | null>(`/admin/sources/${id}/preview`);
-  const workbooks = useApi<TermWorkbooks[]>('/admin/term-workbooks');
+  const workbooks = useFreshApi<TermWorkbooks[]>('/admin/term-workbooks');
+  useRefreshOnJobFinish(history.data?.data ?? null);
   const discard = useApiMutation(
     () => apiFetch(`/admin/sources/${id}/discard`, { method: 'POST' }),
     {
@@ -103,7 +106,7 @@ export default function SourceDetailPage() {
   );
 
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
-  if (isPending) return <PageLoading />;
+  if (!s) return <PageLoading />;
   const active = s.status === 'ACTIVE';
   const pending = s.status === 'PENDING';
   const term = workbooks.data?.find((w) => w.term.id === s.term.id);

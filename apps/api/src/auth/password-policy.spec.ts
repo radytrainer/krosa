@@ -13,7 +13,7 @@ describe('checkPasswordPolicy', () => {
   });
 
   it('rejects passwords containing the username, case-insensitively', () => {
-    expect(checkPasswordPolicy('my-gen26-0001-pass', 'GEN26-0001')).toContain('CONTAINS_USERNAME');
+    expect(checkPasswordPolicy(`my-${'GEN26-0001'.toLowerCase()}-pass`, 'GEN26-0001')).toContain('CONTAINS_USERNAME');
     expect(checkPasswordPolicy('Admin-is-great-2026', 'admin')).toContain('CONTAINS_USERNAME');
   });
 

@@ -81,7 +81,7 @@ export async function prepareSubjects(
 /** Points the sheet's columns at the criteria the promoting sync created or matched. */
 export async function linkCriteria(tx: Tx, sourceId: string): Promise<void> {
   const columns = await tx.sheetColumnMapping.findMany({
-    where: { tabMapping: { sourceId }, proposedKey: { not: null } },
+    where: { tabMapping: { sourceId }, proposedKey: { not: null }, missingFromSheet: false },
     include: { tabMapping: { select: { offeringId: true } } },
   });
   for (const column of columns) {

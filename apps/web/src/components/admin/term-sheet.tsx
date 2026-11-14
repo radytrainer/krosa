@@ -12,8 +12,9 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { apiFetch } from '@/lib/api';
+import { requestAutoDetect } from '@/lib/auto-detect';
 import { formatDateTime } from '@/lib/format';
-import { json, useApi, useApiMutation } from '@/lib/query';
+import { json, useApi, useApiMutation, useFreshApi } from '@/lib/query';
 import type { SheetCheck, Source, TermWorkbooks } from '@/lib/types';
 
 const INVALIDATE = ['/admin/term-workbooks', '/admin/sources', '/admin/generations'];
@@ -42,10 +43,14 @@ function SheetForm({
       apiFetch<Source>(`/admin/terms/${termId}/sources${reviewed ? '/change' : ''}`, json(body)),
     {
       success: reviewed
-        ? 'New sheet connected. Review its tabs next.'
-        : 'Sheet connected. Detect its tabs next.',
+        ? 'New sheet connected. Reading its tabs…'
+        : 'Sheet connected. Reading its tabs…',
       invalidate: INVALIDATE,
-      onSuccess: (s) => router.push(`/admin/sources/${s.id}`),
+      // Its tabs are read once, automatically, when its page opens.
+      onSuccess: (s) => {
+        requestAutoDetect(s.id);
+        router.push(`/admin/sources/${s.id}`);
+      },
     },
   );
   const checked = check.data;
@@ -143,8 +148,8 @@ function SheetForm({
 /** The Google Sheet of a term: its URL, and the way to replace or remove it. */
 export function TermSheet({ term }: { term: { id: string; name: string } }) {
   const [replacing, setReplacing] = useState(false);
-  const { data, error, refetch } = useApi<TermWorkbooks[]>('/admin/term-workbooks', {
-    refetchOnMount: 'always',
+  // Fresh on every visit, never a cached "not synced yet".
+  const { data, error, refetch } = useFreshApi<TermWorkbooks[]>('/admin/term-workbooks', {
     // A running sync locks the sheet, so keep watching until it ends.
     refetchInterval: (q) => (q.state.data?.some((r) => r.runningJobId) ? 3000 : false),
   });

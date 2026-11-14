@@ -1,0 +1,27 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "krosa",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "dev"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "krosa-web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@ssrs/web", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "krosa-test",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/theng/AppData/Local/Temp/claude/C--Users-theng-Documents-PNC-PROJECT-krosa/138ac54b-4671-4c00-abed-ee9db012f2a7/scratchpad/krosa-check/e2e/test-stack.mjs"
+      ],
+      "port": 3200
+    }
+  ]
+}

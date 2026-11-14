@@ -28,6 +28,7 @@ import {
   writeSheet,
   type Session,
 } from './support.js';
+import { testPassword } from '../../support/credentials.js';
 
 const main = (page: Page) => page.locator('main:visible').last();
 test.beforeEach(() => clearLimits());
@@ -247,7 +248,7 @@ test.describe('Students', () => {
     await page.goto('/login');
     for (let i = 0; i < 5; i++) {
       await page.getByLabel(/Username or student ID/).fill(code);
-      await page.locator('input[name=password]').fill('wrong-password-1');
+      await page.locator('input[name=password]').fill(testPassword('wrong'));
       const answer = page.waitForResponse((r) => r.url().includes('/auth/login'));
       await page.getByRole('button', { name: 'Sign in' }).click();
       await answer;
@@ -424,7 +425,8 @@ test.describe('Student Portal', () => {
     await expect(main(u.page)).toContainText('GEN26-0001');
     await expect(main(u.page)).toContainText(/Generation 2026|GEN2026/);
     await expect(main(u.page)).toContainText('Overall');
-    await expect(main(u.page)).toContainText('Averages by term');
+    // No averages chart and no average anywhere (decisions.md T1).
+    await expect(main(u.page)).not.toContainText(/Averages by term|average/i);
   });
 
   test('TC-166 View results by term', async ({ browser }) => {
@@ -665,7 +667,7 @@ test.describe('Score Calculation', () => {
     remark('Local file stood in for the Google Sheet');
   });
 
-  test('TC-183 Term average', async ({ browser }) => {
+  test('TC-183 Term Top scoring, no average', async ({ browser }) => {
     const admin = await asAdmin(browser);
     const prefix = unique();
     const g = await newGeneration(admin, prefix);
@@ -673,7 +675,7 @@ test.describe('Score Calculation', () => {
     const header = ['STUDENT ID', 'FIRST NAME', 'LAST NAME', 'GENDER', 'CLASS'];
     const row = [`${prefix}-001`, 'A', 'B', 'F', 'A'];
     writeSheet(sheet, {
-      title: 'Average',
+      title: 'Top scoring',
       tabs: {
         ALL: [header, row],
         One: [
@@ -682,7 +684,7 @@ test.describe('Score Calculation', () => {
         ],
         Two: [
           [...header, 'Final 100%'],
-          [...row, 71],
+          [...row, 80],
         ],
         Three: [
           [...header, 'Quiz 50%', 'Exam 50%'],
@@ -696,14 +698,20 @@ test.describe('Score Calculation', () => {
     await ok(admin, 'POST', `/admin/terms/${g.terms[0]!.id}/release`, { visible: true });
     const u = await activate(browser, admin, `${prefix}-001`);
     await u.page.goto('/student/results');
-    await expect(main(u.page)).toContainText(/Provisional/);
-    await expect(main(u.page)).toContainText('75.50');
-    editSheet(sheet, (x) => x.tabs['Three']![1]!.push(60));
+    const top = u.page.locator('[data-slot="top-scoring"]');
+    // Ties in one line; Three is INCOMPLETE (exam missing), so it never counts.
+    await expect(top).toContainText('80.00 (B+)');
+    await expect(top).toContainText('One');
+    await expect(top).toContainText('Two');
+    await expect(top).not.toContainText('Three');
+    await expect(main(u.page)).not.toContainText(/average|Provisional|Credits complete/i);
+    // Three completes at 60·0.5 + 100·0.5 = 80.00: it joins the tie.
+    editSheet(sheet, (x) => x.tabs['Three']![1]!.push(100));
     await syncNow(admin, source.id);
     await u.page.reload();
-    await expect(main(u.page)).toContainText('70.33');
-    await expect(main(u.page)).not.toContainText(/Provisional/);
-    remark('Equal credits (1 each). (80 + 71 + 60) / 3 = 70.33 worked by hand');
+    await expect(top).toContainText('Three');
+    await expect(top).toContainText('80.00 (B+)');
+    remark('Top scoring: COMPLETE subjects only, every tie shown; Three joined at 80.00');
   });
 
   test('TC-184 Spot check against the sheet', async ({ browser }) => {

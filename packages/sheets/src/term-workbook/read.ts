@@ -1,20 +1,20 @@
 import { createHash } from 'node:crypto';
 import type { Grid, SheetsReader } from '../reader.js';
-import { cellText, parseIntegerCell } from '../template/cells.js';
+import { cellText } from '../template/cells.js';
 import { LIMITS } from '../template/constants.js';
-import { IssueLog, rawValue, type TemplateIssue } from '../template/issues.js';
+import { IssueLog, type TemplateIssue } from '../template/issues.js';
 import {
   detectTabLayout,
   headerSignature,
   TERM_WORKBOOK_MAX_MARK,
   type TabLayout,
 } from './layout.js';
+import { checkTermMeta, TERM_META_TAB, type MetaFound } from './meta.js';
 import { parseRoster, type RosterStudent } from './roster.js';
 import { parseSubjectRows } from './subject-rows.js';
 import type { ColumnRole } from './labels.js';
 import type { ParsedCourse, ParsedCriterion } from './types.js';
 
-export const TERM_META_TAB = '_meta';
 export const DEFAULT_ROSTER_TAB = 'ALL';
 
 export const normalizeTitle = (title: string) => title.trim().toLowerCase();
@@ -30,7 +30,9 @@ export interface TermWorkbookOptions {
 }
 
 export interface TermMeta {
+  /** `generation_code` as written (trimmed); null when blank. */
   generationCode: string | null;
+  /** `education_term` read as a number; null when blank or unreadable. */
   termNumber: number | null;
 }
 
@@ -57,27 +59,20 @@ export interface TermWorkbookDetection {
 }
 
 /**
- * Optional `_meta` tab (key/value). Only the term is checked: `education_term`, when present,
- * must match the source. `generation_code` is read for display and otherwise ignored.
+ * Required `_meta` tab (key/value; `grid` is null when the tab is missing). It must name the
+ * generation and term the source belongs to (see `checkTermMeta`); nothing else in it is used.
  */
-export function parseTermMeta(grid: Grid, options: TermWorkbookOptions, log: IssueLog): TermMeta {
-  const values = new Map<string, Grid[number][number]>();
-  for (const row of grid) {
-    const key = cellText(row[0])?.toLowerCase();
-    if (key) values.set(key, row[1] ?? null);
-  }
-  const generationCode = cellText(values.get('generation_code'));
-  const termCell = values.get('education_term') ?? values.get('term');
-  const termNumber = termCell === undefined ? null : parseIntegerCell(termCell, 1, 99);
-  if (termCell !== undefined && termNumber !== options.termNumber) {
-    log.error(
-      'FILE',
-      'TERM_MISMATCH',
-      `_meta says term ${rawValue(termCell) ?? '(empty)'}, but this source is for term ${options.termNumber}.`,
-      { sheetTab: TERM_META_TAB, rawValue: rawValue(termCell) },
-    );
-  }
-  return { generationCode, termNumber };
+export function parseTermMeta(
+  grid: Grid | null,
+  options: TermWorkbookOptions,
+  log: IssueLog,
+): TermMeta & { found: MetaFound } {
+  const meta = checkTermMeta(grid, options, log);
+  return {
+    generationCode: meta.found.generationCode,
+    termNumber: meta.termNumber,
+    found: meta.found,
+  };
 }
 
 function tooLarge(grid: Grid): boolean {
@@ -119,7 +114,10 @@ export async function detectTermWorkbook(
   ];
   const grids = titles.length > 0 ? await reader.readTabs(spreadsheetId, titles) : [];
   let next = 0;
-  const meta = metaTab ? parseTermMeta(grids[next++] ?? [], options, log) : null;
+  const parsedMeta = parseTermMeta(metaTab ? (grids[next++] ?? []) : null, options, log);
+  const meta: TermMeta | null = metaTab
+    ? { generationCode: parsedMeta.generationCode, termNumber: parsedMeta.termNumber }
+    : null;
 
   let roster: RosterStudent[] = [];
   if (rosterTab) {
@@ -182,11 +180,13 @@ export interface TermWorkbookCheck {
   tabs: string[];
   ok: boolean;
   issues: TemplateIssue[];
+  /** What `_meta` holds (both null when the tab is missing). */
+  metaFound: MetaFound;
 }
 
 /**
- * Quick check when a term workbook is connected: readable, roster tab present, `_meta` (if any)
- * names this generation and term. At most two requests; subject tabs are not read.
+ * Quick check when a term workbook is connected: readable, roster tab present, `_meta` present
+ * and naming this generation and term. At most two requests; subject tabs are not read.
  */
 export async function checkTermWorkbook(
   reader: SheetsReader,
@@ -206,15 +206,14 @@ export async function checkTermWorkbook(
     );
   }
   const metaTitle = titles.get(normalizeTitle(TERM_META_TAB));
-  if (metaTitle) {
-    const [grid] = await reader.readTabs(spreadsheetId, [metaTitle]);
-    parseTermMeta(grid ?? [], options, log);
-  }
+  const grid = metaTitle ? ((await reader.readTabs(spreadsheetId, [metaTitle]))[0] ?? []) : null;
+  const meta = parseTermMeta(grid, options, log);
   return {
     spreadsheetTitle: metadata.title,
     tabs: metadata.tabs.map((t) => t.title),
     ok: !log.hasFileError,
     issues: log.items,
+    metaFound: meta.found,
   };
 }
 
@@ -336,7 +335,7 @@ export async function readTermWorkbook(
   const grids = titles.length > 0 ? await reader.readTabs(spreadsheetId, titles) : [];
   titles.forEach((title, i) => fingerprint.set(title, grids[i] ?? []));
   let next = 0;
-  if (metaTab) parseTermMeta(grids[next++] ?? [], options, log);
+  parseTermMeta(metaTab ? (grids[next++] ?? []) : null, options, log);
 
   let roster: RosterStudent[] = [];
   if (rosterTab) {

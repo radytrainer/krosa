@@ -1,5 +1,6 @@
 import type { Event } from '@sentry/node';
 import { initSentry, reportError, scrubEvent } from './sentry.js';
+import { randomBytes } from 'node:crypto';
 
 describe('scrubEvent', () => {
   it('keeps only the request method and path', () => {
@@ -9,7 +10,7 @@ describe('scrubEvent', () => {
         url: 'https://scores.example.edu/api/v1/auth/login?next=/admin&token=abc',
         headers: { cookie: 'ssrs_at=secret', 'x-csrf-token': 'tok' },
         cookies: { ssrs_rt: 'secret' },
-        data: { identifier: 'admin', password: 'Correct-Horse-2026' },
+        data: { identifier: 'admin', password: randomBytes(9).toString('base64url') },
         query_string: 'token=abc',
       },
       user: { id: 'u1', ip_address: '203.0.113.9', username: 'admin' },

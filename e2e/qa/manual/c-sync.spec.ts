@@ -369,7 +369,7 @@ test.describe('Sync', () => {
     const admin = await asAdmin(browser);
     const s = await synced(admin);
     const second = sheetId(`T2${s.prefix}`);
-    writeSheet(second, workbook(s.prefix));
+    writeSheet(second, workbook(s.prefix, undefined, 2));
     const source = await connect(admin, s.terms[1]!.id, second, 'Second sheet');
     await confirmAll(admin, source.id);
     const page = admin.page;

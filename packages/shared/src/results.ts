@@ -2,7 +2,7 @@ import type { CourseStatus, ScoreStatus, TermSummary } from './grading/grading.j
 
 /**
  * Response contract of the results API (docs/api-specification.md §3). Decimals are strings:
- * marks/max marks/weights with 3 decimals, contributions/scores/averages with 2.
+ * marks/max marks/weights with 3 decimals, contributions and scores with 2.
  */
 export interface StudentProfileView {
   id: string;
@@ -50,7 +50,7 @@ export interface CourseResultView {
   /** Only when status is COMPLETE. */
   finalScore: string | null;
   /**
-   * Letter for `finalScore` (official scale, docs/decisions.md G1–G4). Only when status is
+   * Letter for `finalScore` (official scale, docs/decisions.md G2–G5). Only when status is
    * COMPLETE; null otherwise or when the generation has no usable scale. No other figure has one.
    */
   finalGrade: string | null;
@@ -68,12 +68,37 @@ export interface CourseResultView {
   };
 }
 
+/**
+ * A term's best result (decisions.md T1–T3): the highest final score among its COMPLETE subjects,
+ * with every subject tied on that score. Null when the term has no COMPLETE subject yet.
+ */
+export interface TopScoringView {
+  finalScore: string;
+  /** Letter beside that final score (G3); null without a usable scale. The summary's only grade. */
+  finalGrade: string | null;
+  /** Every subject with that score (ties), in the term's order. */
+  subjects: TopScoringSubject[];
+}
+
+export interface TopScoringSubject {
+  offeringId: string;
+  courseCode: string;
+  title: string;
+  /** Admin views only: true when the subject is hidden from the student. */
+  hiddenFromStudent?: boolean;
+}
+
+/** One term's summary: how many courses are complete, and its Top scoring subject. */
+export interface TermSummaryView extends TermSummary {
+  topScoring: TopScoringView | null;
+}
+
 export interface TermResultView {
   number: number;
   name: string;
   startDate: string | null;
   endDate: string | null;
-  summary: TermSummary;
+  summary: TermSummaryView;
   courses: CourseResultView[];
 }
 
@@ -84,16 +109,17 @@ export interface StudentResultsView {
 
 export interface StudentSummaryView {
   student: StudentProfileView;
-  terms: { number: number; name: string; summary: TermSummary }[];
-  /** Credit-weighted across all terms. */
+  terms: { number: number; name: string; summary: TermSummaryView }[];
+  /** Courses complete across all terms. */
   overall: TermSummary;
   /** Null when the student has no released subject. See latestTermHighest. */
   latestTermHighest: LatestTermHighestView | null;
 }
 
 /**
- * The highest final score in the latest term with a released subject (decisions.md S1–S3).
- * `finalScore` is null when that term has no COMPLETE subject yet; then `subjects` is empty.
+ * The highest final score in the latest term with a released subject (decisions.md S1–S3): that
+ * term's Top scoring, from the same helper (topScoring). `finalScore` is null when that term has
+ * no COMPLETE subject yet; then `subjects` is empty.
  */
 export interface LatestTermHighestView {
   termNumber: number;

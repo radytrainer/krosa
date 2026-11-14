@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "ask": [
+      "Bash(prisma migrate deploy:*)",
+      "Bash(npx prisma migrate deploy:*)",
+      "Bash(pnpm db:deploy:*)",
+      "Bash(pnpm --filter @ssrs/database migrate:deploy:*)",
+      "Bash(prisma migrate dev:*)",
+      "Bash(npx prisma migrate dev:*)",
+      "Bash(pnpm db:migrate:*)",
+      "Bash(pnpm --filter @ssrs/database migrate:dev:*)",
+      "Bash(prisma migrate reset:*)",
+      "Bash(npx prisma migrate reset:*)",
+      "Bash(prisma db push:*)",
+      "Bash(npx prisma db push:*)",
+      "Bash(prisma db seed:*)",
+      "Bash(npx prisma db seed:*)",
+      "Bash(pnpm demo:seed:*)",
+      "Bash(psql:*)",
+      "Bash(pg_restore:*)",
+      "Bash(dropdb:*)",
+      "Bash(createdb:*)",
+      "Bash(docker exec:*)",
+      "Bash(scripts/db-guard.sh:*)"
+    ]
+  }
+}

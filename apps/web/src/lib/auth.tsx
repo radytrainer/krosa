@@ -11,6 +11,11 @@ interface AuthState {
   loading: boolean;
   signOut(): Promise<void>;
   refresh(): Promise<void>;
+  /**
+   * For a 401 that the silent refresh could not fix: forgets the cached user and every cached
+   * query, then loads the login page, which returns to `returnTo` (an internal path) after sign-in.
+   */
+  sessionExpired(returnTo: string): void;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -53,8 +58,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await queryClient.invalidateQueries({ queryKey: ME_KEY });
   }, [queryClient]);
 
+  const sessionExpired = useCallback(
+    (returnTo: string) => {
+      queryClient.clear();
+      window.location.replace(`/login?next=${encodeURIComponent(returnTo)}`);
+    },
+    [queryClient],
+  );
+
   return (
-    <AuthContext.Provider value={{ me: data ?? null, loading: isPending, signOut, refresh }}>
+    <AuthContext.Provider
+      value={{ me: data ?? null, loading: isPending, signOut, refresh, sessionExpired }}
+    >
       {children}
     </AuthContext.Provider>
   );

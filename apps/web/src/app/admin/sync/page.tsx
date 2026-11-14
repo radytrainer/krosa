@@ -3,6 +3,7 @@
 import { Suspense, useState } from 'react';
 import { SyncJobsTable } from '@/components/admin/sync-jobs-table';
 import { SyncPlanButton } from '@/components/admin/sync-confirm';
+import { useRefreshOnJobFinish } from '@/components/admin/use-refresh-on-job-finish';
 import type { SyncTarget } from '@/components/admin/use-start-sync';
 import { useUrlState } from '@/components/admin/use-url-state';
 import { WorkbooksByTerm } from '@/components/admin/workbooks-by-term';
@@ -107,6 +108,7 @@ function SyncCenter() {
     // Poll while anything on screen is still queued or running.
     refetchInterval: (q) => (q.state.data?.data.some((j) => isActiveJob(j.status)) ? 3000 : false),
   });
+  useRefreshOnJobFinish(jobs.data?.data ?? null);
 
   return (
     <>

@@ -6,9 +6,10 @@ import {
   seedUser,
   type TestContext,
 } from './support/test-app.js';
+import { testAdminPassword, testStudentPassword } from './support/credentials.js';
 
-const ADMIN = { username: 'admin', password: 'Admin-Initial-Pass-2026' };
-const STUDENT = { username: 'GEN26-0001', password: 'Student-Initial-Pass-2026' };
+const ADMIN = { username: 'admin', password: testAdminPassword() };
+const STUDENT = { username: 'GEN26-0001', password: testStudentPassword() };
 
 describe('Admin dashboard (integration)', () => {
   let ctx: TestContext;

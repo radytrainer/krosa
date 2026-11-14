@@ -1,5 +1,5 @@
 /* eslint-disable -- QA suite: uses expect messages, console evidence and supertest .expect() */
-import { termWorkbookFixture, type FakeSpreadsheet } from '@ssrs/sheets/testing';
+import { termMetaTab, termWorkbookFixture, type FakeSpreadsheet } from '@ssrs/sheets/testing';
 import { vi } from 'vitest';
 import type { TestContext } from '../support/test-app.js';
 import {
@@ -121,6 +121,7 @@ describe('QA D: Google Sheets sync', () => {
       h.reader.set(sheetId, {
         title: 'Term 2',
         tabs: {
+          _meta: termMetaTab('GEN2027', 2),
           ALL: base.tabs['Logic']!.map((r) => r.slice(0, 5)),
           Three: [
             [null, null, null, null, null, 'Quizzes (5%)', null, null, 'Exam (95%)'],
@@ -155,6 +156,7 @@ describe('QA D: Google Sheets sync', () => {
       h.reader.set(sheetId, {
         title: 'Weights',
         tabs: {
+          _meta: termMetaTab('GEN2027', 3),
           ALL: termWorkbookFixture().tabs['Logic']!.map((r) => r.slice(0, 5)),
           Bad: [
             ['STUDENT ID', 'FIRST NAME', 'LAST NAME', 'A 50%', 'B 49%'],

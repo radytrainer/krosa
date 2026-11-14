@@ -81,8 +81,13 @@ export class SheetsSourcesController {
   /** Validates a replacement sheet and shows its name and tabs. Changes nothing. */
   @Post('terms/:id/sources/check')
   @HttpCode(HttpStatus.OK)
-  check(@Param('id', ParseUUIDPipe) termId: string, @Body() dto: CheckSheetDto) {
-    return this.sources.checkSheet(termId, dto);
+  check(
+    @Param('id', ParseUUIDPipe) termId: string,
+    @Body() dto: CheckSheetDto,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    return this.sources.checkSheet(termId, dto, user, requestMeta(req));
   }
 
   /** Connects a replacement sheet as pending. Student scores do not change. */

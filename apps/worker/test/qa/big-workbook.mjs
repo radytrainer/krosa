@@ -30,7 +30,12 @@ export function bigWorkbook(version, students = STUDENTS) {
     'F',
     'A',
   ]);
-  const tabs = { ALL: [HEADER.slice(0, 5), ...rows] };
+  // The fault tests sync it into GEN2027, Term 1; `_meta` must say so.
+  const meta = [
+    ['generation_code', 'GEN2027'],
+    ['education_term', 1],
+  ];
+  const tabs = { _meta: meta, ALL: [HEADER.slice(0, 5), ...rows] };
   TABS.forEach((name, t) => {
     tabs[name] = [
       HEADER,

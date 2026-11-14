@@ -1,7 +1,7 @@
 'use client';
 
 import { Check, Copy, Eye, EyeOff, KeyRound, Power, ShieldAlert } from 'lucide-react';
-import { useParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
 import { useState } from 'react';
 import { StudentTerms } from '@/components/admin/student-terms';
 import { Confirm } from '@/components/app/confirm';
@@ -112,6 +112,8 @@ export default function StudentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [credential, setCredential] = useState<IssuedCredential | null>(null);
   const [term, setTerm] = useState<number | null>(null);
+  /** `?term=2` (term number, e.g. from Subject monitoring) preselects that term's tab. */
+  const linkedTerm = Number(useSearchParams().get('term'));
   const { data: s, error, isPending, refetch } = useApi<Student>(`/admin/students/${id}`);
   const results = useApi<StudentResultsView>(`/admin/students/${id}/results`);
 
@@ -270,7 +272,12 @@ export default function StudentDetailPage() {
           ) : (
             <ResultsTabs
               terms={results.data.terms}
-              value={term ?? defaultTerm(results.data.terms)}
+              value={
+                term ??
+                (results.data.terms.some((t) => t.number === linkedTerm)
+                  ? linkedTerm
+                  : defaultTerm(results.data.terms))
+              }
               onValueChange={setTerm}
               showAdmin
             />

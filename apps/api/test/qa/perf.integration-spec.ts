@@ -1,7 +1,7 @@
 /* eslint-disable -- QA suite: uses expect messages, console evidence and supertest .expect() */
 import { runSourceSync } from '@ssrs/sync';
 import { confirmAllTabs } from '@ssrs/sync/testing';
-import type { FakeSpreadsheet } from '@ssrs/sheets/testing';
+import { termMetaTab, type FakeSpreadsheet } from '@ssrs/sheets/testing';
 import { api, login, type TestContext } from '../support/test-app.js';
 import {
   ADMIN_V1,
@@ -32,7 +32,10 @@ const MARKS = [
 
 function workbook(version: number): FakeSpreadsheet {
   const rows = Array.from({ length: STUDENTS }, (_, i) => [code(i), `F${i}`, `L${i}`, 'F', 'A']);
-  const tabs: FakeSpreadsheet['tabs'] = { ALL: [PROFILE, ...rows] };
+  const tabs: FakeSpreadsheet['tabs'] = {
+    _meta: termMetaTab('GEN2027', 1),
+    ALL: [PROFILE, ...rows],
+  };
   TABS.forEach((name, t) => {
     tabs[name] = [
       [...PROFILE, ...MARKS],
@@ -140,7 +143,7 @@ describe('QA G-15 / G-16 performance at 300 x 5', () => {
     const cached = await hammer(600, 20, (i) =>
       sessions[i % sessions.length]!.get(`${V1}/student/me/results`).expect(200),
     );
-    await ctx.redis.keys('ssrs:v4:results:*').then((k) => (k.length ? ctx.redis.del(...k) : 0));
+    await ctx.redis.keys('ssrs:v5:results:*').then((k) => (k.length ? ctx.redis.del(...k) : 0));
     const admin = await hammer(300, 20, (i) =>
       h.admin.get(`${ADMIN_V1}/students/${students[i % students.length]!.id}/results`).expect(200),
     );

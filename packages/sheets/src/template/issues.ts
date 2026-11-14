@@ -15,7 +15,12 @@ export type IssueCode =
   // file
   | 'ROSTER_TAB_MISSING'
   | 'GENERATION_MISMATCH'
+  /** Legacy (before 2026-11-13): kept so stored issues still type-check. Nothing emits it. */
   | 'TERM_MISMATCH'
+  /** No `_meta` tab, or its generation_code / education_term is blank or unreadable. */
+  | 'META_MISSING'
+  /** `_meta` names another generation or term than the one selected. */
+  | 'WORKBOOK_MISMATCH'
   | 'MISSING_COLUMN'
   | 'TAB_TOO_LARGE'
   | 'NO_CONFIRMED_TABS'

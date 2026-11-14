@@ -42,7 +42,8 @@ import {
 } from '@/components/ui/table';
 import { apiFetch, errorCode } from '@/lib/api';
 import { formatDate, formatDateTime } from '@/lib/format';
-import { json, useApi, useApiMutation } from '@/lib/query';
+import { requestAutoDetect } from '@/lib/auto-detect';
+import { json, useApi, useApiMutation, useFreshApi } from '@/lib/query';
 import type { GenerationDetail, Source, Term, TermDetail } from '@/lib/types';
 
 function DatesFields({
@@ -215,9 +216,13 @@ function ConnectWorkbookDialog({
     (body: { url: string; label: string }) =>
       apiFetch<Source>(`/admin/terms/${term.id}/sources`, json(body)),
     {
-      success: (s) => `Connected "${s.label}". Detect its tabs next.`,
+      success: (s) => `Connected "${s.label}". Reading its tabs…`,
       invalidate: [`/admin/generations/${generation.id}`],
-      onSuccess: (s) => router.push(`/admin/sources/${s.id}`),
+      // Its tabs are read once, automatically, when its page opens.
+      onSuccess: (s) => {
+        requestAutoDetect(s.id);
+        router.push(`/admin/sources/${s.id}`);
+      },
     },
   );
   const errors = fieldErrors(add.error);
@@ -242,7 +247,7 @@ function ConnectWorkbookDialog({
             <DialogTitle>Connect the {term.name} workbook</DialogTitle>
             <DialogDescription>
               One workbook per term, one tab per subject, with the student list in the{' '}
-              <code>ALL</code> tab. If it has a <code>_meta</code> tab, that tab must say{' '}
+              <code>ALL</code> tab. Its <code>_meta</code> tab must say{' '}
               <code>{generation.code}</code> and term {term.number}.
             </DialogDescription>
           </DialogHeader>
@@ -353,7 +358,8 @@ export default function GenerationDetailPage() {
     isPending,
     refetch,
   } = useApi<GenerationDetail>(`/admin/generations/${id}`);
-  const sources = useApi<Source[]>(`/admin/generations/${id}/sources`);
+  // Fresh on every visit: a sync may have promoted a waiting sheet since it was last shown.
+  const sources = useFreshApi<Source[]>(`/admin/generations/${id}/sources`);
   const setStatus = useApiMutation(
     (action: 'archive' | 'activate') =>
       apiFetch(`/admin/generations/${id}/${action}`, { method: 'POST' }),

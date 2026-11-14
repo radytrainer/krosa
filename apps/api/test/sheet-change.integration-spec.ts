@@ -14,9 +14,10 @@ import {
   seedUser,
   type TestContext,
 } from './support/test-app.js';
+import { testAdminPassword, testStudentPassword } from './support/credentials.js';
 
-const ADMIN = { username: 'admin', password: 'Admin-Initial-Pass-2026' };
-const STUDENT_PASSWORD = 'River-Lantern-Morning-48';
+const ADMIN = { username: 'admin', password: testAdminPassword() };
+const STUDENT_PASSWORD = testStudentPassword();
 const V1 = '/api/v1/admin';
 const SHEET_A = TERM_FIXTURE_SPREADSHEET_ID;
 const SHEET_B = '1NewTermWorkbookSheetB000000000000000000';
@@ -90,6 +91,17 @@ describe('Changing the sheet of a term (integration)', () => {
     (await ctx.prisma.googleSheetSource.findUniqueOrThrow({ where: { spreadsheetId } })).status;
 
   const offering = () => ctx.prisma.courseOffering.findFirst({ where: { title: 'Science' } });
+
+  /** What the Sync Center's "Workbooks by term" shows for this term: the sheet waiting, if any. */
+  const waiting = async () => {
+    const rows = (await admin.get(`${V1}/term-workbooks`).expect(200)).body as {
+      term: { id: string };
+      pending: { id: string } | null;
+      runningJobId: string | null;
+    }[];
+    const row = rows.find((r) => r.term.id === termId)!;
+    return { pending: row.pending?.id ?? null, running: row.runningJobId };
+  };
 
   const previewOf = async () =>
     (await admin.post(`${V1}/sources/${sourceA}/preview`).expect(201)).body.summary;
@@ -299,11 +311,13 @@ describe('Changing the sheet of a term (integration)', () => {
       expect(closed.body.error.code).toBe('SHEET_NOT_SHARED');
     });
 
-    it('keeps _meta for another term a hard error', async () => {
+    it('keeps _meta for another term a hard error, and the active sheet stays active', async () => {
       const wrong = sheetB();
       wrong.tabs['_meta']![3]![1] = 2;
       reader.set(SHEET_B, wrong);
-      expect((await change().expect(422)).body.error.code).toBe('TERM_MISMATCH');
+      expect((await change().expect(422)).body.error.code).toBe('WORKBOOK_MISMATCH');
+      expect(await statusOf(SHEET_A)).toBe('ACTIVE');
+      expect(await ctx.prisma.googleSheetSource.count()).toBe(1);
     });
   });
 
@@ -358,10 +372,10 @@ describe('Changing the sheet of a term (integration)', () => {
 
     it('refuses the active sheet itself, and a sheet used by another term', async () => {
       expect((await change(SHEET_A).expect(409)).body.error.code).toBe('SAME_SHEET');
-      // Without _meta the sheet passes the term check and reaches the "already used" rule.
-      const noMeta = termWorkbookFixture();
-      delete noMeta.tabs['_meta'];
-      reader.set(SHEET_A, noMeta);
+      // With a Term 2 _meta the sheet passes the term check and reaches the "already used" rule.
+      const term2Meta = termWorkbookFixture();
+      term2Meta.tabs['_meta']![3]![1] = 2;
+      reader.set(SHEET_A, term2Meta);
       const terms = await admin.get(`${V1}/generations/${generationId}/terms`).expect(200);
       const term2 = terms.body[1].id as string;
       const res = await admin
@@ -400,9 +414,9 @@ describe('Changing the sheet of a term (integration)', () => {
       const term2 = terms.body[1].id as string;
       const connect = () =>
         admin.post(`${V1}/terms/${term2}/sources`, { url: urlFor(SHEET_C), label: 'Term 2' });
-      const noMeta = termWorkbookFixture();
-      delete noMeta.tabs['_meta'];
-      reader.set(SHEET_C, noMeta);
+      const term2Sheet = termWorkbookFixture();
+      term2Sheet.tabs['_meta']![3]![1] = 2;
+      reader.set(SHEET_C, term2Sheet);
       const source = (await connect().expect(201)).body as { id: string; status: string };
       await admin.patch(`${V1}/sources/${source.id}`, { status: 'DISABLED' }).expect(200);
       const again = (await connect().expect(201)).body as { id: string; status: string };
@@ -618,6 +632,8 @@ describe('Changing the sheet of a term (integration)', () => {
 
       expect(await statusOf(SHEET_B)).toBe('ACTIVE');
       expect(await statusOf(SHEET_A)).toBe('DISABLED');
+      // Finished: nothing is waiting to be synced any more, and no sync is running.
+      expect(await waiting()).toEqual({ pending: null, running: null });
       const score = await quiz1();
       expect(score.mark.toString()).toBe('55');
       const history = await ctx.prisma.assessmentScoreRevision.findMany({
@@ -654,6 +670,8 @@ describe('Changing the sheet of a term (integration)', () => {
       expect(job).toMatchObject({ status: 'FAILED', failureCode: 'SHEET_CHANGE_REJECTED' });
       expect(await statusOf(SHEET_A)).toBe('ACTIVE');
       expect(await statusOf(SHEET_B)).toBe('PENDING');
+      // A failed sync leaves the sheet waiting: the "not synced yet" notice stays.
+      expect(await waiting()).toEqual({ pending, running: null });
       expect((await quiz1()).mark.toString()).toBe('90');
       expect(await results()).toEqual(before);
       expect(await ctx.prisma.assessmentScoreRevision.count()).toBe(MARKS);
@@ -672,6 +690,7 @@ describe('Changing the sheet of a term (integration)', () => {
       await runJob(jobId);
       expect(await statusOf(SHEET_A)).toBe('ACTIVE');
       expect(await statusOf(SHEET_B)).toBe('PENDING');
+      expect(await waiting()).toEqual({ pending, running: null });
       expect(await results()).toEqual(before);
     });
 
@@ -683,6 +702,7 @@ describe('Changing the sheet of a term (integration)', () => {
       const job = await sync(pending);
       expect(job).toMatchObject({ status: 'FAILED', failureCode: 'PREVIEW_STALE' });
       expect(await statusOf(SHEET_B)).toBe('PENDING');
+      expect(await waiting()).toEqual({ pending, running: null });
       expect((await quiz1()).mark.toString()).toBe('90');
     });
 

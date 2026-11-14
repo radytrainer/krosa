@@ -13,6 +13,15 @@ export const TERM_FIXTURE_TERM = 1;
 export const LOGIC_COMMENT = 'ពូកែណាស់ សូមបន្ត 👏🏽 <b>not bold</b>';
 /** A replacement workbook for the same term, for changing a term's sheet. */
 export const TERM_FIXTURE_REPLACEMENT_ID = '1TermWorkbookReplacement0000000000000000';
+/**
+ * A second copy of the GEN2027 Term 1 workbook under another spreadsheet ID. Its `_meta` names
+ * GEN2027, Term 1, so it connects only to that term; for another generation use
+ * `TERM_FIXTURE_GEN2028_ID`.
+ */
+export const TERM_FIXTURE_SECOND_ID = '1TermWorkbookSecondCopy00000000000000000';
+/** The Term 1 workbook of generation GEN2028 (`gen2028WorkbookFixture`). */
+export const TERM_FIXTURE_GEN2028_ID = '1TermWorkbookGen2028Copy0000000000000000';
+export const TERM_FIXTURE_GEN2028_CODE = 'GEN2028';
 
 const STUDENTS = [
   ['PNC2027-001', 'DARA', 'SOK', 'M', 'A'],
@@ -67,17 +76,22 @@ const ENG_HEADER = [
   'COMMENTS',
 ];
 
+/** A `_meta` tab naming `generationCode` and `term`, as every term workbook must carry. */
+export function termMetaTab(generationCode: string, term: number): Grid {
+  return [
+    ['key', 'value'],
+    ['template_version', 1],
+    ['generation_code', generationCode],
+    ['education_term', term],
+  ];
+}
+
 /** A fresh copy on every call: tests edit the grids, and ALL shares rows with ENG. */
 export function termWorkbookFixture(): FakeSpreadsheet {
   return structuredClone({
     title: 'TERM1- GEN 2027 Scoring',
     tabs: {
-      _meta: [
-        ['key', 'value'],
-        ['template_version', 1],
-        ['generation_code', 'GEN2027'],
-        ['education_term', 1],
-      ],
+      _meta: termMetaTab(TERM_FIXTURE_GENERATION_CODE, TERM_FIXTURE_TERM),
       ALL: [...ENG_GROUPS, ENG_HEADER, profile(0), profile(1), profile(2)],
       Logic: [
         [
@@ -159,5 +173,25 @@ export function replacementWorkbookFixture(): FakeSpreadsheet {
   sheet.title = 'TERM1- GEN 2027 Scoring (corrected)';
   const row = sheet.tabs['Logic']?.[1];
   if (row) row[5] = 55;
+  return sheet;
+}
+
+/**
+ * The same workbook for GEN2028, Term 1: `_meta` names GEN2028 and every student ID starts with
+ * PNC2028 instead of PNC2027, so its students never clash with GEN2027's.
+ */
+export function gen2028WorkbookFixture(): FakeSpreadsheet {
+  const sheet = termWorkbookFixture();
+  sheet.title = 'TERM1- GEN 2028 Scoring';
+  const meta = sheet.tabs['_meta'];
+  if (meta?.[2]) meta[2][1] = TERM_FIXTURE_GEN2028_CODE;
+  for (const [tab, grid] of Object.entries(sheet.tabs)) {
+    if (tab === '_meta') continue;
+    for (const row of grid) {
+      if (typeof row[0] === 'string' && row[0].startsWith('PNC2027-')) {
+        row[0] = row[0].replace('PNC2027-', 'PNC2028-');
+      }
+    }
+  }
   return sheet;
 }

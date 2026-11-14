@@ -1,4 +1,6 @@
 import type { StudentSummaryView } from '@/lib/types';
+import { cn } from '@/lib/utils';
+import { gradeScoreClass, gradeToneAttr } from './grade-tone';
 
 /** "Term 2 · Class D · SNAC", or "Term 2" when the student has no enrollment row for it. */
 function termLabel(summary: StudentSummaryView, termNumber: number, termName: string): string {
@@ -34,9 +36,22 @@ export function OverallSummary({ summary }: { summary: StudentSummaryView }) {
           </dd>
         ) : (
           <dd data-slot="highest" className="break-words">
-            <span className="text-xl font-semibold tabular-nums">{highest.finalScore}</span>
+            <span
+              data-slot="highest-score"
+              data-grade-tone={gradeToneAttr(highest.finalGrade)}
+              className={cn(
+                'text-xl font-semibold tabular-nums',
+                gradeScoreClass(highest.finalGrade),
+              )}
+            >
+              {highest.finalScore}
+            </span>
             {highest.finalGrade ? (
-              <span data-slot="highest-grade" className="text-xl font-semibold">
+              <span
+                data-slot="highest-grade"
+                data-grade-tone={gradeToneAttr(highest.finalGrade)}
+                className={cn('text-xl font-semibold', gradeScoreClass(highest.finalGrade))}
+              >
                 {' '}
                 ({highest.finalGrade})
               </span>

@@ -7,6 +7,12 @@ import {
 import { runSourceSync } from '@ssrs/sync';
 import request from 'supertest';
 import {
+  acquireDetectLock,
+  DETECT_LOCK_LEASE_MS,
+  detectLockKey,
+  releaseDetectLock,
+} from '../src/sheet-mappings/detect-lock.js';
+import {
   api,
   createTestApp,
   login,
@@ -15,8 +21,9 @@ import {
   WEB_ORIGIN,
   type TestContext,
 } from './support/test-app.js';
+import { testAdminPassword, testStudentPassword } from './support/credentials.js';
 
-const ADMIN = { username: 'admin', password: 'Admin-Initial-Pass-2026' };
+const ADMIN = { username: 'admin', password: testAdminPassword() };
 const V1 = '/api/v1/admin';
 const SA_EMAIL = 'ssrs-sync@example-project.iam.gserviceaccount.com';
 const ID = TERM_FIXTURE_SPREADSHEET_ID;
@@ -24,7 +31,9 @@ const OTHER_ID = '1AnotherTermWorkbook0000000000000000000';
 const urlFor = (id: string) => `https://docs.google.com/spreadsheets/d/${id}/edit#gid=0`;
 
 interface Column {
-  columnIndex: number;
+  columnIndex: number | null;
+  missingFromSheet?: boolean;
+  criterionId?: string | null;
   headerLabel: string;
   role: string;
   proposedName: string | null;
@@ -45,17 +54,36 @@ const confirmUrl = (sourceId: string, tab: Tab) =>
 function confirmBody(tab: Tab, subjectName: string, weights: Record<string, string> = {}) {
   return {
     subjectName,
-    columns: tab.columns.map((c) => ({
-      columnIndex: c.columnIndex,
-      role: c.role,
-      ...(c.role === 'CRITERION'
-        ? {
-            name: c.proposedName ?? c.headerLabel,
-            weight: weights[c.headerLabel] ?? c.proposedWeight ?? undefined,
-          }
-        : {}),
-    })),
+    // Columns missing from the sheet are never sent: confirming drops them.
+    columns: tab.columns
+      .filter((c) => !c.missingFromSheet)
+      .map((c) => ({
+        columnIndex: c.columnIndex,
+        role: c.role,
+        ...(c.role === 'CRITERION'
+          ? {
+              name: c.proposedName ?? c.headerLabel,
+              weight: weights[c.headerLabel] ?? c.proposedWeight ?? undefined,
+            }
+          : {}),
+      })),
   };
+}
+
+/** Logic as an admin confirmed it: own weights, a renamed column, a column set aside. */
+function adminLogic(logic: Tab) {
+  const body = confirmBody(logic, 'Logic', {
+    'Quiz 1 10%': '15',
+    'Quiz 2 10%': '5',
+    'FINAL 35%': '45',
+  });
+  body.columns = body.columns.map((c) => {
+    const label = logic.columns.find((x) => x.columnIndex === c.columnIndex)!.headerLabel;
+    if (label === 'Homework 10%') return { columnIndex: c.columnIndex, role: 'IGNORE' };
+    if (label === 'Participation 10%') return { ...c, name: 'Class participation' };
+    return c;
+  });
+  return body;
 }
 
 describe('Term workbooks (integration)', () => {
@@ -99,6 +127,49 @@ describe('Term workbooks (integration)', () => {
       label: 'Term 1 scores',
       ...body,
     });
+
+  /** Holds the reader's next workbook read until `release` is called. */
+  function holdNextRead() {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const original = reader.getMetadata.bind(reader);
+    reader.getMetadata = async (id: string) => {
+      reader.getMetadata = original;
+      await gate;
+      return original(id);
+    };
+    return release;
+  }
+  const detections = () => ctx.prisma.auditLog.count({ where: { action: 'source.tabs.detected' } });
+
+  /** Logic confirmed by the admin, synced, reopened, and Quiz 2 then removed from the sheet. */
+  async function logicWithQuiz2Missing() {
+    const { sourceId, tab } = await connectAndDetect();
+    await admin.post(confirmUrl(sourceId, tab('Logic')), adminLogic(tab('Logic'))).expect(200);
+    const { jobId } = (await admin.post(`${V1}/sync`, { scope: 'SOURCE', sourceId }).expect(202))
+      .body;
+    await runSourceSync({ prisma: ctx.prisma, reader }, jobId, { attempt: 1, maxAttempts: 1 });
+    await admin.post(`${V1}/sources/${sourceId}/mappings/${tab('Logic').id}/reopen`).expect(200);
+    const before = tab('Logic').columns;
+    const sheet = termWorkbookFixture();
+    for (const row of sheet.tabs['Logic']!) {
+      row.splice(6, 1);
+      row.splice(10, 0, row === sheet.tabs['Logic']![0] ? 'Lab 5%' : 50);
+    }
+    reader.set(ID, sheet);
+    await admin.post(`${V1}/sources/${sourceId}/detect`).expect(200);
+    const logic = () =>
+      admin
+        .get(`${V1}/sources/${sourceId}/mappings`)
+        .expect(200)
+        .then((r) => (r.body as Tab[]).find((t) => t.tabName === 'Logic')!);
+    const quiz2Criterion = (
+      await ctx.prisma.sheetColumnMapping.findFirstOrThrow({
+        where: { tabMapping: { sourceId, tabName: 'Logic' }, headerLabel: 'Quiz 2 10%' },
+      })
+    ).criterionId;
+    return { sourceId, logic, before, quiz2Criterion };
+  }
 
   async function connectAndDetect() {
     const source = (await connect().expect(201)).body as { id: string };
@@ -159,15 +230,21 @@ describe('Term workbooks (integration)', () => {
       expect(await ctx.prisma.googleSheetSource.count()).toBe(0);
     });
 
-    it('refuses the wrong term and a workbook without a roster; ignores _meta generation', async () => {
-      expect((await connect(2).expect(422)).body.error.code).toBe('TERM_MISMATCH');
+    it('refuses the wrong term, another generation and a workbook without a roster', async () => {
+      expect((await connect(2).expect(422)).body.error.code).toBe('WORKBOOK_MISMATCH');
 
-      // _meta's generation_code is ignored: only its term is checked.
+      // _meta's generation_code must name this generation too.
       const otherGeneration = termWorkbookFixture();
       otherGeneration.tabs['_meta']![2]![1] = 'GEN2026';
       reader.set(ID, otherGeneration);
-      const source = (await connect().expect(201)).body as { id: string };
-      await ctx.prisma.googleSheetSource.delete({ where: { id: source.id } });
+      const res = await connect().expect(422);
+      expect(res.body.error).toMatchObject({
+        code: 'WORKBOOK_MISMATCH',
+        message:
+          'This workbook is for GEN2026, Term 1. You selected GEN2027, Term 1. ' +
+          'Choose the matching term or check the workbook.',
+      });
+      expect(await ctx.prisma.googleSheetSource.count()).toBe(0);
 
       const noRoster = termWorkbookFixture();
       delete noRoster.tabs['ALL'];
@@ -232,6 +309,7 @@ describe('Term workbooks (integration)', () => {
       );
       expect(rolePlay).toEqual({
         columnIndex: 10,
+        missingFromSheet: false,
         headerLabel: 'Role Play',
         groupLabel: 'Projects (15%)',
         role: 'CRITERION',
@@ -267,6 +345,293 @@ describe('Term workbooks (integration)', () => {
         byTab['ENG'].mapping.columns.map((c: { headerLabel: string }) => c.headerLabel),
       ).toContain('Role-play');
       expect(await ctx.prisma.sheetTabMapping.count({ where: { sourceId } })).toBe(4);
+    });
+  });
+
+  describe('re-detecting a reopened tab (TD2)', () => {
+    it('keeps what the admin set, proposes new columns, and lists the changes', async () => {
+      const { sourceId, tab } = await connectAndDetect();
+      await admin.post(confirmUrl(sourceId, tab('Logic')), adminLogic(tab('Logic'))).expect(200);
+      await admin.post(`${V1}/sources/${sourceId}/mappings/${tab('Logic').id}/reopen`).expect(200);
+
+      // The teacher drops Quiz 2 and adds a Lab column before Total.
+      const sheet = termWorkbookFixture();
+      for (const row of sheet.tabs['Logic']!) {
+        row.splice(6, 1);
+        row.splice(10, 0, row === sheet.tabs['Logic']![0] ? 'Lab 5%' : 50);
+      }
+      reader.set(ID, sheet);
+      const res = await admin.post(`${V1}/sources/${sourceId}/detect`).expect(200);
+      const logic = res.body.tabs.find((t: { tabName: string }) => t.tabName === 'Logic');
+      expect(logic.mapping).toMatchObject({ status: 'DRAFT', audience: 'SHARED' });
+      expect(logic.audienceSuggestion).toBeNull();
+      const col = (label: string) =>
+        logic.mapping.columns.find((c: Column) => c.headerLabel === label) as Column;
+      expect(col('Quiz 1 10%')).toMatchObject({ role: 'CRITERION', proposedWeight: '15' });
+      expect(col('FINAL 35%')).toMatchObject({ role: 'CRITERION', proposedWeight: '45' });
+      expect(col('Homework 10%')).toMatchObject({ role: 'IGNORE', proposedWeight: null });
+      expect(col('Participation 10%')).toMatchObject({ proposedName: 'Class participation' });
+      // The new column gets a proposal, and its new position.
+      expect(col('Lab 5%')).toMatchObject({
+        columnIndex: 10,
+        role: 'CRITERION',
+        proposedWeight: '5',
+        criterionId: null,
+      });
+      expect(col('FINAL 35%').columnIndex).toBe(9);
+      expect(res.body.changes).toEqual(
+        expect.arrayContaining([
+          { tabName: 'Logic', kind: 'COLUMN_ADDED', detail: 'Lab 5%' },
+          { tabName: 'Logic', kind: 'COLUMN_MISSING', detail: 'Quiz 2 10%' },
+        ]),
+      );
+      // Saved, not only returned.
+      const saved = (await admin.get(`${V1}/sources/${sourceId}/mappings`).expect(200))
+        .body as Tab[];
+      const savedLogic = saved.find((t) => t.tabName === 'Logic')!;
+      expect(savedLogic.columns.find((c) => c.headerLabel === 'Homework 10%')!.role).toBe('IGNORE');
+      // The dropped column is kept as the admin set it, flagged, with no position.
+      expect(savedLogic.columns.find((c) => c.headerLabel === 'Quiz 2 10%')).toMatchObject({
+        columnIndex: null,
+        missingFromSheet: true,
+        role: 'CRITERION',
+        proposedWeight: '5',
+      });
+    });
+
+    it('re-links a missing column when its header comes back, as the admin left it', async () => {
+      const { sourceId, logic, quiz2Criterion } = await logicWithQuiz2Missing();
+      expect(quiz2Criterion).not.toBeNull();
+      // Quiz 2 comes back, in another place (after Participation).
+      const sheet = termWorkbookFixture();
+      for (const row of sheet.tabs['Logic']!) {
+        const header = row === sheet.tabs['Logic']![0];
+        const [quiz2] = row.splice(6, 1);
+        row.splice(8, 0, quiz2!);
+        row.splice(11, 0, header ? 'Lab 5%' : 50);
+      }
+      reader.set(ID, sheet);
+      const res = await admin.post(`${V1}/sources/${sourceId}/detect`).expect(200);
+      expect(res.body.changes).toContainEqual({
+        tabName: 'Logic',
+        kind: 'COLUMN_RETURNED',
+        detail: 'Quiz 2 10%',
+      });
+      const quiz2 = (await logic()).columns.find((c) => c.headerLabel === 'Quiz 2 10%')!;
+      expect(quiz2).toMatchObject({
+        columnIndex: 8,
+        missingFromSheet: false,
+        role: 'CRITERION',
+        proposedWeight: '5',
+        criterionId: quiz2Criterion,
+      });
+      expect(
+        await ctx.prisma.sheetColumnMapping.count({
+          where: { tabMapping: { sourceId }, missingFromSheet: true },
+        }),
+      ).toBe(0);
+    });
+
+    it('confirming drops only the missing columns mapping rows, audited; marks and criteria stay', async () => {
+      const { sourceId, logic, quiz2Criterion } = await logicWithQuiz2Missing();
+      const tab = await logic();
+      const url = confirmUrl(sourceId, tab);
+      const body = confirmBody(tab, 'Logic');
+      const counts = async () => ({
+        scores: await ctx.prisma.assessmentScore.findMany({
+          select: { id: true, mark: true, status: true },
+          orderBy: { id: 'asc' },
+        }),
+        revisions: await ctx.prisma.assessmentScoreRevision.count(),
+      });
+      const criteriaBefore = (await ctx.prisma.assessmentCriterion.findMany()).map((c) => c.id);
+      const before = await counts();
+      expect(before.scores.length).toBeGreaterThan(0);
+
+      // Not without saying so: the refusal lists what would be dropped.
+      const refused = await admin.post(url, body).expect(409);
+      expect(refused.body.error).toMatchObject({
+        code: 'MISSING_COLUMNS',
+        columns: [{ header: 'Quiz 2 10%', role: 'CRITERION', name: 'Quiz 2', weight: '5' }],
+      });
+      // Weights that do not total 100 are refused by the existing rule, and nothing is dropped.
+      const bad = {
+        ...body,
+        dropMissingColumns: true,
+        columns: body.columns.map((c) => (c.weight === '45' ? { ...c, weight: '40' } : c)),
+      };
+      const invalid = await admin.post(url, bad).expect(422);
+      expect(invalid.body.error.code).toBe('WEIGHTS_NOT_100');
+      expect((await logic()).columns.some((c) => c.missingFromSheet)).toBe(true);
+
+      await admin.post(url, { ...body, dropMissingColumns: true }).expect(200);
+      const after = await logic();
+      expect(after.status).toBe('CONFIRMED');
+      expect(after.columns.some((c) => c.missingFromSheet)).toBe(false);
+      expect(after.columns.map((c) => c.headerLabel)).not.toContain('Quiz 2 10%');
+      // Marks untouched; no criterion removed (Quiz 2's stays; the new Lab column adds one).
+      expect(await counts()).toEqual(before);
+      const criteriaAfter = (await ctx.prisma.assessmentCriterion.findMany()).map((c) => c.id);
+      expect(criteriaAfter).toEqual(expect.arrayContaining(criteriaBefore));
+      expect(criteriaAfter).toContain(quiz2Criterion);
+      const audit = await ctx.prisma.auditLog.findFirstOrThrow({
+        where: { action: 'mapping.columns_dropped' },
+      });
+      expect(audit.metadata).toMatchObject({
+        tab: 'Logic',
+        columns: [{ header: 'Quiz 2 10%', role: 'CRITERION', name: 'Quiz 2', weight: '5' }],
+      });
+    });
+
+    it('a missing column lives on a draft tab only: "Not a subject" drops it, audited', async () => {
+      const { sourceId, logic } = await logicWithQuiz2Missing();
+      const tab = await logic();
+      await admin.post(`${V1}/sources/${sourceId}/mappings/${tab.id}/ignore`).expect(200);
+      expect(await ctx.prisma.sheetColumnMapping.count({ where: { missingFromSheet: true } })).toBe(
+        0,
+      );
+      expect(
+        await ctx.prisma.auditLog.count({ where: { action: 'mapping.columns_dropped' } }),
+      ).toBe(1);
+    });
+
+    it('sync and preview never read a flagged row, even on a confirmed tab', async () => {
+      const { sourceId, tab } = await connectAndDetect();
+      await admin
+        .post(confirmUrl(sourceId, tab('Logic')), confirmBody(tab('Logic'), 'Logic'))
+        .expect(200);
+      const sync = async () => {
+        const { jobId } = (
+          await admin.post(`${V1}/sync`, { scope: 'SOURCE', sourceId }).expect(202)
+        ).body;
+        await runSourceSync({ prisma: ctx.prisma, reader }, jobId, { attempt: 1, maxAttempts: 1 });
+        return (await admin.get(`${V1}/sync/${jobId}`).expect(200)).body;
+      };
+      const first = await sync();
+      expect(first.status).toBe('SUCCEEDED');
+      const preview = async () =>
+        (await admin.post(`${V1}/sources/${sourceId}/preview`).expect(201)).body.summary;
+      const previewBefore = await preview();
+      const scoresBefore = await ctx.prisma.assessmentScore.findMany({
+        select: { id: true, mark: true },
+        orderBy: { id: 'asc' },
+      });
+      // A flagged row put straight on the confirmed tab (the app never does this): a mark column
+      // with half the weight. If anything read it, totals, criteria or issues would change.
+      const mapping = await ctx.prisma.sheetTabMapping.findFirstOrThrow({
+        where: { sourceId, tabName: 'Logic' },
+      });
+      await ctx.prisma.sheetColumnMapping.create({
+        data: {
+          tabMappingId: mapping.id,
+          columnIndex: null,
+          missingFromSheet: true,
+          headerLabel: 'Ghost 50%',
+          role: 'CRITERION',
+          proposedName: 'Ghost',
+          proposedWeight: '50',
+          proposedKey: 'GHOST',
+        },
+      });
+      expect(await preview()).toEqual(previewBefore);
+      const second = await sync();
+      expect(second.status).toBe('SUCCEEDED');
+      expect(second.errorCount).toBe(first.errorCount);
+      expect(
+        await ctx.prisma.assessmentScore.findMany({
+          select: { id: true, mark: true },
+          orderBy: { id: 'asc' },
+        }),
+      ).toEqual(scoresBefore);
+      expect(await ctx.prisma.assessmentCriterion.count({ where: { key: 'GHOST' } })).toBe(0);
+    });
+
+    it('keeps a reopened tab whose sheet tab is gone, and says so', async () => {
+      const { sourceId, tab } = await connectAndDetect();
+      await admin.post(confirmUrl(sourceId, tab('Logic')), adminLogic(tab('Logic'))).expect(200);
+      await admin.post(`${V1}/sources/${sourceId}/mappings/${tab('Logic').id}/reopen`).expect(200);
+      const sheet = termWorkbookFixture();
+      delete sheet.tabs['Logic'];
+      reader.set(ID, sheet);
+      const res = await admin.post(`${V1}/sources/${sourceId}/detect`).expect(200);
+      expect(res.body.changes).toContainEqual({ tabName: 'Logic', kind: 'TAB_GONE', detail: null });
+      const row = await ctx.prisma.sheetTabMapping.findFirstOrThrow({
+        where: { sourceId, tabName: 'Logic' },
+        include: { columns: true },
+      });
+      expect(row.status).toBe('DRAFT');
+      expect(row.columns.find((c) => c.headerLabel === 'Homework 10%')!.role).toBe('IGNORE');
+    });
+
+    it('lists new tabs on the first run, and nothing changed on a second identical run', async () => {
+      const source = (await connect().expect(201)).body as { id: string };
+      const first = await admin.post(`${V1}/sources/${source.id}/detect`).expect(200);
+      expect(first.body.changes.map((c: { kind: string }) => c.kind)).toEqual(
+        Array(5).fill('TAB_NEW'),
+      );
+      const second = await admin.post(`${V1}/sources/${source.id}/detect`).expect(200);
+      expect(second.body.changes).toEqual([]);
+    });
+  });
+
+  describe('one detection per sheet at a time (TD1)', () => {
+    it('a second run while one is active gets "already running" and writes no audit entry', async () => {
+      const source = (await connect().expect(201)).body as { id: string };
+      const release = holdNextRead();
+      const first = admin.post(`${V1}/sources/${source.id}/detect`).then((r) => r);
+      // Wait until the first run holds the lock.
+      await expect
+        .poll(async () => ctx.redis.exists(detectLockKey(source.id)), { timeout: 5000 })
+        .toBe(1);
+      const second = await admin.post(`${V1}/sources/${source.id}/detect`).expect(409);
+      expect(second.body.error.code).toBe('DETECT_IN_PROGRESS');
+      release();
+      expect((await first).status).toBe(200);
+      expect(await detections()).toBe(1);
+      // Released when the run ends: the next one runs.
+      expect(await ctx.redis.exists(detectLockKey(source.id))).toBe(0);
+      await admin.post(`${V1}/sources/${source.id}/detect`).expect(200);
+      expect(await detections()).toBe(2);
+    });
+
+    it('is released when a run fails, so the retry runs', async () => {
+      const source = (await connect().expect(201)).body as { id: string };
+      reader.fail(ID, 'SHEET_NOT_SHARED');
+      const failed = await admin.post(`${V1}/sources/${source.id}/detect`);
+      expect(failed.status).toBeGreaterThanOrEqual(400);
+      expect(failed.status).not.toBe(409);
+      expect(await ctx.redis.exists(detectLockKey(source.id))).toBe(0);
+      expect(await detections()).toBe(0);
+      // The connection itself is untouched by the failure.
+      expect(
+        (await ctx.prisma.googleSheetSource.findUniqueOrThrow({ where: { id: source.id } })).status,
+      ).toBe('ACTIVE');
+      reader.set(ID, termWorkbookFixture());
+      await admin.post(`${V1}/sources/${source.id}/detect`).expect(200);
+    });
+
+    it('is a lease of about 2 minutes, and only its own run can release it', async () => {
+      const id = '01900000-0000-7000-8000-00000000d1d1';
+      const token = await acquireDetectLock(ctx.redis, id);
+      expect(token).not.toBeNull();
+      const ttl = await ctx.redis.pttl(detectLockKey(id));
+      expect(DETECT_LOCK_LEASE_MS).toBe(120_000);
+      expect(ttl).toBeGreaterThan(110_000);
+      expect(ttl).toBeLessThanOrEqual(120_000);
+      expect(await acquireDetectLock(ctx.redis, id)).toBeNull();
+      await releaseDetectLock(ctx.redis, id, 'another-run');
+      expect(await ctx.redis.exists(detectLockKey(id))).toBe(1);
+      await releaseDetectLock(ctx.redis, id, token!);
+      expect(await ctx.redis.exists(detectLockKey(id))).toBe(0);
+    });
+
+    it('an abandoned lock stops blocking once its lease ends', async () => {
+      const source = (await connect().expect(201)).body as { id: string };
+      // A crashed run: its lock is still there, with only a moment of lease left.
+      await ctx.redis.set(detectLockKey(source.id), 'crashed-run', 'PX', 300);
+      await admin.post(`${V1}/sources/${source.id}/detect`).expect(409);
+      await new Promise((r) => setTimeout(r, 400));
+      await admin.post(`${V1}/sources/${source.id}/detect`).expect(200);
     });
   });
 
@@ -433,7 +798,7 @@ describe('Term workbooks (integration)', () => {
       await session
         .post('/api/v1/auth/change-password', {
           currentPassword: issued.body.temporaryPassword,
-          newPassword: 'River-Lantern-Morning-48',
+          newPassword: testStudentPassword(),
         })
         .expect(204);
 
@@ -475,6 +840,39 @@ describe('Term workbooks (integration)', () => {
       expect(await ctx.prisma.auditLog.count({ where: { action: 'term.hidden' } })).toBe(1);
       const again = await session.get('/api/v1/student/me/results?term=1').expect(200);
       expect(again.body.terms[0].courses).toEqual([]);
+    });
+
+    it('detection never syncs and never changes scores, visibility or cached results (TD3)', async () => {
+      const { sourceId, tab } = await connectAndDetect();
+      await admin
+        .post(confirmUrl(sourceId, tab('Logic')), confirmBody(tab('Logic'), 'Logic'))
+        .expect(200);
+      const { jobId } = (await admin.post(`${V1}/sync`, { scope: 'SOURCE', sourceId }).expect(202))
+        .body;
+      await runSourceSync({ prisma: ctx.prisma, reader }, jobId, { attempt: 1, maxAttempts: 1 });
+      await admin.post(`${V1}/terms/${termIds[1]}/release`, { visible: true }).expect(200);
+      const snapshot = async () => ({
+        scores: await ctx.prisma.assessmentScore.findMany({
+          select: { id: true, mark: true, status: true },
+          orderBy: { id: 'asc' },
+        }),
+        revisions: await ctx.prisma.assessmentScoreRevision.count(),
+        offerings: await ctx.prisma.courseOffering.findMany({
+          select: { id: true, visibility: true, status: true },
+          orderBy: { id: 'asc' },
+        }),
+        jobs: await ctx.prisma.syncJob.count(),
+        cacheVersion: (
+          await ctx.prisma.generation.findUniqueOrThrow({ where: { id: generationId } })
+        ).cacheVersion,
+      });
+      const before = await snapshot();
+      // Even with the marks changed in the sheet, detection reads only the layout.
+      const sheet = termWorkbookFixture();
+      sheet.tabs['Logic']![1]![5] = 10;
+      reader.set(ID, sheet);
+      await admin.post(`${V1}/sources/${sourceId}/detect`).expect(200);
+      expect(await snapshot()).toEqual(before);
     });
 
     it('refuses to release a term with nothing synced', async () => {

@@ -7,8 +7,9 @@ const PROTECTED = /^\/(admin|student)(\/|$)|^\/change-password$/;
  * Content-Security-Policy with a fresh nonce per request (docs/security.md §6). Next.js reads
  * the nonce from this header while rendering and puts it on its own scripts; `'strict-dynamic'`
  * extends trust to the chunks they load. No other script can run. Styles allow inline because
- * the toast and chart libraries inject <style> elements at runtime (a nonce in style-src would
- * make browsers ignore 'unsafe-inline'). Development needs eval and the HMR websocket.
+ * the toast library injects <style> elements at runtime (a nonce in style-src would make browsers
+ * ignore 'unsafe-inline'); the chart library that also needed it was removed (2026-11-11), so this
+ * is up for review. Development needs eval and the HMR websocket.
  */
 export function buildCsp(nonce: string, dev: boolean): string {
   return [

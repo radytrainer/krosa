@@ -17,8 +17,9 @@ import {
   seedUser,
   type TestContext,
 } from './support/test-app.js';
+import { testAdminPassword, testStudentPassword } from './support/credentials.js';
 
-const ADMIN = { username: 'admin', password: 'Admin-Initial-Pass-2026' };
+const ADMIN = { username: 'admin', password: testAdminPassword() };
 const V1 = '/api/v1/admin';
 const ID = TERM_FIXTURE_SPREADSHEET_ID;
 const SECOND_ID = '1SecondSpreadsheetId0000000000000000000000';
@@ -553,10 +554,10 @@ describe('Synchronization API (integration)', () => {
   it('is admin-only', async () => {
     await seedUser(ctx, {
       username: 'GEN26-0009',
-      password: 'Student-Initial-Pass-2026',
+      password: testStudentPassword(),
       role: 'STUDENT',
     });
-    const student = api(await login(ctx, 'GEN26-0009', 'Student-Initial-Pass-2026'));
+    const student = api(await login(ctx, 'GEN26-0009', testStudentPassword()));
     await student.post(`${V1}/sync`, { scope: 'ALL' }).expect(403);
     await student.get(`${V1}/sync`).expect(403);
     await student.post(`${V1}/students/issue-credentials`, { generationId }).expect(403);

@@ -89,6 +89,21 @@ export class ConfirmMappingDto {
   @ValidateNested({ each: true })
   @Type(() => ConfirmColumnDto)
   columns!: ConfirmColumnDto[];
+
+  @ApiPropertyOptional({
+    description:
+      'Required when the tab has columns missing from the sheet: drops their mapping rows (marks and criteria stay). Without it: 409 MISSING_COLUMNS',
+  })
+  @IsOptional()
+  @IsBoolean()
+  dropMissingColumns?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'The audience is the one detection suggested for this reopened tab (audited)',
+  })
+  @IsOptional()
+  @IsBoolean()
+  appliedAudienceSuggestion?: boolean;
 }
 
 export class ListPreviewIssuesQueryDto extends PaginationQueryDto {

@@ -61,10 +61,13 @@ describe('QA A-25: no hash or token in any response', () => {
     const queries: Record<string, string> = {
       '/api/v1/admin/sources/release': `?ids=${source.id}`,
       '/api/v1/admin/sync/plan': `?scope=GENERATION&generationId=${h.generationId}`,
+      '/api/v1/admin/monitoring/subjects/summary': `?generationId=${h.generationId}&termNumber=1&subjectId=${offering.courseId}`,
+      '/api/v1/admin/monitoring/subjects/students': `?generationId=${h.generationId}&termNumber=1&subjectId=${offering.courseId}`,
     };
     const fill = (path: string) =>
       path
         .replace('generations/:id', `generations/${h.generationId}`)
+        .replace(':generationId/:termNumber', `${h.generationId}/1`)
         .replace('students/:id', `students/${row.id}`)
         .replace('sources/:id', `sources/${source.id}`)
         .replace('preview/:previewId', `preview/${preview.id}`)

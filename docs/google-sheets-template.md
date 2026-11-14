@@ -12,12 +12,29 @@ One Google Sheet per term, for example `TERM1- GEN 2027 Scoring`.
 | Tab                 | Required | Purpose                                                                                                                                                                            |
 | ------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ALL`               | Yes      | The roster and the authority: `STUDENT ID`, `FIRST NAME` + `LAST NAME` (or `NAME`), `GENDER`, `CLASS`, and in Terms 2–5 `CLASS 2` ("WEP A", "SNAC"). Its score columns are ignored |
-| `_meta`             | No       | Ignored, except `education_term`: when present it must match the term the workbook is connected to                                                                                 |
+| `_meta`             | Yes      | Identifies the workbook's generation and term. It is checked when connecting and syncing, and never imported (layout below)                                                        |
 | One tab per subject | Yes      | Student rows and marks                                                                                                                                                             |
 | Other tabs          | No       | Tabs starting with `_` are always skipped. Tabs with a `STUDENT ID` header can be marked "Not a subject"; others keep a warning                                                    |
 
 An uploaded `.xlsx` must be saved as a Google Sheet (File → Save as Google Sheets) before it can be
 read.
+
+### `_meta`
+
+`_meta` identifies the workbook's generation and term. It is checked when connecting and syncing,
+and never imported. One key per row: the key in column A, its value in column B. A header row such
+as `key | value` and other keys (`template_version`) are allowed and ignored.
+
+| Key               | Value                                                     | Matches when                                                                       |
+| ----------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `generation_code` | The generation's code, for example `GEN2027`              | Equal to the selected generation's code, ignoring case and surrounding spaces only |
+| `education_term`  | The term: `1`, `Term 1` or `T1` (`term` is an older name) | The same number as the selected term                                               |
+
+Keys and the tab name are read ignoring case and surrounding spaces. `gen2027` with spaces around
+it matches `GEN2027`; `GEN 2027` does not. A missing tab, or a blank or unreadable value, is
+`META_MISSING`; a value that differs is `WORKBOOK_MISMATCH`. Either blocks connecting or replacing
+the sheet (nothing is saved, and the term's current sheet stays), blocks the preview, and fails the
+sync before anything is written. Each blocked connection is audited (`source.connect.blocked`).
 
 ## 2. Subject tabs
 
@@ -156,18 +173,20 @@ same reviewed steps; a term that never synced connects one straight away, includ
 
 ## 7. Common errors
 
-| Code                                                         | Meaning / fix                                                         |
-| ------------------------------------------------------------ | --------------------------------------------------------------------- |
-| `INVALID_URL` / `UNSUPPORTED_HOST` / `NOT_A_SPREADSHEET_URL` | Copy the URL from the address bar of the open spreadsheet             |
-| `SHEET_NOT_SHARED`                                           | Share the file with the service-account address (Viewer)              |
-| `SHEET_NOT_FOUND`                                            | The URL is wrong or the file was deleted                              |
-| `ROSTER_TAB_MISSING`                                         | The `ALL` tab is missing                                              |
-| `TERM_MISMATCH`                                              | `_meta` names another term. Connect it to the right term              |
-| `TERM_SOURCE_EXISTS`                                         | The term already has an active workbook. Use Replace, or Remove first |
-| `SOURCE_EXISTS`                                              | This spreadsheet is already connected                                 |
-| `NO_CONFIRMED_TABS`                                          | Confirm at least one tab before syncing                               |
-| `GOOGLE_NOT_CONFIGURED`                                      | The server has no service-account credentials. See `.env.example`     |
-| `RATE_LIMITED` / `GOOGLE_UNAVAILABLE`                        | Temporary. Requests are already retried; try again later              |
+| Code                                                         | Meaning / fix                                                                                     |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `INVALID_URL` / `UNSUPPORTED_HOST` / `NOT_A_SPREADSHEET_URL` | Copy the URL from the address bar of the open spreadsheet                                         |
+| `SHEET_NOT_SHARED`                                           | Share the file with the service-account address (Viewer)                                          |
+| `SHEET_NOT_FOUND`                                            | The URL is wrong or the file was deleted                                                          |
+| `ROSTER_TAB_MISSING`                                         | The `ALL` tab is missing                                                                          |
+| `META_MISSING`                                               | No `_meta` tab, or its `generation_code` / `education_term` is blank or unreadable. Add them (§1) |
+| `WORKBOOK_MISMATCH`                                          | `_meta` names another generation or term. Choose the matching term or check the workbook          |
+| `TERM_MISMATCH`                                              | Older name of `WORKBOOK_MISMATCH` (term only), kept on jobs from before 2026-11-13                |
+| `TERM_SOURCE_EXISTS`                                         | The term already has an active workbook. Use Replace, or Remove first                             |
+| `SOURCE_EXISTS`                                              | This spreadsheet is already connected                                                             |
+| `NO_CONFIRMED_TABS`                                          | Confirm at least one tab before syncing                                                           |
+| `GOOGLE_NOT_CONFIGURED`                                      | The server has no service-account credentials. See `.env.example`                                 |
+| `RATE_LIMITED` / `GOOGLE_UNAVAILABLE`                        | Temporary. Requests are already retried; try again later                                          |
 
 ### More codes
 

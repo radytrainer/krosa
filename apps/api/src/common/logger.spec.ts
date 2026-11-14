@@ -2,6 +2,7 @@ import { Writable } from 'node:stream';
 import pino from 'pino';
 import { loadApiEnv } from '../config/env.js';
 import { buildLoggerParams } from './logger.js';
+import { randomBytes } from 'node:crypto';
 
 const env = loadApiEnv({
   NODE_ENV: 'production',
@@ -44,7 +45,7 @@ describe('log redaction', () => {
           authorization: 'Bearer secret',
           'x-csrf-token': 'tok',
         },
-        body: { identifier: 'admin', password: 'Correct-Horse-2026' },
+        body: { identifier: 'admin', password: randomBytes(9).toString('base64url') },
       },
     });
     expect(lines[0]?.['req']).toEqual({

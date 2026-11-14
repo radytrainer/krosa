@@ -10,10 +10,16 @@ import {
   WEB_ORIGIN,
   type TestContext,
 } from './support/test-app.js';
+import {
+  testPassword,
+  testAdminPassword,
+  testStudentPassword,
+  commonPassword,
+} from './support/credentials.js';
 
-const ADMIN = { username: 'admin', password: 'Admin-Initial-Pass-2026' };
-const STUDENT = { username: 'GEN26-0001', password: 'Student-Initial-Pass-2026' };
-const NEW_PASSWORD = 'a brand new passphrase 2026';
+const ADMIN = { username: 'admin', password: testAdminPassword() };
+const STUDENT = { username: 'GEN26-0001', password: testStudentPassword() };
+const NEW_PASSWORD = testPassword('new-password');
 
 const change = (s: Awaited<ReturnType<typeof login>>, body: object) =>
   s.agent
@@ -79,12 +85,12 @@ describe('Authentication & authorization (integration)', () => {
       const wrong = await http()
         .post('/api/v1/auth/login')
         .set('Origin', WEB_ORIGIN)
-        .send({ identifier: ADMIN.username, password: 'not the password' })
+        .send({ identifier: ADMIN.username, password: testPassword('wrong') })
         .expect(401);
       const unknown = await http()
         .post('/api/v1/auth/login')
         .set('Origin', WEB_ORIGIN)
-        .send({ identifier: 'nobody-here', password: 'not the password' })
+        .send({ identifier: 'nobody-here', password: testPassword('wrong') })
         .expect(401);
       expect(wrong.body.error.code).toBe('INVALID_CREDENTIALS');
       expect(unknown.body.error.code).toBe(wrong.body.error.code);
@@ -413,7 +419,12 @@ describe('Authentication & authorization (integration)', () => {
 
     it('enforces the password policy', async () => {
       const s = await login(ctx, STUDENT.username, STUDENT.password);
-      for (const newPassword of ['short', 'password123', 'my-gen26-0001-pass', STUDENT.password]) {
+      for (const newPassword of [
+        'short',
+        commonPassword(),
+        `my-${STUDENT.username.toLowerCase()}-pass`,
+        STUDENT.password,
+      ]) {
         const res = await change(s, { currentPassword: STUDENT.password, newPassword }).expect(422);
         expect(res.body.error.code).toBe('WEAK_PASSWORD');
         expect(res.body.error.details.length).toBeGreaterThan(0);
@@ -444,7 +455,7 @@ describe('Authentication & authorization (integration)', () => {
     await http()
       .post('/api/v1/auth/login')
       .set('Origin', WEB_ORIGIN)
-      .send({ identifier: ADMIN.username, password: 'Wrong-Password-Value' });
+      .send({ identifier: ADMIN.username, password: testPassword('wrong') });
     await s.agent
       .post('/api/v1/auth/change-password')
       .set('Origin', WEB_ORIGIN)
@@ -458,7 +469,7 @@ describe('Authentication & authorization (integration)', () => {
     for (const secret of [
       ADMIN.password,
       NEW_PASSWORD,
-      'Wrong-Password-Value',
+      testPassword('wrong'),
       s.cookies.get('ssrs_rt')!.value,
       s.csrf,
     ]) {

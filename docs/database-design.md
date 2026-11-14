@@ -359,15 +359,16 @@ How one subject tab maps to an offering.
 
 ### sheet_column_mappings
 
-| column                                                                                                    | type              | notes                                                                                                                         |
-| --------------------------------------------------------------------------------------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| id                                                                                                        | uuid PK           |                                                                                                                               |
-| tab_mapping_id                                                                                            | uuid FK           | ON DELETE CASCADE                                                                                                             |
-| column_index                                                                                              | int               | 0-based                                                                                                                       |
-| header_label, group_label                                                                                 | text NULL         |                                                                                                                               |
-| role                                                                                                      | enum `ColumnRole` | STUDENT_ID, FIRST_NAME, LAST_NAME, FULL_NAME, GENDER, CLASS, PROGRAM, ROW_NUMBER, CRITERION, REFERENCE_TOTAL, COMMENT, IGNORE |
-| criterion_id                                                                                              | uuid FK NULL      | role CRITERION only; ON DELETE RESTRICT                                                                                       |
-| proposed_name, proposed_weight                                                                            | NULL              | shown while DRAFT                                                                                                             |
+| column                                                                                                    | type              | notes                                                                                                                                                     |
+| --------------------------------------------------------------------------------------------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| id                                                                                                        | uuid PK           |                                                                                                                                                           |
+| tab_mapping_id                                                                                            | uuid FK           | ON DELETE CASCADE                                                                                                                                         |
+| column_index                                                                                              | int NULL          | 0-based; NULL only when `missing_from_sheet` (CHECK)                                                                                                      |
+| header_label, group_label                                                                                 | text NULL         |                                                                                                                                                           |
+| role                                                                                                      | enum `ColumnRole` | STUDENT_ID, FIRST_NAME, LAST_NAME, FULL_NAME, GENDER, CLASS, PROGRAM, ROW_NUMBER, CRITERION, REFERENCE_TOTAL, COMMENT, IGNORE                             |
+| criterion_id                                                                                              | uuid FK NULL      | role CRITERION only; ON DELETE RESTRICT                                                                                                                   |
+| proposed_name, proposed_weight                                                                            | NULL              | shown while DRAFT                                                                                                                                         |
+| missing_from_sheet                                                                                        | boolean           | A reopened tab's column the sheet no longer has: kept as set, no position. DRAFT tabs only; confirming drops it (audited). Sync and preview never read it |
 | UNIQUE `(tab_mapping_id, column_index)`, UNIQUE `(tab_mapping_id, criterion_id)`. Index `(criterion_id)`. |
 
 ### sheet_previews
@@ -414,11 +415,25 @@ per `(term_id, student_code, kind)`; resolved rows are kept with who resolved th
 
 ### grade_scales, grade_bands
 
-Letter grades (D5, decisions.md G1–G4). Every generation has one scale, filled with the official
-bands A 90 / B 80 / C 70 / D 60 / E 50 / F 0 (`is_pass` false only for F) and marked confirmed by
-`ssrs_apply_grade_defaults(generation_id)` (migration `20261110090000_grade_scale`; called when a
-generation is created). It leaves a scale that already has bands alone. The letter is computed on
+Letter grades (D5, decisions.md G2–G6). Every generation has one scale, filled with the official
+bands of 2026-11-12, A 85 / B+ 80 / B 70 / C+ 65 / C 60 / D 50 / E 0 (`is_pass` false only for E,
+the only fail), and marked confirmed. `ssrs_apply_grade_defaults(generation_id)`,
+called when a generation is created, gives a generation with no bands these; it leaves a scale that
+already has bands alone. `ssrs_set_official_grade_bands(generation_id)` replaces a generation's
+bands with them (migration `20261113090000_grade_scale_2026_11` ran it for every generation; it
+supersedes the scale of `20261110090000_grade_scale`). The letter is computed on
 read (`gradeFor` in `packages/shared`), never stored. No admin editor yet.
+
+Each band also has a `level` (enum `GradeLevel`: VERY_GOOD, GOOD, FAIR, FAIL; NOT NULL), the
+performance level admin subject monitoring counts. Migration `20261114090000_grade_levels`
+added it and filled it by letter: A and B+ VERY_GOOD, B and C+ GOOD, C and D FAIR, E FAIL.
+CHECK `grade_bands_level_pass_check`: `(level = 'FAIL') = (NOT is_pass)`, so FAIL is exactly
+the failing band. `ssrs_set_official_grade_bands` writes the level with each band, so a new
+generation (through `ssrs_apply_grade_defaults`) gets levels too. Code never names letters: it
+reads the level from the bands (`levelFor` in `packages/shared`). A result that is not COMPLETE
+has no band; monitoring shows it as INCOMPLETE, never FAIL. Revert:
+`packages/database/prisma/reverts/20261114090000_grade_levels.sql`. Reverts run newest first: this
+one before `reverts/20261113090000_grade_scale_2026_11.sql`, which inserts bands without a level.
 
 ### participation_records
 

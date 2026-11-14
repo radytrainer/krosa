@@ -8,9 +8,16 @@ import {
 } from '@ssrs/sheets';
 import { newOfferingId } from './promote.js';
 
-/** Tab mappings as a sync or a preview needs them. */
+/**
+ * Tab mappings as a sync or a preview needs them. Columns missing from the sheet (flagged, with no
+ * position; decisions.md TD2) are never read, whatever the tab's state.
+ */
 export const TAB_MAPPINGS_INCLUDE = {
-  columns: { include: { criterion: true }, orderBy: { columnIndex: 'asc' } },
+  columns: {
+    where: { missingFromSheet: false },
+    include: { criterion: true },
+    orderBy: { columnIndex: 'asc' },
+  },
   offering: { select: { externalKey: true, title: true } },
 } satisfies Prisma.SheetTabMappingInclude;
 
@@ -53,11 +60,18 @@ export function confirmedTabs(tabs: readonly TabRow[]): ConfirmedTab[] {
         sheetTabId: tab.sheetTabId,
         headerRow: tab.headerRow,
         headerSignature: tab.headerSignature,
-        columns: tab.columns.map((c) => ({
-          columnIndex: c.columnIndex,
-          role: c.role,
-          criterion: criterionOf(tab, c, c.role === 'CRITERION' ? ++order : order),
-        })),
+        columns: tab.columns.flatMap((c) =>
+          // Filtered out above already; a column with no place in the sheet is never read.
+          c.columnIndex === null
+            ? []
+            : [
+                {
+                  columnIndex: c.columnIndex,
+                  role: c.role,
+                  criterion: criterionOf(tab, c, c.role === 'CRITERION' ? ++order : order),
+                },
+              ],
+        ),
       },
     ];
   });

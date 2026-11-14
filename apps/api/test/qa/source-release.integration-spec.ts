@@ -130,8 +130,19 @@ describe('QA R: per-source Hide and Release', () => {
     const hidden = await studentView();
     expect(hidden.courses).toEqual([]);
     expect(hidden.results.terms.flatMap((t: { courses: unknown[] }) => t.courses)).toEqual([]);
-    expect(hidden.summary.overall).toMatchObject({ totalCourses: 0, completedCourses: 0 });
-    expect(hidden.summary.overall.provisionalAverage).toBeNull();
+    expect(hidden.summary.overall).toEqual({
+      status: 'EMPTY',
+      totalCourses: 0,
+      completedCourses: 0,
+    });
+    for (const t of [...hidden.summary.terms, ...hidden.results.terms]) {
+      expect(t.summary).toEqual({
+        status: 'EMPTY',
+        completedCourses: 0,
+        totalCourses: 0,
+        topScoring: null,
+      });
+    }
     expect(hidden.summary.latestTermHighest).toBeNull();
     const text = JSON.stringify(hidden);
     for (const t of titles) expect(text).not.toContain(t);
@@ -155,6 +166,29 @@ describe('QA R: per-source Hide and Release', () => {
       oldState: 'RELEASED',
       newState: 'HIDDEN',
     });
+  });
+
+  it('an open course page gets 404 on its very next request after a hide, like an unknown id', async () => {
+    await setRelease([sourceId], true).expect(200);
+    const [first] = (await studentView()).courses as { offeringId: string }[];
+    expect(first).toBeDefined();
+    const path = `${V1}/student/me/courses/${first!.offeringId}`;
+    // Warm the student's cached view with this exact course, as an open page would.
+    await student.get(path).expect(200);
+    await student.get(path).expect(200);
+
+    await setRelease([sourceId], false).expect(200);
+    const hidden = await student.get(path).expect(404);
+    const unknown = await student
+      .get(`${V1}/student/me/courses/00000000-0000-4000-8000-000000000000`)
+      .expect(404);
+    // Same answer, no detail: a student cannot tell a hidden subject from one that never existed.
+    const shape = (b: { error: Record<string, unknown> }) => {
+      const { requestId: _id, ...rest } = b.error;
+      return rest;
+    };
+    expect(shape(hidden.body)).toEqual({ code: 'NOT_FOUND', message: 'Course not found' });
+    expect(shape(unknown.body)).toEqual(shape(hidden.body));
   });
 
   it('shows Partly released; student numbers ignore the hidden subject; release covers the term', async () => {

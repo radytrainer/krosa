@@ -8,10 +8,11 @@ import {
   seedUser,
   type TestContext,
 } from './support/test-app.js';
+import { testPassword, testAdminPassword, testStudentPassword } from './support/credentials.js';
 
-const ADMIN = { username: 'admin', password: 'Admin-Initial-Pass-2026' };
-const OTHER_ADMIN = { username: 'admin2', password: 'Admin-Second-Pass-2026' };
-const STUDENT = { username: 'GEN26-0001', password: 'Student-Initial-Pass-2026' };
+const ADMIN = { username: 'admin', password: testAdminPassword() };
+const OTHER_ADMIN = { username: 'admin2', password: testPassword('other-admin') };
+const STUDENT = { username: 'GEN26-0001', password: testStudentPassword() };
 const PARTNER = 'https://partner.example.org';
 
 describe('Security hardening (integration)', () => {

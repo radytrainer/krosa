@@ -1,6 +1,6 @@
 /* eslint-disable -- QA suite: uses expect messages, console evidence and supertest .expect() */
 import { describe, expect, it } from 'vitest';
-import { computeCourseResult, computeTermSummary, validateScheme } from './grading.js';
+import { computeCourseResult, validateScheme } from './grading.js';
 
 /** QA suite, area C. Expected values never come from the code under test. */
 
@@ -178,32 +178,6 @@ describe('QA C-13 an offering whose weights do not total 100 is rejected', () =>
   it('exactly 100 passes, including 1.666 + 1.667 + 1.667 + 95', () => {
     expect(validateScheme(scheme('1.666', '1.667', '1.667', '95')).valid).toBe(true);
     expect(validateScheme([]).valid).toBe(false);
-  });
-});
-
-describe('QA C-15 term average', () => {
-  const course = (credits: string, finalScore: string) => {
-    const result = computeCourseResult(scheme('100'), marks(finalScore));
-    return { credits, result };
-  };
-
-  it('is credit-weighted, on exact scores, rounded once', () => {
-    // (80 × 3 + 70.555 × 1) / 4 = 77.63875
-    const summary = computeTermSummary([course('3', '80'), course('1', '70.555')]);
-    expect(summary).toMatchObject({ status: 'COMPLETE', average: '77.64' });
-  });
-
-  it('has no average while any course is incomplete', () => {
-    const incomplete = {
-      credits: '1',
-      result: computeCourseResult(scheme('50', '50'), marks('90', null)),
-    };
-    const summary = computeTermSummary([course('1', '80'), incomplete]);
-    expect(summary).toMatchObject({
-      status: 'INCOMPLETE',
-      average: null,
-      provisionalAverage: '80.00',
-    });
   });
 });
 

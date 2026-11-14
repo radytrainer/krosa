@@ -32,3 +32,14 @@ Thumbs.db
 *.log
 backups/
 .deploy-history
+
+# Database dumps and backups (may hold real student data)
+*.dump
+*.sql.gz
+
+# Claude working files (briefs for subagents)
+.claude/scratch/
+
+# Local, per-user Claude settings
+.claude/settings.local.json
+CLAUDE.local.md

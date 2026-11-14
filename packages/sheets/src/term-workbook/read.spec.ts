@@ -7,7 +7,12 @@ import {
   termWorkbookFixture,
 } from '../testing/term-workbook-fixture.js';
 import type { DetectedColumn } from './layout.js';
-import { checkTermWorkbook, detectTermWorkbook, type TermWorkbookOptions } from './read.js';
+import {
+  checkTermWorkbook,
+  detectTermWorkbook,
+  readTermWorkbook,
+  type TermWorkbookOptions,
+} from './read.js';
 import { parseRoster } from './roster.js';
 import { MAX_COMMENT_LENGTH, parseSubjectRows, type SubjectTabMapping } from './subject-rows.js';
 
@@ -249,21 +254,29 @@ describe('detectTermWorkbook – problems', () => {
     expect(eng.totalWeight).toBe('100');
   });
 
-  it('rejects _meta for another term (FILE) and ignores its generation code', async () => {
+  it('rejects _meta for another term or another generation (FILE)', async () => {
     const { result } = await detect(termWorkbookFixture(), { ...OPTIONS, termNumber: 2 });
     expect(result.fatal).toBe(true);
-    expect(result.issues.map((i) => i.code)).toContain('TERM_MISMATCH');
+    expect(result.issues.map((i) => i.code)).toContain('WORKBOOK_MISMATCH');
     const other = await detect(termWorkbookFixture(), { ...OPTIONS, generationCode: 'GEN2026' });
-    expect(other.result.fatal).toBe(false);
-    expect(other.result.issues.map((i) => i.code)).not.toContain('GENERATION_MISMATCH');
+    expect(other.result.fatal).toBe(true);
+    expect(other.result.issues).toContainEqual(
+      expect.objectContaining({ code: 'WORKBOOK_MISMATCH', scope: 'FILE', sheetTab: '_meta' }),
+    );
+    // Subject tabs are still proposed, so the admin sees what the workbook holds.
+    expect(other.result.tabs).toHaveLength(5);
   });
 
-  it('works without _meta', async () => {
+  it('is fatal without _meta (META_MISSING) but still proposes subject tabs', async () => {
     const sheet = termWorkbookFixture();
     delete sheet.tabs['_meta'];
     const { result } = await detect(sheet);
-    expect(result.fatal).toBe(false);
+    expect(result.fatal).toBe(true);
     expect(result.meta).toBeNull();
+    expect(result.issues.filter((i) => i.scope === 'FILE').map((i) => i.code)).toEqual([
+      'META_MISSING',
+    ]);
+    expect(result.tabs).toHaveLength(5);
   });
 
   it('is fatal without the roster tab but still proposes subject tabs', async () => {
@@ -458,6 +471,7 @@ describe('checkTermWorkbook', () => {
       tabs: ['_meta', 'ALL', 'Logic', 'ENG', 'PL', 'BCU', 'MsOffice'],
       ok: true,
       issues: [],
+      metaFound: { generationCode: 'GEN2027', term: '1' },
     });
     expect(reader.calls.map((c) => c.tabs ?? [])).toEqual([[], ['_meta']]);
   });
@@ -468,6 +482,51 @@ describe('checkTermWorkbook', () => {
     const reader = new InMemorySheetsReader().set(ID, sheet);
     const check = await checkTermWorkbook(reader, ID, { ...OPTIONS, termNumber: 3 });
     expect(check.ok).toBe(false);
-    expect(check.issues.map((i) => i.code)).toEqual(['ROSTER_TAB_MISSING', 'TERM_MISMATCH']);
+    expect(check.issues.map((i) => i.code)).toEqual(['ROSTER_TAB_MISSING', 'WORKBOOK_MISMATCH']);
+  });
+
+  it('fails without _meta, reading only the metadata', async () => {
+    const sheet = termWorkbookFixture();
+    delete sheet.tabs['_meta'];
+    const reader = new InMemorySheetsReader().set(ID, sheet);
+    const check = await checkTermWorkbook(reader, ID, OPTIONS);
+    expect(check.ok).toBe(false);
+    expect(check.issues).toEqual([
+      expect.objectContaining({ code: 'META_MISSING', scope: 'FILE', severity: 'ERROR' }),
+    ]);
+    expect(check.metaFound).toEqual({ generationCode: null, term: null });
+    expect(reader.calls.map((c) => c.tabs ?? [])).toEqual([[]]);
+  });
+
+  it('finds _meta whatever its case and spacing, and reports what it holds', async () => {
+    const sheet = termWorkbookFixture();
+    sheet.tabs[' _META '] = [
+      [' Generation_Code ', ' gen2027 '],
+      ['EDUCATION_TERM', 'Term 1'],
+    ];
+    delete sheet.tabs['_meta'];
+    const reader = new InMemorySheetsReader().set(ID, sheet);
+    const check = await checkTermWorkbook(reader, ID, OPTIONS);
+    expect(check).toMatchObject({
+      ok: true,
+      metaFound: { generationCode: 'gen2027', term: 'Term 1' },
+    });
+  });
+});
+
+describe('readTermWorkbook – _meta', () => {
+  it('is fatal without _meta or for another generation, and reads no subject', async () => {
+    const missing = termWorkbookFixture();
+    delete missing.tabs['_meta'];
+    const reader = new InMemorySheetsReader().set(ID, missing);
+    const read = await readTermWorkbook(reader, ID, OPTIONS, []);
+    expect(read.fatal).toBe(true);
+    expect(read.courses).toEqual([]);
+    expect(read.issues.map((i) => i.code)).toContain('META_MISSING');
+
+    reader.set(ID, termWorkbookFixture());
+    const other = await readTermWorkbook(reader, ID, { ...OPTIONS, generationCode: 'GEN2028' }, []);
+    expect(other.fatal).toBe(true);
+    expect(other.issues.map((i) => i.code)).toContain('WORKBOOK_MISMATCH');
   });
 });

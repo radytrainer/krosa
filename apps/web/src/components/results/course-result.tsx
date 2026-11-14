@@ -12,6 +12,7 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { CourseStatusPill, StatusPill } from '@/components/app/status';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
+import { gradePillClass, gradeScoreClass, gradeToneAttr } from './grade-tone';
 import {
   Table,
   TableBody,
@@ -52,7 +53,7 @@ function Contribution({ c }: { c: CriterionResultView }) {
 }
 
 /** The teacher's comment. Rendered as a text node, so markup in the sheet shows as plain text. */
-function TeacherComment({ text }: { text: string }) {
+export function TeacherComment({ text }: { text: string }) {
   return (
     <figure className="rounded-lg bg-muted/50 p-3 text-sm">
       <figcaption className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -65,8 +66,10 @@ function TeacherComment({ text }: { text: string }) {
 }
 
 /**
- * The letter beside a COMPLETE subject's final score, as text ("Grade E"), never color alone.
- * Nothing else (marks, progress, averages) ever shows a grade.
+ * The letter beside a COMPLETE subject's final score, as text ("Grade E"), never colour alone.
+ * Coloured by its tone (decisions.md G7), like the score beside it. Nothing else (marks, progress,
+ * course counts) ever shows a grade; a term's Top scoring shows this same letter beside that
+ * subject's final score.
  */
 export function FinalGrade({
   course,
@@ -77,7 +80,11 @@ export function FinalGrade({
   return (
     <span
       data-slot="final-grade"
-      className="ml-2 inline-flex h-6 items-center rounded-md bg-muted px-2 align-middle text-sm font-semibold text-foreground ring-1 ring-foreground/15 ring-inset"
+      data-grade-tone={gradeToneAttr(course.finalGrade)}
+      className={cn(
+        'ml-2 inline-flex h-6 items-center rounded-md px-2 align-middle text-sm font-semibold ring-1 ring-inset',
+        gradePillClass(course.finalGrade) ?? 'bg-muted text-foreground ring-foreground/15',
+      )}
     >
       Grade {course.finalGrade}
     </span>
@@ -90,7 +97,13 @@ export function ScoreSummary({ course, compact }: { course: CourseResultView; co
     return (
       <span className="block text-right">
         <span className={cn('block font-semibold tabular-nums', compact ? 'text-lg' : 'text-2xl')}>
-          {course.finalScore}
+          <span
+            data-slot="final-score"
+            data-grade-tone={gradeToneAttr(course.finalGrade)}
+            className={gradeScoreClass(course.finalGrade)}
+          >
+            {course.finalScore}
+          </span>
           <span className="text-sm font-normal text-muted-foreground"> / 100</span>
           <FinalGrade course={course} />
         </span>

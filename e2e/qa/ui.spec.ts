@@ -1,11 +1,14 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { TERM_FIXTURE_SPREADSHEET_ID } from '@ssrs/sheets/testing';
 import { E2E, WEB_URL } from '../support/stack.js';
+import { testPassword, testStudentPassword } from '../support/credentials.js';
 
 /** QA suite, area H, plus the browser parts of B-18, C-17, E-01, F-06 and G-05. Serial. */
 test.describe.configure({ mode: 'serial' });
 
-const STUDENT = { id: 'PNC2027-001', name: 'DARA SOK', password: 'River-Lantern-Morning-48' };
+const STUDENT = { id: 'PNC2027-001', name: 'DARA SOK', password: testStudentPassword() };
+/** The official letters (decisions.md G5). */
+const LETTER = '(?:A|B\\+|B|C\\+|C|D|E)';
 const V1 = '/api/v1';
 const PHONE = { width: 390, height: 844 };
 
@@ -65,7 +68,7 @@ test.beforeAll(async ({ browser }) => {
 });
 
 test('P1 sign-in: Show / Hide password by mouse and keyboard; hidden again after submit', async () => {
-  const secret = 'Not-A-Real-Pass-731';
+  const secret = testPassword('shown');
   const logged: string[] = [];
   admin.on('console', (m) => logged.push(m.text()));
   await admin.goto('/login');
@@ -110,7 +113,7 @@ test('H-01 sign-in: empty form and wrong password give clear messages', async ()
   await admin.getByRole('button', { name: 'Sign in' }).click();
   await expect(admin).toHaveURL(/\/login/);
   await admin.getByLabel(/Username or student ID/).fill('nobody');
-  await admin.locator('input[name=password]').fill('wrong-password');
+  await admin.locator('input[name=password]').fill(testPassword('wrong'));
   await admin.getByRole('button', { name: 'Sign in' }).click();
   await expect(admin.getByRole('alert').first()).toContainText(/invalid|incorrect|wrong/i);
   await expect(admin.locator('input[name=password]')).toHaveValue('');
@@ -247,7 +250,7 @@ test('H-02 forced change: cannot skip by URL; weak password shows the reason', a
   await expect(student.getByText(/student ID|username/i).first()).toBeVisible();
   await expect(student).toHaveURL(/\/change-password$/);
   await student.locator('input[name=newPassword]').fill(STUDENT.password);
-  await student.locator('input[name=confirm]').fill('Different-Value-Here-11');
+  await student.locator('input[name=confirm]').fill(testPassword('mismatch'));
   await student.getByRole('button', { name: 'Save and continue' }).click();
   await expect(student).toHaveURL(/\/change-password$/);
   await student.locator('input[name=confirm]').fill(STUDENT.password);
@@ -270,7 +273,7 @@ test('P2 change password: three fields, each with its own toggle', async () => {
   const toggles = student.getByRole('button', { name: 'Show password' });
   await expect(toggles).toHaveCount(3);
   for (const f of Object.values(fields)) await expect(f).toHaveAttribute('type', 'password');
-  await fields.next.fill('Visible-Only-Here-55');
+  await fields.next.fill(testPassword('new-password'));
   // Toggle only the new password: the other two stay hidden.
   await student.locator(`button[aria-controls="${await fields.next.getAttribute('id')}"]`).click();
   await expect(fields.next).toHaveAttribute('type', 'text');
@@ -282,8 +285,8 @@ test('P2 change password: three fields, each with its own toggle', async () => {
   await expect(fields.confirm).toHaveAttribute('type', 'text');
   await expect(fields.current).toHaveAttribute('type', 'password');
   // Submitting hides them all again (the current password is wrong, so nothing changes).
-  await fields.current.fill('Wrong-Current-Pass-99');
-  await fields.confirm.fill('Visible-Only-Here-55');
+  await fields.current.fill(testPassword('wrong'));
+  await fields.confirm.fill(testPassword('new-password'));
   await student.getByRole('button', { name: 'Change password' }).click();
   await expect(student.getByText('This is not your current password.')).toBeVisible();
   for (const f of Object.values(fields)) await expect(f).toHaveAttribute('type', 'password');
@@ -337,7 +340,7 @@ test('G3 a grade appears only beside a COMPLETE final score', async () => {
   }[] = await call(student, 'GET', '/student/me/courses');
   const complete = courses.filter((c) => c.status === 'COMPLETE');
   expect(complete.length).toBeGreaterThan(0);
-  expect(complete.every((c) => /^[A-F]$/.test(c.finalGrade ?? ''))).toBe(true);
+  expect(complete.every((c) => new RegExp(`^${LETTER}$`).test(c.finalGrade ?? ''))).toBe(true);
   expect(courses.filter((c) => c.status !== 'COMPLETE').every((c) => c.finalGrade === null)).toBe(
     true,
   );
@@ -346,7 +349,9 @@ test('G3 a grade appears only beside a COMPLETE final score', async () => {
   // Student panel: one grade per COMPLETE course card, none in the summary or chart.
   await student.goto('/student');
   await expect(grades(student)).toHaveCount(complete.length);
-  for (const text of await grades(student).allInnerTexts()) expect(text).toMatch(/^Grade [A-F]$/);
+  for (const text of await grades(student).allInnerTexts()) {
+    expect(text).toMatch(new RegExp(`^Grade ${LETTER}$`));
+  }
   // The Overall card's only grade is beside the highest final score (S2).
   const overallCard = student.locator('section', {
     has: student.getByRole('heading', { name: 'Overall' }),
@@ -354,12 +359,21 @@ test('G3 a grade appears only beside a COMPLETE final score', async () => {
   await expect(overallCard.getByText(/Grade/)).toHaveCount(0);
   await expect(overallCard.locator('[data-slot=highest-grade]')).toHaveCount(1);
 
-  // Results page: Logic (78.90) shows C as text; BCU is in progress and shows none.
+  // Results page: Logic (78.90) shows B as text; BCU is in progress and shows none.
   await student.goto('/student/results');
   await expect(student.getByRole('button', { name: /Logic/ })).toContainText('78.90');
-  await expect(student.getByRole('button', { name: /Logic/ })).toContainText('Grade C');
+  await expect(student.getByRole('button', { name: /Logic/ })).toContainText('Grade B');
+  // The term summary's only grade sits beside its Top scoring final score (T3).
+  const termSummary = student.locator('main:visible dl', { hasText: 'Top scoring' });
+  await expect(termSummary.locator('[data-slot=top-scoring-grade]')).toHaveCount(1);
+  await expect(termSummary.locator('[data-slot=top-scoring]')).toContainText(
+    new RegExp(`\\d+\\.\\d\\d \\(${LETTER}\\)$`),
+  );
+  await expect(termSummary.getByText(/Grade/)).toHaveCount(0);
   const bcu = student.getByRole('button', { name: /BCU/ });
   await expect(bcu.locator('[data-slot=final-grade]')).toHaveCount(0);
+  // An unfinished subject gets no grade and no grade colour (decisions.md G7).
+  await expect(bcu.locator('[data-grade-tone]')).toHaveCount(0);
   await bcu.click();
   // Component marks and contributions never carry one.
   await expect(student.getByRole('table').getByText(/Grade/)).toHaveCount(0);
@@ -367,12 +381,12 @@ test('G3 a grade appears only beside a COMPLETE final score', async () => {
   // Subject page.
   const logic = complete.find((c) => /Logic/.test(c.title))!;
   await student.goto(`/student/courses/${logic.offeringId}`);
-  await expect(grades(student)).toHaveText(['Grade C']);
+  await expect(grades(student)).toHaveText(['Grade B']);
   await expect(student.getByRole('table').getByText(/Grade/)).toHaveCount(0);
 
   // Admin view of the student.
   await admin.goto(`/admin/students/${studentRowId}`);
-  await expect(admin.getByRole('button', { name: /Logic/ })).toContainText('Grade C');
+  await expect(admin.getByRole('button', { name: /Logic/ })).toContainText('Grade B');
   await expect(
     admin.getByRole('button', { name: /BCU/ }).locator('[data-slot=final-grade]'),
   ).toHaveCount(0);
@@ -645,7 +659,7 @@ test('H-01c too many attempts shows the wait, not a raw error', async ({ browser
   await page.goto('/login');
   for (let i = 0; i < 12; i++) {
     await page.getByLabel(/Username or student ID/).fill('nobody-limit');
-    await page.locator('input[name=password]').fill('wrong-password');
+    await page.locator('input[name=password]').fill(testPassword('wrong'));
     await page.getByRole('button', { name: 'Sign in' }).click();
     await page.waitForTimeout(300);
     if (await page.getByText(/too many/i).count()) break;

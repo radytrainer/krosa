@@ -12,7 +12,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { formatDateTime } from '@/lib/format';
-import { useApi } from '@/lib/query';
+import { useFreshApi } from '@/lib/query';
 import type { TermWorkbooks } from '@/lib/types';
 
 const PREVIEW_TEXT = {
@@ -23,7 +23,11 @@ const PREVIEW_TEXT = {
 
 /** Each term's active sheet, any sheet waiting to replace it, and how many came before. */
 export function WorkbooksByTerm() {
-  const { data, error, refetch } = useApi<TermWorkbooks[]>('/admin/term-workbooks');
+  // Read fresh on every visit (never a cached "not synced yet"), and every 3 s while a sync runs,
+  // so the row changes as soon as that sync promotes the new sheet.
+  const { data, error, refetch } = useFreshApi<TermWorkbooks[]>('/admin/term-workbooks', {
+    refetchInterval: (q) => (q.state.data?.some((r) => r.runningJobId) ? 3000 : false),
+  });
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
   if (!data) return <LoadingRows rows={3} />;
   const rows = data.filter((r) => r.active || r.pending || r.history.length > 0);

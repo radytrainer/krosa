@@ -1,4 +1,9 @@
-import { applyTermDefaults, createPrismaClient, type PrismaClient } from '../src/index.js';
+import {
+  applyGradeDefaults,
+  applyTermDefaults,
+  createPrismaClient,
+  type PrismaClient,
+} from '../src/index.js';
 import { assertTestDatabaseUrl, truncateAllTables } from '../src/testing.js';
 
 /**
@@ -19,6 +24,28 @@ interface Fixture {
 }
 
 let fx: Fixture;
+
+/** A generation's grade bands, highest first, and whether its scale is confirmed. */
+const bandsOf = async (generationId: string) => {
+  const scale = await prisma.gradeScale.findUniqueOrThrow({
+    where: { generationId },
+    include: { bands: { orderBy: { minTotal: 'desc' } } },
+  });
+  return {
+    confirmed: scale.confirmed,
+    bands: scale.bands.map((b) => [b.letter, b.minTotal.toFixed(2), b.isPass]),
+  };
+};
+/** A generation's band letters with their levels, highest first. */
+const levelsOf = async (generationId: string) => {
+  const scale = await prisma.gradeScale.findUniqueOrThrow({
+    where: { generationId },
+    include: { bands: { orderBy: { minTotal: 'desc' } } },
+  });
+  return scale.bands.map((b) => [b.letter, b.level]);
+};
+const cacheVersionOf = async (id: string) =>
+  (await prisma.generation.findUniqueOrThrow({ where: { id } })).cacheVersion;
 
 async function seed(): Promise<Fixture> {
   const user = await prisma.user.create({
@@ -511,7 +538,7 @@ describe('term workbooks (delivery plan A.3)', () => {
     const scale = await prisma.gradeScale.create({ data: { generationId: fx.generationId } });
     await expect(
       prisma.gradeBand.create({
-        data: { scaleId: scale.id, letter: 'A', minTotal: '101', isPass: true },
+        data: { scaleId: scale.id, letter: 'A', minTotal: '101', isPass: true, level: 'VERY_GOOD' },
       }),
     ).rejects.toThrow(/grade_bands_min_total_check/);
     await expect(prisma.program.create({ data: { code: 'S', name: 'Too short' } })).rejects.toThrow(
@@ -519,6 +546,131 @@ describe('term workbooks (delivery plan A.3)', () => {
     );
     await prisma.program.create({
       data: { code: 'SNAC', name: 'System Network Administrators and Cybersecurity' },
+    });
+  });
+
+  describe('official grade scale of 2026-11-12 (decisions.md G5)', () => {
+    const NEW = [
+      ['A', '85.00', true],
+      ['B+', '80.00', true],
+      ['B', '70.00', true],
+      ['C+', '65.00', true],
+      ['C', '60.00', true],
+      ['D', '50.00', true],
+      ['E', '0.00', false],
+    ];
+    const OLD = [
+      ['A', '90.00', true],
+      ['B', '80.00', true],
+      ['C', '70.00', true],
+      ['D', '60.00', true],
+      ['E', '50.00', true],
+      ['F', '0.00', false],
+    ];
+    // Levels of the old six-band fixture: they must obey CHECK ((level = 'FAIL') = NOT is_pass).
+    const OLD_LEVEL: Record<string, 'VERY_GOOD' | 'GOOD' | 'FAIR' | 'FAIL'> = {
+      A: 'VERY_GOOD',
+      B: 'GOOD',
+      C: 'GOOD',
+      D: 'FAIR',
+      E: 'FAIR',
+      F: 'FAIL',
+    };
+    it('replaces a generation’s old bands, confirms its scale and makes cached results stale', async () => {
+      // A generation still on the previous scale, not confirmed.
+      await prisma.gradeScale.create({
+        data: {
+          generationId: fx.generationId,
+          confirmed: false,
+          bands: {
+            create: OLD.map(([letter, minTotal, isPass]) => ({
+              letter: letter as string,
+              minTotal: minTotal as string,
+              isPass: isPass as boolean,
+              level: OLD_LEVEL[letter as string]!,
+            })),
+          },
+        },
+      });
+      // Creating or seeding never overwrites a scale that has bands.
+      await applyGradeDefaults(prisma, fx.generationId);
+      expect(await bandsOf(fx.generationId)).toEqual({ confirmed: false, bands: OLD });
+
+      const before = await cacheVersionOf(fx.generationId);
+      await prisma.$executeRaw`SELECT ssrs_set_official_grade_bands(${fx.generationId}::uuid)`;
+      expect(await bandsOf(fx.generationId)).toEqual({ confirmed: true, bands: NEW });
+      expect(await cacheVersionOf(fx.generationId)).toBe(before + 1);
+      // Running it again changes nothing but the cache version.
+      await prisma.$executeRaw`SELECT ssrs_set_official_grade_bands(${fx.generationId}::uuid)`;
+      expect(await bandsOf(fx.generationId)).toEqual({ confirmed: true, bands: NEW });
+    });
+
+    it('gives a new generation the new scale, and refuses an unknown generation', async () => {
+      const created = await prisma.generation.create({
+        data: { code: 'GEN2031', name: 'Generation 2031', startDate: new Date('2031-01-06') },
+      });
+      await applyGradeDefaults(prisma, created.id);
+      expect(await bandsOf(created.id)).toEqual({ confirmed: true, bands: NEW });
+      await expect(
+        prisma.$executeRaw`SELECT ssrs_set_official_grade_bands('01900000-0000-7000-8000-000000000000'::uuid)`,
+      ).rejects.toThrow(/does not exist/);
+    });
+  });
+
+  describe('grade levels (migration 20261114090000_grade_levels, monitoring M-decisions)', () => {
+    const LEVELS = [
+      ['A', 'VERY_GOOD'],
+      ['B+', 'VERY_GOOD'],
+      ['B', 'GOOD'],
+      ['C+', 'GOOD'],
+      ['C', 'FAIR'],
+      ['D', 'FAIR'],
+      ['E', 'FAIL'],
+    ];
+
+    it('refuses FAIL on a passing band and a graded level on the failing band', async () => {
+      const scale = await prisma.gradeScale.create({ data: { generationId: fx.generationId } });
+      await expect(
+        prisma.gradeBand.create({
+          data: { scaleId: scale.id, letter: 'E', minTotal: '0', isPass: false, level: 'FAIR' },
+        }),
+      ).rejects.toThrow(/grade_bands_level_pass_check/);
+      await expect(
+        prisma.gradeBand.create({
+          data: { scaleId: scale.id, letter: 'D', minTotal: '50', isPass: true, level: 'FAIL' },
+        }),
+      ).rejects.toThrow(/grade_bands_level_pass_check/);
+      // Changing is_pass alone on an existing band is refused too.
+      const ok = await prisma.gradeBand.create({
+        data: { scaleId: scale.id, letter: 'A', minTotal: '85', isPass: true, level: 'VERY_GOOD' },
+      });
+      await expect(
+        prisma.gradeBand.update({ where: { id: ok.id }, data: { isPass: false } }),
+      ).rejects.toThrow(/grade_bands_level_pass_check/);
+      await expect(
+        prisma.$executeRaw`INSERT INTO grade_bands (id, scale_id, letter, min_total, is_pass)
+          VALUES (gen_random_uuid(), ${scale.id}::uuid, 'B', 70, true)`,
+      ).rejects.toThrow(/level|null/i);
+      await expect(
+        prisma.$executeRaw`INSERT INTO grade_bands (id, scale_id, letter, min_total, is_pass, level)
+          VALUES (gen_random_uuid(), ${scale.id}::uuid, 'B', 70, true, 'EXCELLENT')`,
+      ).rejects.toThrow(/GradeLevel|invalid input value/i);
+    });
+
+    it('ssrs_set_official_grade_bands writes every level', async () => {
+      await prisma.$executeRaw`SELECT ssrs_set_official_grade_bands(${fx.generationId}::uuid)`;
+      expect(await levelsOf(fx.generationId)).toEqual(LEVELS);
+    });
+
+    it('a new generation through applyGradeDefaults gets the levels', async () => {
+      const created = await prisma.generation.create({
+        data: { code: 'GEN2032', name: 'Generation 2032', startDate: new Date('2032-01-05') },
+      });
+      await applyGradeDefaults(prisma, created.id);
+      expect(await levelsOf(created.id)).toEqual(LEVELS);
+      const [row] = await prisma.$queryRaw<{ n: bigint }[]>`
+        SELECT count(*) AS n FROM grade_bands WHERE (level = 'FAIL') <> (NOT is_pass)`;
+      expect(Number(row!.n)).toBe(0);
     });
   });
 });

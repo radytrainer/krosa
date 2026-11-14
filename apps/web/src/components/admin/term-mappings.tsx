@@ -1,10 +1,27 @@
 'use client';
 
-import { CheckCircle2, ChevronDown, ChevronRight, ScanSearch, TriangleAlert } from 'lucide-react';
-import { useState } from 'react';
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  ScanSearch,
+  TriangleAlert,
+} from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { IssueFilters, PagedIssues, useIssuePage } from '@/components/admin/paged-issues';
 import { NativeSelect } from '@/components/app/form';
+import { Pagination } from '@/components/app/pagination';
 import { StatusPill } from '@/components/app/status';
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { EmptyState, ErrorState, LoadingRows } from '@/components/app/states';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -18,13 +35,15 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { apiFetch } from '@/lib/api';
+import { ApiError, apiFetch } from '@/lib/api';
+import { takeAutoDetect } from '@/lib/auto-detect';
 import { json, useApi, useApiMutation } from '@/lib/query';
 import type {
   ColumnMapping,
   ColumnRole,
   DetectedTab,
   Detection,
+  DetectionChange,
   SheetIssue,
   TabMapping,
   TermClasses,
@@ -62,6 +81,75 @@ function totalWeight(columns: ColumnMapping[]): number {
   return sum / 1000;
 }
 
+const roleLabel = (role: ColumnRole) => ROLES.find((r) => r.value === role)?.label ?? role;
+
+/**
+ * Before confirming a tab with columns missing from the sheet: exactly what is dropped (name, role,
+ * weight) and the weight total that remains. Only the mapping rows go; marks and criteria stay.
+ * Weights that do not total 100 already block the confirm (the button and the API), so this dialog
+ * cannot be reached then.
+ */
+function DropMissingDialog({
+  open,
+  onOpenChange,
+  missing,
+  total,
+  busy,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange(open: boolean): void;
+  missing: ColumnMapping[];
+  total: number;
+  busy: boolean;
+  onConfirm(): void;
+}) {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            Drop {missing.length === 1 ? '1 missing column' : `${missing.length} missing columns`}{' '}
+            and confirm?
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            These columns are no longer in the sheet. Confirming removes them from this tab&apos;s
+            mapping. Their marks and criteria are kept.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <ul
+          data-slot="dropped-columns"
+          className="divide-y rounded-lg text-sm ring-1 ring-foreground/10"
+        >
+          {missing.map((c, i) => (
+            <li
+              key={`${c.headerLabel}:${i}`}
+              className="flex flex-wrap justify-between gap-2 px-3 py-2"
+            >
+              <span className="font-medium break-words">
+                {c.proposedName ?? c.headerLabel ?? 'Unnamed column'}
+              </span>
+              <span className="text-muted-foreground">
+                {roleLabel(c.role)}
+                {c.role === 'CRITERION' ? ` · ${c.proposedWeight ?? 0}%` : ''}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <p className="text-sm tabular-nums">
+          Weight total after dropping them: <span className="font-medium">{total}%</span>
+        </p>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          <Button disabled={busy || total !== 100} onClick={onConfirm}>
+            Drop and confirm
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 /** "Shared" or "WEP only", for an audience as the API returns it. */
 function audienceLabel(audience: string | null, programs: number): string {
   if (programs <= 1) return 'Everyone (one program this term)';
@@ -73,19 +161,27 @@ function TabReview({
   sourceId,
   tab,
   detected,
+  audienceSuggestion,
   readOnly,
   programs,
 }: {
   sourceId: string;
   tab: TabMapping;
   detected: DetectedTab['detected'] | undefined;
+  /** What the sheet now suggests for a reopened tab; the saved choice stays until confirmed. */
+  audienceSuggestion: string | null | undefined;
   readOnly: boolean;
   /** The term's program codes. */
   programs: string[];
 }) {
   const [subjectName, setSubjectName] = useState(tab.carriedFrom?.subject ?? tab.tabName);
   const [audience, setAudience] = useState(tab.audience ?? 'SHARED');
+  const [usedSuggestion, setUsedSuggestion] = useState(false);
+  const [dropOpen, setDropOpen] = useState(false);
   const [columns, setColumns] = useState(tab.columns);
+  // Columns missing from the sheet are shown, never sent or counted; confirming drops them.
+  const present = columns.filter((c) => !c.missingFromSheet);
+  const missing = columns.filter((c) => c.missingFromSheet);
   const invalidate = [`/admin/sources/${sourceId}`, '/admin/term-workbooks'];
   const base = `/admin/sources/${sourceId}/mappings/${tab.id}`;
   const confirm = useApiMutation(
@@ -95,7 +191,11 @@ function TabReview({
         json({
           subjectName,
           ...(programs.length > 1 ? { audience } : {}),
-          columns: columns.map((c) => ({
+          ...(missing.length > 0 ? { dropMissingColumns: true } : {}),
+          ...(usedSuggestion && audience === audienceSuggestion
+            ? { appliedAudienceSuggestion: true }
+            : {}),
+          columns: present.map((c) => ({
             columnIndex: c.columnIndex,
             role: c.role,
             ...(c.role === 'CRITERION'
@@ -104,7 +204,11 @@ function TabReview({
           })),
         }),
       ),
-    { success: `Confirmed "${tab.tabName}".`, invalidate },
+    {
+      success: `Confirmed "${tab.tabName}".`,
+      invalidate,
+      onSuccess: () => setDropOpen(false),
+    },
   );
   const ignore = useApiMutation(() => apiFetch(`${base}/ignore`, { method: 'POST' }), {
     success: `"${tab.tabName}" will be skipped.`,
@@ -116,8 +220,8 @@ function TabReview({
   });
 
   const editable = !readOnly && tab.status === 'DRAFT';
-  const total = totalWeight(columns);
-  const update = (index: number, patch: Partial<ColumnMapping>) =>
+  const total = totalWeight(present);
+  const update = (index: number | null, patch: Partial<ColumnMapping>) =>
     setColumns((all) => all.map((c) => (c.columnIndex === index ? { ...c, ...patch } : c)));
 
   return (
@@ -178,6 +282,23 @@ function TabReview({
               <p className="text-xs text-muted-foreground">
                 Proposed from who the tab lists. Students of another program in it are rejected.
               </p>
+              {audienceSuggestion && audienceSuggestion !== audience ? (
+                <p data-slot="audience-suggestion" className="text-xs" role="note">
+                  The sheet now suggests{' '}
+                  <strong>{audienceLabel(audienceSuggestion, programs.length)}</strong>. Your saved
+                  choice is kept.{' '}
+                  <button
+                    type="button"
+                    className="font-medium underline underline-offset-4"
+                    onClick={() => {
+                      setAudience(audienceSuggestion);
+                      setUsedSuggestion(true);
+                    }}
+                  >
+                    Use the suggestion
+                  </button>
+                </p>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -198,7 +319,24 @@ function TabReview({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {columns.map((c) => (
+            {missing.map((c, i) => (
+              <TableRow key={`missing:${c.headerLabel}:${i}`} data-slot="missing-column">
+                <TableCell>
+                  <span className="font-medium">{c.headerLabel}</span>
+                  <StatusPill tone="warning" className="ml-2">
+                    Missing from the sheet
+                  </StatusPill>
+                </TableCell>
+                <TableCell className="text-muted-foreground">{roleLabel(c.role)}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {c.role === 'CRITERION' ? (c.proposedName ?? c.headerLabel) : null}
+                </TableCell>
+                <TableCell className="text-muted-foreground tabular-nums">
+                  {c.role === 'CRITERION' ? `${c.proposedWeight ?? 0}` : null}
+                </TableCell>
+              </TableRow>
+            ))}
+            {present.map((c) => (
               <TableRow key={c.columnIndex}>
                 <TableCell>
                   <span className="font-medium">{c.headerLabel}</span>
@@ -255,6 +393,11 @@ function TabReview({
             {total}%
           </span>
           {total === 100 ? null : ' (must be 100)'}
+          {missing.length > 0 ? (
+            <span className="block text-xs text-muted-foreground">
+              Columns missing from the sheet are not counted.
+            </span>
+          ) : null}
         </p>
         {readOnly ? null : (
           <div className="flex flex-wrap gap-2">
@@ -268,12 +411,22 @@ function TabReview({
                   Not a subject
                 </Button>
                 <Button
-                  onClick={() => confirm.mutate(undefined)}
+                  onClick={() =>
+                    missing.length > 0 ? setDropOpen(true) : confirm.mutate(undefined)
+                  }
                   disabled={confirm.isPending || total !== 100 || !subjectName.trim()}
                 >
                   <CheckCircle2 aria-hidden />
                   Confirm tab
                 </Button>
+                <DropMissingDialog
+                  open={dropOpen}
+                  onOpenChange={setDropOpen}
+                  missing={missing}
+                  total={total}
+                  busy={confirm.isPending}
+                  onConfirm={() => confirm.mutate(undefined)}
+                />
               </>
             ) : (
               <Button
@@ -293,6 +446,88 @@ function TabReview({
         </p>
       ) : null}
     </div>
+  );
+}
+
+const CHANGES_PAGE_SIZE = 5;
+
+function changeText(c: DetectionChange, programs: number): string {
+  switch (c.kind) {
+    case 'TAB_NEW':
+      return 'New tab, to review';
+    case 'TAB_GONE':
+      return 'No longer in the sheet';
+    case 'COLUMN_ADDED':
+      return `New column "${c.detail}": proposed, check it`;
+    case 'COLUMN_MISSING':
+      return `Column "${c.detail}" is missing from the sheet`;
+    case 'COLUMN_RETURNED':
+      return `Column "${c.detail}" is back in the sheet, as you left it`;
+    case 'HEADERS_CHANGED':
+      return 'Headers changed since it was confirmed: reopen it to review';
+    case 'AUDIENCE_SUGGESTED':
+      return `The sheet suggests "${audienceLabel(c.detail, programs)}"; your choice is kept`;
+  }
+}
+
+/** "Changes detected" after each run, 5 per page like every other list of findings. */
+function DetectionChanges({ changes, programs }: { changes: DetectionChange[]; programs: number }) {
+  const [page, setPage] = useState(1);
+  if (changes.length === 0) {
+    return (
+      <p data-slot="detection-changes" className="text-sm text-muted-foreground">
+        No changes since the tabs were last read.
+      </p>
+    );
+  }
+  const shown = changes.slice((page - 1) * CHANGES_PAGE_SIZE, page * CHANGES_PAGE_SIZE);
+  return (
+    <section data-slot="detection-changes" aria-label="Changes detected" className="space-y-2">
+      <h4 className="text-sm font-medium">Changes detected</h4>
+      <ul className="divide-y rounded-lg text-sm ring-1 ring-foreground/10">
+        {shown.map((c, i) => (
+          <li key={`${c.tabName}:${c.kind}:${c.detail}:${i}`} className="px-3 py-2">
+            <span className="font-medium">{c.tabName}</span>
+            <span className="text-muted-foreground">: {changeText(c, programs)}</span>
+          </li>
+        ))}
+      </ul>
+      {changes.length > CHANGES_PAGE_SIZE ? (
+        <Pagination
+          page={page}
+          pageSize={CHANGES_PAGE_SIZE}
+          total={changes.length}
+          onPage={setPage}
+        />
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          {changes.length === 1 ? '1 change' : `${changes.length} changes`}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** A failed read: the sheet stays connected; the admin can try again. */
+function DetectError({ error, onRetry }: { error: Error; onRetry(): void }) {
+  const running = error instanceof ApiError && error.code === 'DETECT_IN_PROGRESS';
+  return (
+    <Alert variant={running ? 'default' : 'destructive'} role="alert">
+      <TriangleAlert aria-hidden />
+      <AlertTitle>
+        {running ? 'The tabs are already being read' : 'The tabs could not be read'}
+      </AlertTitle>
+      <AlertDescription>
+        <p>
+          {running
+            ? 'Another detection of this sheet is still running. Wait a moment, then try again.'
+            : `${error.message} The sheet is still connected; nothing was changed.`}
+        </p>
+        <Button variant="outline" size="sm" className="mt-2" onClick={onRetry}>
+          Try again
+        </Button>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -336,7 +571,13 @@ export function TermMappings({
     () => apiFetch<Detection>(`/admin/sources/${sourceId}/detect`, { method: 'POST' }),
     { invalidate: [`/admin/sources/${sourceId}`] },
   );
+  const { mutate: runDetect } = detect;
+  // A sheet just connected here is read once, automatically; never on a later visit or reload.
+  useEffect(() => {
+    if (!readOnly && takeAutoDetect(sourceId)) runDetect(undefined);
+  }, [readOnly, sourceId, runDetect]);
   const detectedByTab = new Map(detect.data?.tabs.map((t) => [t.tabName, t.detected]));
+  const suggestionByTab = new Map(detect.data?.tabs.map((t) => [t.tabName, t.audienceSuggestion]));
 
   return (
     <div className="space-y-4">
@@ -354,8 +595,16 @@ export function TermMappings({
           {detect.isPending ? 'Reading the workbook…' : 'Detect tabs'}
         </Button>
       </div>
-      {detect.error ? <ErrorState error={detect.error} /> : null}
-      {detect.data ? (
+      {detect.isPending ? (
+        <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" aria-hidden />
+          Reading the tabs of this sheet…
+        </p>
+      ) : null}
+      {detect.error && !detect.isPending ? (
+        <DetectError error={detect.error} onRetry={() => detect.mutate(undefined)} />
+      ) : null}
+      {detect.data && !detect.isPending ? (
         <div className="space-y-3">
           <Alert variant={detect.data.fatal ? 'destructive' : 'default'}>
             {detect.data.fatal ? <TriangleAlert aria-hidden /> : <CheckCircle2 aria-hidden />}
@@ -377,6 +626,11 @@ export function TermMappings({
           {detect.data.issuesTruncated ? (
             <p className="text-xs text-muted-foreground">Only the first 500 issues are listed.</p>
           ) : null}
+          <DetectionChanges
+            key={detect.submittedAt}
+            changes={detect.data.changes}
+            programs={programs.length}
+          />
         </div>
       ) : null}
 
@@ -412,6 +666,7 @@ export function TermMappings({
                     sourceId={sourceId}
                     tab={tab}
                     detected={detectedByTab.get(tab.tabName)}
+                    audienceSuggestion={suggestionByTab.get(tab.tabName)}
                     readOnly={readOnly}
                     programs={programs}
                   />

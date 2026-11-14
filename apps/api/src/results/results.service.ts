@@ -1,13 +1,9 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@ssrs/database';
 import {
-  computeCourseResult,
   computeTermSummary,
-  gradeFor,
-  isUsableGradeScale,
   latestTermHighest,
-  type CourseResult,
-  type GradeBandInput,
+  topScoring,
   type CourseResultView,
   type StudentCourseListItem,
   type StudentProfileView,
@@ -15,16 +11,27 @@ import {
   type StudentSummaryView,
   type TermResultView,
   type TermSummary,
+  type TermSummaryView,
 } from '@ssrs/shared';
 import { PrismaService } from '../infra/prisma.service.js';
 import { RedisService } from '../infra/redis.service.js';
+import {
+  bandsOf,
+  computeCourse,
+  ENROLLMENT_INCLUDE,
+  type Computed,
+  type CourseViewOptions,
+} from './course-view.js';
 
 /** Cached student views live until the generation version moves on, at most this long. */
 export const RESULTS_CACHE_TTL_SECONDS = 600;
 
 /** docs/architecture.md §6. The version segment makes stale entries unreachable. */
-/** Bump the segment whenever the cached view's shape changes (v4: `finalGrade`). */
-export const RESULTS_CACHE_PREFIX = 'ssrs:v4:results:';
+/**
+ * Bump the segment whenever the cached view's shape changes (v4: `finalGrade`; v5: summaries
+ * without averages or credits, with `topScoring`).
+ */
+export const RESULTS_CACHE_PREFIX = 'ssrs:v5:results:';
 
 export function resultsCacheKey(generationId: string, version: number, studentId: string): string {
   return `${RESULTS_CACHE_PREFIX}gen:${generationId}:v${version}:student:${studentId}`;
@@ -58,46 +65,10 @@ const STUDENT_SELECT = {
 
 type StudentRow = Prisma.StudentGetPayload<{ select: typeof STUDENT_SELECT }>;
 
-const ENROLLMENT_INCLUDE = {
-  offering: {
-    select: {
-      id: true,
-      termId: true,
-      title: true,
-      credits: true,
-      visibility: true,
-      course: { select: { code: true } },
-      schemes: {
-        where: { status: 'PUBLISHED' },
-        select: {
-          version: true,
-          items: {
-            select: {
-              criterionId: true,
-              maxMark: true,
-              weight: true,
-              criterion: { select: { key: true, name: true, category: true, displayOrder: true } },
-            },
-          },
-        },
-      },
-    },
-  },
-} satisfies Prisma.EnrollmentInclude;
-
-type EnrollmentRow = Prisma.EnrollmentGetPayload<{ include: typeof ENROLLMENT_INCLUDE }>;
-
-/** What is cached: the overall summary needs exact final scores, which views do not carry. */
+/** What is cached: the student's views and the course counts across all terms. */
 interface AssembledResults {
   results: StudentResultsView;
   overall: TermSummary;
-}
-
-interface AssembleOptions {
-  /** Admin view: hidden offerings and withdrawn enrollments, with `admin` metadata. */
-  admin: boolean;
-  /** The generation's confirmed letter-grade bands; null gives no grades at all. */
-  bands: readonly GradeBandInput[] | null;
 }
 
 function toProfile(s: StudentRow): StudentProfileView {
@@ -165,17 +136,9 @@ export class ResultsService {
     return (await this.assemble(student, { admin: true, bands: this.bandsOf(student) })).results;
   }
 
-  /**
-   * Letters come only from a confirmed, usable scale. Without one there is no grade (never a
-   * default letter) and an error is logged, by generation id only.
-   */
-  private bandsOf(student: StudentRow): readonly GradeBandInput[] | null {
-    const scale = student.generation.gradeScale;
-    if (scale?.confirmed && isUsableGradeScale(scale.bands)) return scale.bands;
-    this.logger.error(
-      `Generation ${student.generation.id} has no confirmed, usable grade scale: grades are not shown`,
-    );
-    return null;
+  /** Letters come only from a confirmed, usable scale (course-view.ts). */
+  private bandsOf(student: StudentRow) {
+    return bandsOf(student.generation, this.logger);
   }
 
   async profile(userId: string): Promise<StudentProfileView> {
@@ -221,7 +184,10 @@ export class ResultsService {
    * Three batched reads: terms; enrollments with offering, course and published scheme items;
    * scores of those enrollments.
    */
-  private async assemble(student: StudentRow, options: AssembleOptions): Promise<AssembledResults> {
+  private async assemble(
+    student: StudentRow,
+    options: CourseViewOptions,
+  ): Promise<AssembledResults> {
     const db = this.prisma.client;
     const [terms, enrollments] = await Promise.all([
       db.term.findMany({
@@ -286,13 +252,13 @@ export class ResultsService {
         name: term.name,
         startDate: term.startDate?.toISOString().slice(0, 10) ?? null,
         endDate: term.endDate?.toISOString().slice(0, 10) ?? null,
-        summary: summarizeCourses(courses),
+        summary: summarizeTerm(courses),
         courses: courses.map((c) => c.view),
       };
     });
     return {
       results: { student: toProfile(student), terms: termViews },
-      overall: summarizeCourses(all),
+      overall: countCourses(all),
     };
   }
 
@@ -316,81 +282,18 @@ export class ResultsService {
   }
 }
 
-interface Computed {
-  view: CourseResultView;
-  result: CourseResult;
-  /** Withdrawn enrollments (admin view only) are listed but not counted in summaries. */
-  counted: boolean;
+/** Courses complete, counting ENROLLED enrollments only. */
+function countCourses(courses: readonly Computed[]): TermSummary {
+  return computeTermSummary(courses.filter((c) => c.counted).map((c) => ({ result: c.result })));
 }
 
-function summarizeCourses(courses: readonly Computed[]): TermSummary {
-  return computeTermSummary(
-    courses.filter((c) => c.counted).map((c) => ({ credits: c.view.credits, result: c.result })),
-  );
-}
-
-function computeCourse(
-  enrollment: EnrollmentRow,
-  termNumber: number,
-  scores: { criterionId: string; status: 'RECORDED' | 'ABSENT'; mark: Prisma.Decimal }[],
-  options: AssembleOptions,
-): Computed {
-  const { offering } = enrollment;
-  const scheme = offering.schemes[0] ?? null;
-  const items = scheme
-    ? scheme.items.toSorted(
-        (a, b) =>
-          a.criterion.displayOrder - b.criterion.displayOrder ||
-          a.criterion.key.localeCompare(b.criterion.key),
-      )
-    : null;
-  const result = computeCourseResult(
-    items?.map((i) => ({ criterionId: i.criterionId, maxMark: i.maxMark, weight: i.weight })) ??
-      null,
-    scores.map((s) => ({ criterionId: s.criterionId, status: s.status, mark: s.mark })),
-  );
-
-  const criterionById = new Map(items?.map((i) => [i.criterionId, i.criterion]));
-  const view: CourseResultView = {
-    offeringId: offering.id,
-    termNumber,
-    courseCode: offering.course.code,
-    title: offering.title,
-    credits: offering.credits.toFixed(1),
-    status: result.status,
-    schemeVersion: scheme && result.status !== 'NOT_CONFIGURED' ? scheme.version : null,
-    criteria: result.criteria.flatMap((c) => {
-      const criterion = criterionById.get(c.criterionId);
-      if (!criterion) return [];
-      return {
-        criterionId: c.criterionId,
-        key: criterion.key,
-        name: criterion.name,
-        category: criterion.category,
-        order: criterion.displayOrder,
-        maxMark: c.maxMark,
-        weight: c.weight,
-        score: c.score,
-        contribution: c.contribution,
-        invalidMark: c.invalidMark,
-      };
-    }),
-    finalScore: result.finalScore,
-    // Only beside a COMPLETE subject's final score (finalScore is null otherwise).
-    finalGrade: result.status === 'COMPLETE' ? gradeFor(options.bands, result.finalScore) : null,
-    attemptedWeight: result.attemptedWeight,
-    earnedSoFar: result.earnedSoFar,
-    teacherComment: enrollment.teacherComment,
-    ...(options.admin
-      ? {
-          admin: {
-            visibility: offering.visibility,
-            enrollmentStatus: enrollment.status,
-            endedReason: enrollment.endedReason,
-            presentInSource: enrollment.presentInSource,
-          },
-        }
-      : {}),
+/**
+ * A term's summary. Top scoring counts what the view lists, minus withdrawn enrollments (as
+ * Courses complete does): released subjects for a student; for an admin, hidden ones too, marked.
+ */
+function summarizeTerm(courses: readonly Computed[]): TermSummaryView {
+  return {
+    ...countCourses(courses),
+    topScoring: topScoring(courses.filter((c) => c.counted).map((c) => c.view)),
   };
-  return { view, result, counted: enrollment.status === 'ENROLLED' };
 }

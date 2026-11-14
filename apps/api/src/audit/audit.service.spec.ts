@@ -1,13 +1,14 @@
 import { scrubMetadata } from './audit.service.js';
+import { randomBytes } from 'node:crypto';
 
 describe('scrubMetadata', () => {
   it('redacts sensitive keys at any depth', () => {
     expect(
       scrubMetadata({
         username: 'admin',
-        password: 'hunter2',
+        password: randomBytes(6).toString('hex'),
         nested: { refreshToken: 'abc', apiSecret: 'x', privateKey: 'k', ok: 1 },
-        list: [{ passwordHash: '$argon2id$...' }],
+        list: [{ passwordHash: randomBytes(6).toString('hex') }],
       }),
     ).toEqual({
       username: 'admin',
