@@ -854,7 +854,7 @@ test('10c. a failed sync of a new sheet keeps the notice', async () => {
   await expect(failure).toContainText('The sheet is still connected');
   await expect(admin.getByRole('alert').getByText(NOT_SYNCED)).toBeVisible();
   await admin.unroute('**/api/v1/admin/sources/*/detect');
-  await failure.getByRole('button', { name: 'Try again' }).click();
+  await failure.getByRole('button', { name: 'Retry' }).click();
   await expect(admin.getByText('3 students found in "ALL"')).toBeVisible();
   await expect(failure).toHaveCount(0);
 
@@ -905,6 +905,44 @@ test('10c. a failed sync of a new sheet keeps the notice', async () => {
   await expect(admin.getByRole('alert').getByText(NOT_SYNCED)).toBeVisible();
   await admin.goto('/admin/sync');
   await expect(admin.getByText(NOT_SYNCED)).toBeVisible();
+
+  // The generation's Terms table: "Last sync" has its own column, once per row; the Workbook
+  // column keeps the sheet's name and the "not synced yet" badge with the new sheet's name.
+  await nav(admin, 'Generations').click();
+  await admin.getByRole('link', { name: 'GEN2027' }).click();
+  const terms = admin.locator('#terms table');
+  await expect(terms.locator('thead th')).toHaveText([
+    '#',
+    'Name',
+    'Workbook',
+    'Last sync',
+    'Scores',
+    'Actions',
+  ]);
+  const term1 = terms.getByRole('row', { name: /Term 1/ });
+  const workbook = term1.getByRole('cell').nth(2);
+  const lastSync = term1.getByRole('cell').nth(3);
+  await expect(workbook).toContainText('TERM1- GEN 2027 Scoring (corrected)');
+  await expect(workbook).toContainText(NOT_SYNCED);
+  await expect(workbook).toContainText('TERM1- GEN 2027 Scoring');
+  await expect(workbook).not.toContainText('Last sync');
+  await expect(lastSync).toHaveText(/^Last sync \d/);
+  await expect(term1.getByText(/Last sync/)).toHaveCount(1);
+  // A term without a sheet: an empty-style dash.
+  const term2 = terms.getByRole('row', { name: /Term 2/ });
+  await expect(term2.getByRole('cell').nth(3)).toHaveText('—');
+  // Same destinations as before: the badge opens the new sheet; the name and Last sync the active one.
+  await expect(workbook.getByRole('link', { name: new RegExp(NOT_SYNCED) })).toHaveAttribute(
+    'href',
+    sourcePath,
+  );
+  const activeHref = await workbook.getByRole('link').first().getAttribute('href');
+  expect(activeHref).toMatch(/^\/admin\/sources\/[0-9a-f-]+$/);
+  expect(activeHref).not.toBe(sourcePath);
+  await expect(lastSync.getByRole('link')).toHaveAttribute('href', activeHref!);
+  await lastSync.getByRole('link').click();
+  await expect(admin).toHaveURL(new RegExp(`${activeHref}$`));
+  await expect(admin.getByRole('heading', { name: 'Sync history' })).toBeVisible();
 
   // Discard it, so the active sheet can be removed next.
   await admin.goto(sourcePath);

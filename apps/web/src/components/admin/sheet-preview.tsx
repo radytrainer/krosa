@@ -5,7 +5,8 @@ import { useState } from 'react';
 import { ISSUES_PAGE_SIZE, IssueFilters, PagedIssues } from '@/components/admin/paged-issues';
 import { RemovalWarning } from '@/components/admin/sync-confirm';
 import { StatusPill } from '@/components/app/status';
-import { ErrorState } from '@/components/app/states';
+import { Spinner, TaskStatus } from '@/components/app/loading';
+import { ErrorState, errorMessage } from '@/components/app/states';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
@@ -25,7 +26,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, withTimeout } from '@/lib/api';
 import { json, qs, useApi, useApiMutation } from '@/lib/query';
 import type {
   CommentCounts,
@@ -271,7 +272,10 @@ export function SheetPreviewPanel({ sourceId }: { sourceId: string }) {
   const latest = useApi<SheetPreview | null>(`/admin/sources/${sourceId}/preview`);
   const invalidate = [`/admin/sources/${sourceId}`, '/admin/term-workbooks'];
   const run = useApiMutation(
-    () => apiFetch<SheetPreview>(`/admin/sources/${sourceId}/preview`, { method: 'POST' }),
+    () =>
+      withTimeout((signal) =>
+        apiFetch<SheetPreview>(`/admin/sources/${sourceId}/preview`, { method: 'POST', signal }),
+      ),
     { invalidate },
   );
   const confirm = useApiMutation(
@@ -292,12 +296,23 @@ export function SheetPreviewPanel({ sourceId }: { sourceId: string }) {
           Compares this sheet with the current scores. Nothing is imported. Any change to the sheet
           or its tabs means running this again.
         </p>
-        <Button variant="outline" onClick={() => run.mutate(undefined)} disabled={run.isPending}>
-          <ScanSearch aria-hidden />
+        <Button
+          variant="outline"
+          onClick={() => run.mutate(undefined)}
+          disabled={run.isPending}
+          aria-busy={run.isPending || undefined}
+        >
+          {run.isPending ? <Spinner /> : <ScanSearch aria-hidden />}
           {run.isPending ? 'Reading the sheet…' : preview ? 'Run preview again' : 'Run preview'}
         </Button>
       </div>
-      {run.error ? <ErrorState error={run.error} /> : null}
+      <TaskStatus
+        running={run.isPending}
+        label="Building preview…"
+        error={run.error ? errorMessage(run.error) : null}
+        errorTitle="The preview did not finish"
+        onRetry={() => run.mutate(undefined)}
+      />
       {latest.error ? <ErrorState error={latest.error} onRetry={() => latest.refetch()} /> : null}
       {preview && summary ? (
         <>

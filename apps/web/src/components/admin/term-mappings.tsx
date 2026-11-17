@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  Loader2,
   ScanSearch,
   TriangleAlert,
 } from 'lucide-react';
@@ -22,6 +21,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Spinner, TaskStatus } from '@/components/app/loading';
 import { EmptyState, ErrorState, LoadingRows } from '@/components/app/states';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -35,7 +35,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { ApiError, apiFetch } from '@/lib/api';
+import { ApiError, apiFetch, withTimeout } from '@/lib/api';
 import { takeAutoDetect } from '@/lib/auto-detect';
 import { json, useApi, useApiMutation } from '@/lib/query';
 import type {
@@ -524,7 +524,7 @@ function DetectError({ error, onRetry }: { error: Error; onRetry(): void }) {
             : `${error.message} The sheet is still connected; nothing was changed.`}
         </p>
         <Button variant="outline" size="sm" className="mt-2" onClick={onRetry}>
-          Try again
+          Retry
         </Button>
       </AlertDescription>
     </Alert>
@@ -568,7 +568,10 @@ export function TermMappings({
   const classes = useApi<TermClasses>(`/admin/terms/${termId}/classes`);
   const programs = classes.data?.programs.map((p) => p.code) ?? [];
   const detect = useApiMutation(
-    () => apiFetch<Detection>(`/admin/sources/${sourceId}/detect`, { method: 'POST' }),
+    () =>
+      withTimeout((signal) =>
+        apiFetch<Detection>(`/admin/sources/${sourceId}/detect`, { method: 'POST', signal }),
+      ),
     { invalidate: [`/admin/sources/${sourceId}`] },
   );
   const { mutate: runDetect } = detect;
@@ -590,17 +593,13 @@ export function TermMappings({
           variant="outline"
           onClick={() => detect.mutate(undefined)}
           disabled={detect.isPending || readOnly}
+          aria-busy={detect.isPending || undefined}
         >
-          <ScanSearch aria-hidden />
+          {detect.isPending ? <Spinner /> : <ScanSearch aria-hidden />}
           {detect.isPending ? 'Reading the workbook…' : 'Detect tabs'}
         </Button>
       </div>
-      {detect.isPending ? (
-        <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" aria-hidden />
-          Reading the tabs of this sheet…
-        </p>
-      ) : null}
+      <TaskStatus running={detect.isPending} label="Reading the tabs of this sheet…" />
       {detect.error && !detect.isPending ? (
         <DetectError error={detect.error} onRetry={() => detect.mutate(undefined)} />
       ) : null}

@@ -13,7 +13,8 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { SyncJobsTable } from '@/components/admin/sync-jobs-table';
 import { PageHeader, Section } from '@/components/app/page-header';
-import { EmptyState, ErrorState, LoadingRows } from '@/components/app/states';
+import { SummarySkeleton, TableSkeleton, useLoading } from '@/components/app/loading';
+import { EmptyState, ErrorState } from '@/components/app/states';
 import { buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useApi } from '@/lib/query';
@@ -63,6 +64,7 @@ export default function AdminDashboardPage() {
   const { data, error, isPending, refetch } = useApi<Dashboard>('/admin/dashboard', {
     refetchInterval: (q) => (q.state.data?.jobs.active ? 5000 : false),
   });
+  const loading = useLoading(isPending);
 
   return (
     <>
@@ -87,8 +89,11 @@ export default function AdminDashboardPage() {
       />
       {error ? (
         <ErrorState error={error} onRetry={() => refetch()} />
-      ) : isPending ? (
-        <LoadingRows rows={4} />
+      ) : loading || isPending ? (
+        <div className="space-y-8">
+          <SummarySkeleton label="Loading dashboard" />
+          <TableSkeleton rows={5} columns={4} label="Loading recent synchronizations" />
+        </div>
       ) : (
         <div className="space-y-8">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

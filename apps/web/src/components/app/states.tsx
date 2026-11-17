@@ -1,5 +1,6 @@
-import { AlertCircle, Inbox, Loader2 } from 'lucide-react';
+import { AlertCircle, Inbox } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { LoadingRegion, PageSkeleton } from '@/components/app/loading';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -11,23 +12,22 @@ export function errorMessage(error: unknown): string {
   return 'Something went wrong.';
 }
 
+/** Placeholder rows for a list or table that is loading (shown after the loading delay). */
 export function LoadingRows({ rows = 5, label = 'Loading' }: { rows?: number; label?: string }) {
   return (
-    <div className="space-y-2" role="status" aria-label={label}>
-      {Array.from({ length: rows }, (_, i) => (
-        <Skeleton key={i} className="h-10 w-full" />
-      ))}
-    </div>
+    <LoadingRegion label={label}>
+      <div className="space-y-2">
+        {Array.from({ length: rows }, (_, i) => (
+          <Skeleton key={i} className="h-10 w-full" />
+        ))}
+      </div>
+    </LoadingRegion>
   );
 }
 
+/** A whole page that is loading: header and a table, shown after the loading delay. */
 export function PageLoading() {
-  return (
-    <div className="flex min-h-[40vh] items-center justify-center" role="status">
-      <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden />
-      <span className="sr-only">Loading</span>
-    </div>
-  );
+  return <PageSkeleton />;
 }
 
 export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {

@@ -10,7 +10,15 @@ import { jobTarget } from '@/components/admin/sync-jobs-table';
 import { NativeSelect } from '@/components/app/form';
 import { PageHeader, Section } from '@/components/app/page-header';
 import { SyncStatusPill, isActiveJob } from '@/components/app/status';
-import { EmptyState, ErrorState, LoadingRows, PageLoading } from '@/components/app/states';
+import {
+  PageSkeleton,
+  STILL_WORKING_MS,
+  STILL_WORKING_TEXT,
+  Spinner,
+  useElapsed,
+  useLoading,
+} from '@/components/app/loading';
+import { EmptyState, ErrorState, LoadingRows, errorMessage } from '@/components/app/states';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -150,6 +158,26 @@ function JobIssues({ job, active }: { job: SyncJobDetail; active: boolean }) {
   );
 }
 
+/** A job still QUEUED this long after it was queued has no worker taking it. */
+const NO_WORKER_MS = 60_000;
+
+/** True once `job` has been QUEUED for more than NO_WORKER_MS (measured from `queuedAt`). */
+function useQueuedTooLong(job: SyncJobDetail | undefined): boolean {
+  const queued = job?.status === 'QUEUED';
+  const queuedAt = job?.queuedAt;
+  const [late, setLate] = useState(false);
+  useEffect(() => {
+    if (!queued || !queuedAt) {
+      const timer = setTimeout(() => setLate(false), 0);
+      return () => clearTimeout(timer);
+    }
+    const left = NO_WORKER_MS - (Date.now() - new Date(queuedAt).getTime());
+    const timer = setTimeout(() => setLate(true), Math.max(0, left));
+    return () => clearTimeout(timer);
+  }, [queued, queuedAt]);
+  return queued && late;
+}
+
 export default function SyncJobPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -172,8 +200,14 @@ export default function SyncJobPage() {
     },
   );
 
-  if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
-  if (isPending) return <PageLoading />;
+  const loading = useLoading(isPending);
+  const running = job !== undefined && isActiveJob(job.status);
+  const slow = useElapsed(running, STILL_WORKING_MS);
+  const noWorker = useQueuedTooLong(job);
+
+  if (loading || isPending) return <PageSkeleton columns={5} />;
+  // The first read failed. (A failed poll keeps the job on screen; see below.)
+  if (!job) return <ErrorState error={error} onRetry={() => refetch()} />;
   const active = isActiveJob(job.status);
   const pct = job.progress.total
     ? Math.round((job.progress.current / job.progress.total) * 100)
@@ -198,7 +232,7 @@ export default function SyncJobPage() {
         actions={
           retryable ? (
             <Button onClick={() => retry.mutate(undefined)} disabled={retry.isPending}>
-              <RotateCcw aria-hidden />
+              {retry.isPending ? <Spinner /> : <RotateCcw aria-hidden />}
               Retry
             </Button>
           ) : null
@@ -206,11 +240,24 @@ export default function SyncJobPage() {
       />
 
       <div className="space-y-8">
+        {error ? (
+          <Alert variant="destructive">
+            <XCircle aria-hidden />
+            <AlertTitle>Could not read the latest status of this job</AlertTitle>
+            <AlertDescription>
+              <p>{errorMessage(error)} The job itself is not affected.</p>
+              <Button variant="outline" size="sm" className="mt-2" onClick={() => refetch()}>
+                Reload status
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
         {active ? (
           <Card>
-            <CardContent className="space-y-2" aria-live="polite">
+            <CardContent className="space-y-2" aria-live="polite" aria-busy="true">
               <div className="flex justify-between text-sm">
-                <span className="font-medium">
+                <span className="flex items-center gap-2 font-medium">
+                  <Spinner />
                   {job.status === 'QUEUED'
                     ? 'Waiting for a worker'
                     : (job.phase && PHASES[job.phase]) || 'Running'}
@@ -222,6 +269,18 @@ export default function SyncJobPage() {
                 </span>
               </div>
               <Progress value={job.status === 'QUEUED' ? null : pct} aria-label="Sync progress" />
+              {noWorker ? (
+                <div className="flex flex-wrap items-center gap-2 text-sm text-warning">
+                  <span>
+                    No worker has picked this up yet. Check that the worker is running.
+                  </span>
+                  <Button variant="outline" size="sm" onClick={() => refetch()}>
+                    Refresh
+                  </Button>
+                </div>
+              ) : slow ? (
+                <p className="text-sm text-muted-foreground">{STILL_WORKING_TEXT}</p>
+              ) : null}
             </CardContent>
           </Card>
         ) : null}

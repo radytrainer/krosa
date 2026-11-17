@@ -16,7 +16,8 @@ import { Confirm } from '@/components/app/confirm';
 import { Field, fieldErrors, onSubmit } from '@/components/app/form';
 import { PageHeader, Section } from '@/components/app/page-header';
 import { StatusPill } from '@/components/app/status';
-import { ErrorState, PageLoading } from '@/components/app/states';
+import { PageSkeleton, useLoading } from '@/components/app/loading';
+import { ErrorState } from '@/components/app/states';
 import { TermSheet } from '@/components/admin/term-sheet';
 import { SyncPlanButton } from '@/components/admin/sync-confirm';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -32,6 +33,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
   TableBody,
@@ -369,8 +371,10 @@ export default function GenerationDetailPage() {
     },
   );
 
+  const loading = useLoading(isPending);
+
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
-  if (isPending) return <PageLoading />;
+  if (loading || isPending) return <PageSkeleton summary columns={5} />;
   const archived = g.status === 'ARCHIVED';
   const activeSources = sources.data?.filter((s) => s.status === 'ACTIVE').length ?? 0;
 
@@ -492,6 +496,7 @@ export default function GenerationDetailPage() {
                     <TableHead className="w-12">#</TableHead>
                     <TableHead>Name</TableHead>
                     <TableHead>Workbook</TableHead>
+                    <TableHead className="whitespace-nowrap">Last sync</TableHead>
                     <TableHead>Scores</TableHead>
                     <TableHead className="text-right">
                       <span className="sr-only">Actions</span>
@@ -515,12 +520,13 @@ export default function GenerationDetailPage() {
                           </span>
                         </TableCell>
                         <TableCell>
-                          {source ? (
+                          {!own && !sources.error ? (
+                            <span className="loading-delayed block" aria-hidden>
+                              <Skeleton className="h-4 w-32" />
+                            </span>
+                          ) : source ? (
                             <Link href={`/admin/sources/${source.id}`} className="hover:underline">
                               {source.label}
-                              <span className="block text-xs text-muted-foreground">
-                                Last sync {formatDateTime(source.lastSyncedAt)}
-                              </span>
                             </Link>
                           ) : !own || pending ? null : own.some((s) => s.lastSyncedAt) ? (
                             <span className="text-muted-foreground">
@@ -546,6 +552,22 @@ export default function GenerationDetailPage() {
                             </Link>
                           ) : null}
                         </TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          {!own && !sources.error ? (
+                            <span className="loading-delayed block" aria-hidden>
+                              <Skeleton className="h-4 w-24" />
+                            </span>
+                          ) : source ? (
+                            <Link
+                              href={`/admin/sources/${source.id}`}
+                              className="text-xs text-muted-foreground hover:underline"
+                            >
+                              Last sync {formatDateTime(source.lastSyncedAt)}
+                            </Link>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
                         <TableCell>
                           {t.subjects === 0 ? (
                             <span className="text-muted-foreground">Not synced</span>
@@ -560,7 +582,7 @@ export default function GenerationDetailPage() {
                           )}
                         </TableCell>
                         <TableCell className="text-right">
-                          <span className="inline-flex items-center gap-2">
+                          <span className="inline-flex items-center gap-2 whitespace-nowrap">
                             <Link
                               href={`/admin/terms/${t.id}`}
                               className="text-sm font-medium whitespace-nowrap underline-offset-4 hover:underline"

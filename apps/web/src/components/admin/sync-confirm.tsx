@@ -4,7 +4,8 @@ import { RefreshCw, TriangleAlert } from 'lucide-react';
 import { useId, useState } from 'react';
 import { ReleaseAfterSyncOption, useReleaseStatus } from '@/components/admin/source-release';
 import { useStartSync, type SyncTarget } from '@/components/admin/use-start-sync';
-import { ErrorState, LoadingRows } from '@/components/app/states';
+import { Spinner, TaskStatus } from '@/components/app/loading';
+import { ErrorState, LoadingRows, errorMessage } from '@/components/app/states';
 import { useVisitState } from '@/components/app/use-visit-state';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -18,7 +19,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, withTimeout } from '@/lib/api';
 import { json, qs, useApi, useApiMutation } from '@/lib/query';
 import type { RemovedSubject, SheetPreview, SourceReleaseView } from '@/lib/types';
 
@@ -91,8 +92,35 @@ function ProblemList({ preview }: { preview: SheetPreview }) {
   );
 }
 
+/** The outer "Sync now" button: disabled, with a spinner, while a sync of this sheet runs. */
+function SyncNowButton({
+  running,
+  disabled,
+  onClick,
+}: {
+  running: boolean;
+  disabled: boolean;
+  onClick(): void;
+}) {
+  return (
+    <Button disabled={disabled || running} aria-busy={running || undefined} onClick={onClick}>
+      {running ? <Spinner /> : <RefreshCw aria-hidden />}
+      {running ? 'Syncing…' : 'Sync now'}
+    </Button>
+  );
+}
+
 /** "Sync now" for an active sheet: reads the sheet first and shows what the sync would do. */
-export function SyncActiveSheet({ sourceId, disabled }: { sourceId: string; disabled: boolean }) {
+export function SyncActiveSheet({
+  sourceId,
+  disabled,
+  running = false,
+}: {
+  sourceId: string;
+  disabled: boolean;
+  /** A sync of this sheet is queued or running. */
+  running?: boolean;
+}) {
   // Open only after a click on this visit: never restored when the admin comes back.
   const [open, setOpen] = useVisitState(false);
   const [acknowledged, setAcknowledged] = useState(false);
@@ -100,7 +128,9 @@ export function SyncActiveSheet({ sourceId, disabled }: { sourceId: string; disa
   const status = useReleaseStatus(open ? [sourceId] : []);
   const startSync = useStartSync();
   const run = useApiMutation(() =>
-    apiFetch<SheetPreview>(`/admin/sources/${sourceId}/preview`, { method: 'POST' }),
+    withTimeout((signal) =>
+      apiFetch<SheetPreview>(`/admin/sources/${sourceId}/preview`, { method: 'POST', signal }),
+    ),
   );
   const confirm = useApiMutation(
     (body: { id: string; acknowledgeRemovals: boolean }) =>
@@ -125,7 +155,8 @@ export function SyncActiveSheet({ sourceId, disabled }: { sourceId: string; disa
 
   return (
     <>
-      <Button
+      <SyncNowButton
+        running={running || startSync.isPending}
         disabled={disabled}
         onClick={() => {
           setAcknowledged(false);
@@ -133,10 +164,7 @@ export function SyncActiveSheet({ sourceId, disabled }: { sourceId: string; disa
           setOpen(true);
           run.mutate(undefined);
         }}
-      >
-        <RefreshCw aria-hidden />
-        Sync now
-      </Button>
+      />
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
@@ -147,8 +175,13 @@ export function SyncActiveSheet({ sourceId, disabled }: { sourceId: string; disa
               Imports the latest marks and students from the sheet.
             </DialogDescription>
           </DialogHeader>
-          {run.isPending ? <LoadingRows rows={2} /> : null}
-          {run.error ? <ErrorState error={run.error} /> : null}
+          <TaskStatus
+            running={run.isPending}
+            label="Building preview…"
+            error={run.error ? errorMessage(run.error) : null}
+            errorTitle="The preview did not finish"
+            onRetry={() => run.mutate(undefined)}
+          />
           {preview && !preview.summary.canConfirm ? <ProblemList preview={preview} /> : null}
           {renames.map((r) => (
             <Alert key={r.from}>
@@ -190,6 +223,7 @@ export function SyncActiveSheet({ sourceId, disabled }: { sourceId: string; disa
                 confirm.mutate({ id: preview.id, acknowledgeRemovals: removed.length > 0 })
               }
             >
+              {busy ? <Spinner /> : null}
               {removed.length ? 'Remove and sync' : 'Sync now'}
             </Button>
           </DialogFooter>
@@ -203,7 +237,16 @@ export function SyncActiveSheet({ sourceId, disabled }: { sourceId: string; disa
  * "Sync now" for a pending sheet whose preview is confirmed: the sync that promotes it, with the
  * "Release scores after sync" option.
  */
-export function SyncPendingSheet({ sourceId, disabled }: { sourceId: string; disabled: boolean }) {
+export function SyncPendingSheet({
+  sourceId,
+  disabled,
+  running = false,
+}: {
+  sourceId: string;
+  disabled: boolean;
+  /** A sync of this sheet is queued or running. */
+  running?: boolean;
+}) {
   // Open only after a click on this visit: never restored when the admin comes back.
   const [open, setOpen] = useVisitState(false);
   const [release, setRelease] = useState(false);
@@ -211,16 +254,14 @@ export function SyncPendingSheet({ sourceId, disabled }: { sourceId: string; dis
   const startSync = useStartSync();
   return (
     <>
-      <Button
-        disabled={disabled || startSync.isPending}
+      <SyncNowButton
+        running={running || startSync.isPending}
+        disabled={disabled}
         onClick={() => {
           setRelease(false);
           setOpen(true);
         }}
-      >
-        <RefreshCw aria-hidden />
-        Sync now
-      </Button>
+      />
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
@@ -250,6 +291,7 @@ export function SyncPendingSheet({ sourceId, disabled }: { sourceId: string; dis
                 )
               }
             >
+              {startSync.isPending ? <Spinner /> : null}
               Sync now
             </Button>
           </DialogFooter>
@@ -300,7 +342,7 @@ export function SyncPlanButton({
           setOpen(true);
         }}
       >
-        <RefreshCw aria-hidden className={startSync.isPending ? 'animate-spin' : undefined} />
+        {startSync.isPending ? <Spinner /> : <RefreshCw aria-hidden />}
         {label}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
@@ -355,6 +397,7 @@ export function SyncPlanButton({
                 )
               }
             >
+              {startSync.isPending ? <Spinner /> : null}
               Start sync
             </Button>
           </DialogFooter>

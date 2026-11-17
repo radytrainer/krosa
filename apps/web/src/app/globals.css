@@ -140,3 +140,35 @@
     @apply font-sans;
   }
 }
+
+/* Loading indicators show only after 300 ms (LOADING_DELAY_MS), so fast loads never flicker. The
+   space stays reserved while hidden, so nothing jumps when they appear. */
+@keyframes loading-appear {
+  to {
+    opacity: 1;
+  }
+}
+.loading-delayed {
+  opacity: 0;
+  animation: loading-appear 0s linear 300ms forwards;
+}
+
+/* Top progress bar: grows towards 90% while the next page loads; holds still for reduced motion. */
+@keyframes route-progress {
+  from {
+    width: 10%;
+  }
+  to {
+    width: 90%;
+  }
+}
+.route-progress-bar {
+  width: 90%;
+  animation: route-progress 8s cubic-bezier(0.1, 0.6, 0.3, 1) forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .route-progress-bar {
+    width: 60%;
+    animation: none;
+  }
+}

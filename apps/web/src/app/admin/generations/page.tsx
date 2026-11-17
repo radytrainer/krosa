@@ -8,7 +8,8 @@ import { Field, NativeSelect, fieldErrors, onSubmit } from '@/components/app/for
 import { PageHeader } from '@/components/app/page-header';
 import { Pagination } from '@/components/app/pagination';
 import { StatusPill } from '@/components/app/status';
-import { EmptyState, ErrorState, LoadingRows } from '@/components/app/states';
+import { TableSkeleton, useLoading } from '@/components/app/loading';
+import { EmptyState, ErrorState } from '@/components/app/states';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -121,6 +122,7 @@ export default function GenerationsPage() {
     `/admin/generations${qs({ page, pageSize: 25, q: q.trim(), status })}`,
     { keepPrevious: true },
   );
+  const loading = useLoading(isPending);
 
   return (
     <>
@@ -164,8 +166,8 @@ export default function GenerationsPage() {
 
       {error ? (
         <ErrorState error={error} onRetry={() => refetch()} />
-      ) : isPending ? (
-        <LoadingRows />
+      ) : loading || isPending ? (
+        <TableSkeleton rows={5} columns={4} label="Loading generations" />
       ) : data.data.length === 0 ? (
         <EmptyState
           icon={<CalendarRange className="size-8" />}

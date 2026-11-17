@@ -159,6 +159,38 @@ export function saveBlob(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+/** Client limit for a long request the admin waits on (preview, detect tabs). */
+export const TASK_TIMEOUT_MS = 120_000;
+export const TIMED_OUT = 'TIMED_OUT';
+
+/**
+ * Runs a request with a client-side time limit: past `ms` the request is abandoned and fails with
+ * a `TIMED_OUT` ApiError, so a spinner never runs forever. Only for requests that are safe to send
+ * again (they import nothing): the server may still finish the abandoned one.
+ */
+export async function withTimeout<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  ms: number = TASK_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await run(controller.signal);
+  } catch (error) {
+    if (controller.signal.aborted) {
+      const minutes = Math.round(ms / 60_000);
+      throw new ApiError(
+        0,
+        TIMED_OUT,
+        `No answer after ${minutes} minutes, so this was stopped.`,
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** The API error code of a failed request, or null. */
 export function errorCode(error: unknown): string | null {
   return error instanceof ApiError ? error.code : null;
