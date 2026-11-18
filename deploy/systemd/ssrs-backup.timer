@@ -1,0 +1,12 @@
+# 19:30 UTC = 02:30 in Phnom Penh, outside class hours. Persistent: a run missed while the server
+# was off happens at the next boot.
+[Unit]
+Description=Daily SSRS database backup
+
+[Timer]
+OnCalendar=*-*-* 19:30:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

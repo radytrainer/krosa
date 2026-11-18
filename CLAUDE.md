@@ -11,6 +11,7 @@ release terms and manage students.
 | `apps/api`          | NestJS REST API (`/api/v1`)                                           |
 | `apps/worker`       | BullMQ worker that runs syncs                                         |
 | `apps/web`          | Next.js admin and student app                                         |
+| `deploy`            | Beta server: compose, Caddyfile, env template, systemd, AWS template  |
 | `packages/sheets`   | Reads term workbooks: layout detection, roster, subject rows          |
 | `packages/sync`     | Sync engine, preview, term enrollments (`student-terms.ts`)           |
 | `packages/database` | Prisma schema, migrations, defaults (`ssrs_apply_term_defaults`)      |
@@ -28,7 +29,9 @@ release terms and manage students.
 | [google-sheets-template.md](docs/google-sheets-template.md) | The sheet format and import rules          |
 | [database-design.md](docs/database-design.md)               | Tables and constraints                     |
 | [api-specification.md](docs/api-specification.md)           | Every route                                |
-| [deployment.md](docs/deployment.md)                         | Running on a server, including AWS         |
+| [deployment.md](docs/deployment.md)                         | The beta server on AWS: how it works       |
+| [beta-checklist.md](docs/beta-checklist.md)                 | First install: AWS, GitHub, server steps   |
+| [runbook.md](docs/runbook.md)                               | Deploy, roll back, restore, rotate, logs   |
 | [backlog.md](docs/backlog.md)                               | What is left to do                         |
 | [progress.md](docs/progress.md)                             | What was built and verified, by date       |
 

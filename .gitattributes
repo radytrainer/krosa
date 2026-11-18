@@ -1,0 +1,7 @@
+# Files that run or are read on the Linux server keep LF line endings in every checkout, so a
+# Windows working tree can never put CRLF scripts into an image (Dockerfile COPY).
+*.sh                 text eol=lf
+deploy/**            text eol=lf
+docker/**            text eol=lf
+Dockerfile           text eol=lf
+.github/workflows/** text eol=lf

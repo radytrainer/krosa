@@ -1,6 +1,7 @@
 # Local development infrastructure.
 # Ports are bound to 127.0.0.1 only, so PostgreSQL and Redis are never reachable from
-# other machines. Production uses docker-compose.prod.yml (Phase 10) with no published ports.
+# other machines. The beta/production server stack is deploy/compose.yml (no published ports
+# except Caddy's 80 and 443; docs/deployment.md).
 
 name: student-score-system
 

@@ -14,10 +14,16 @@ packages/database/src/generated/
 .env
 .env.*
 !.env.example
-!.env.production.example
+!deploy/.env.beta.example
 secrets/
 *.pem
+*.key
+id_*
 *service-account*.json
+# age identities and encrypted backups
+*.age
+*.agekey
+age-identity*.txt
 
 # test output
 playwright-report/

@@ -1,399 +1,192 @@
 # Deployment
 
-Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+Last verified: 2026-11-18, branch feature/beta-deploy (local production-like run; not yet on a
+server).
 
-How to run the Student Score Record System on a single Linux server with Docker. Day-to-day
-running (backups, monitoring, routine checks) is in [operations.md](operations.md).
+How the system runs on the **beta server**: one AWS EC2 instance with Docker Compose, deployed by
+GitHub Actions through AWS Systems Manager. Beta holds real student data and is treated as
+production for security and backups. Production later reuses the same files with its own server,
+environment and branch (`main`).
+
+- First installation, step by step: [beta-checklist.md](beta-checklist.md)
+- Deploy, roll back, restore, rotate secrets, logs, low memory or disk: [runbook.md](runbook.md)
+- Day-to-day checks and admin tasks: [operations.md](operations.md)
 
 ## 1. What runs where
 
 ```text
-Internet ──443/80──▶ caddy ──/api/*──▶ api ──▶ postgres
-                       │                 └───▶ redis ◀── worker ──▶ Google Sheets API
-                       └──────other────▶ web
-                                         backup ──▶ postgres (nightly pg_dump → BACKUP_DIR)
+                          GitHub                                     AWS
+ feature/* → development → beta ──push──▶ deploy-beta.yml
+                                         ├ CI (lint, types, unit, build, audit, integration)
+                                         ├ build + push 3 images ─▶ GHCR  ghcr.io/<owner>/<repo>-{api,worker,web}:<sha>
+                                         ├ wait for approval (environment "beta")
+                                         └ OIDC → IAM role ─ssm:SendCommand─▶ SSRS-Beta-Deploy(<sha>)
+                                                                               │
+ EC2 (Ubuntu 24.04, t3.micro)                                                  ▼
+   /usr/local/sbin/ssrs-deploy <sha>: pull api:<sha>, extract its bundle → releases/<sha>/
+   releases/<sha>/bin/deploy.sh: pull → backup to S3 → migrate → start → health → (roll back)
+
+ Users ──443/80──▶ caddy ──/api/*, /health──▶ api ──▶ postgres, redis   (network "data": no internet)
+                     └──────── other ──────▶ web          worker ──▶ postgres, redis, Google Sheets
+ ssrs-backup.timer (daily 19:30 UTC) ─▶ backup.sh ─▶ age-encrypted pg_dump ─▶ S3 (instance role)
 ```
 
-| Service    | Image / target           | Notes                                                                 |
-| ---------- | ------------------------ | --------------------------------------------------------------------- |
-| `caddy`    | `caddy:2.10-alpine`      | The only service with published ports. TLS via Let's Encrypt, HSTS    |
-| `web`      | `Dockerfile` → `web`     | Next.js standalone server                                             |
-| `api`      | `Dockerfile` → `api`     | REST API under `/api/v1`                                              |
-| `worker`   | `Dockerfile` → `worker`  | Runs spreadsheet syncs                                                |
-| `migrate`  | `Dockerfile` → `migrate` | One-shot: applies database migrations before `api` and `worker` start |
-| `postgres` | `postgres:17-alpine`     | Internal network only                                                 |
-| `redis`    | `redis:7.4-alpine`       | Internal network only; queue + cache                                  |
-| `backup`   | `postgres:17-alpine`     | Daily `pg_dump` into `BACKUP_DIR`, checksummed, pruned                |
+| Service    | Image                          | Memory limit | Notes                                                                 |
+| ---------- | ------------------------------ | ------------ | --------------------------------------------------------------------- |
+| `caddy`    | `caddy:2.10.2-alpine` digest   | 64 MB        | The only service with published ports (80, 443). TLS, HSTS, `/health` |
+| `web`      | `…-web:<sha>`                  | 256 MB       | Next.js standalone; heap 160 MB                                       |
+| `api`      | `…-api:<sha>`                  | 320 MB       | REST API `/api/v1`; heap 192 MB; pool 8                               |
+| `worker`   | `…-worker:<sha>`               | 320 MB       | Syncs; heap 192 MB; concurrency 1; pool 4                             |
+| `migrate`  | `…-api:<sha>` (one-off)        | 256 MB       | `prisma migrate deploy` before a release starts                       |
+| `postgres` | `postgres:17.12-alpine` digest | 288 MB       | `shared_buffers=128MB`, `max_connections=30`; volume `postgres-data`  |
+| `redis`    | `redis:7.4.12-alpine` digest   | 80 MB        | `maxmemory 48mb`, `noeviction` (BullMQ), AOF; password                |
 
-All application containers run as the unprivileged `node` user. `api`, `worker` and `web` have
-`init: true` so signals reach Node and shutdowns are graceful (the worker gets 120 s to finish a
-running sync). The one-shot `migrate` does not need it.
+Every service has a health check and `restart: unless-stopped` (except the one-off `migrate`).
+Every container runs with `no-new-privileges`; the Node containers also drop all capabilities, run
+as the unprivileged `node` user on a read-only root file system, and have `init: true`. Times are
+UTC on the server and in every container; the web app formats times in the browser, so users see
+Phnom Penh time. `NODE_ENV=production` everywhere, so the demo seed refuses to run and the Sheets
+test mode cannot start (its fakes are also removed from the images).
 
-## 2. Server requirements
+Networks: `edge` (caddy, web, api), `data` (internal, no route out: api, worker, postgres, redis),
+`egress` (worker → Google and Sentry). PostgreSQL and Redis are never reachable from outside Docker.
 
-- Linux (Ubuntu 24.04 LTS or similar), 2 vCPU, 4 GB RAM, 40 GB disk for a school of a few thousand
-  students. Docker Engine 27+ with the Compose plugin.
-- A DNS name (A/AAAA record) pointing at the server, and ports **80 and 443** open to the internet
-  (80 is needed for certificate issuance and the redirect to HTTPS). Nothing else needs to be open.
-- A Google Cloud **service account** with the Google Sheets API enabled, and its JSON key
-  ([google-sheets-template.md §8](google-sheets-template.md)).
+## 2. Server and memory
 
-## 3. First installation
+AWS free tier: **t3.micro** (2 vCPU burstable, 1 GB RAM), 30 GB gp3 (encrypted), Ubuntu 24.04 LTS
+x86, Elastic IP, a 2 GB swap file. Region `ap-southeast-2` (Sydney), Availability Zone
+`ap-southeast-2c`.
+
+Memory measured locally on 2026-11-18 (production images and limits, empty test database, after
+180 requests), and what to expect on the server with real data:
+
+| Item                                   | Measured | Expected on the server                     |
+| -------------------------------------- | -------- | ------------------------------------------ |
+| Ubuntu, dockerd, containerd, SSM agent | —        | ~250 MB                                    |
+| api                                    | 222 MiB  | 220–260 MB                                 |
+| worker                                 | 156 MiB  | 160–220 MB (sync peaks)                    |
+| web                                    | 74 MiB   | 80–120 MB                                  |
+| postgres                               | 47 MiB   | 100–180 MB (grows into its 128 MB buffers) |
+| redis + caddy                          | 41 MiB   | 40–60 MB                                   |
+| **Total**                              | 540 MiB  | **~0.85–1.1 GB of ~0.95 GB usable**        |
+
+The limits add up to 1.3 GB, but they are ceilings, not reservations. RAM headroom is small (0–100
+MB), so expect some swap use; the swap file absorbs peaks (a sync while many students are signed in), at the cost of speed.
+**Move to t3.small (2 GB) when swap use stays above 500 MB** (the hourly disk check logs it;
+[runbook.md](runbook.md) "Out of memory"). Images are always built in CI, never on the server.
+
+## 3. Images
+
+`Dockerfile`, three targets, built once per commit in `deploy-beta.yml` and pushed to GHCR
+(private packages) as `:<commit sha>` plus the moving tag `:beta`. The server always deploys by
+sha; nothing ever runs `latest`.
+
+- Multi-stage: one build stage compiles the workspace; each runtime image gets only its own
+  production dependencies (`pnpm deploy --prod`). Base `node:22.17.0-bookworm-slim`, pinned by
+  digest. Runs as `node`; application files are root-owned and read-only.
+- `web`: Next.js standalone output. `worker`: plus `/app/healthcheck.mjs` (heartbeat in Redis).
+- `api`: plus `/app/migrate` (Prisma CLI and migrations; with the CLI's own dependencies the image
+  is about 1.6 GB, slimming it is in [backlog.md](backlog.md)) and `/app/deploy`, the server bundle of
+  the same commit (compose file, Caddyfile, scripts, systemd units). The server takes its
+  configuration from the image it deploys, so code and configuration can never drift and the
+  server needs no git checkout or deploy key.
+- No secrets, env files, dumps, keys or test output can enter a layer (`.dockerignore`); all
+  settings come from `/opt/ssrs/.env` at run time.
+
+## 4. Server layout
+
+| Path                                  | Owner / mode          | What                                                              |
+| ------------------------------------- | --------------------- | ----------------------------------------------------------------- |
+| `/opt/ssrs/.env`                      | root, 600             | Every setting and secret (from `deploy/.env.beta.example`)        |
+| `/opt/ssrs/secrets/google-sa.json`    | root:ssrs-secrets 440 | Google service-account key, mounted read-only into api and worker |
+| `/opt/ssrs/backup/age-recipients.txt` | root, 644             | age **public** key(s) for backups                                 |
+| `/opt/ssrs/releases/<sha>/`           | root                  | Bundle extracted from `api:<sha>` (last 3 kept)                   |
+| `/opt/ssrs/current`                   | symlink               | The live release (systemd timers run its scripts)                 |
+| `/opt/ssrs/state/`                    | root, 700             | `deployed-tag`, `previous-tag`, `history`                         |
+| `/root/.docker/config.json`           | root                  | GHCR read-only token (`docker login`, checklist step 13)          |
+| `/usr/local/sbin/ssrs-deploy`, `ssrs` | root                  | Deploy entry point (SSM); compose wrapper for the live release    |
+
+Created by [`scripts/server/bootstrap.sh`](../scripts/server/bootstrap.sh), which also sets up
+security updates, swap, UTC, Docker from Docker's repository with log rotation (10 MB × 3),
+ufw (80/443 only), hardened and disabled SSH, the SSM agent, the AWS CLI and age. It creates no
+secret and starts nothing.
+
+## 5. How a deploy works
+
+Trigger: a push to `beta` (normally a merged pull request from `development`), or **Actions →
+Deploy beta → Run workflow** on `beta` with an image tag (rollback).
+
+1. **CI** (`ci.yml`, called by `deploy-beta.yml`): lint, typecheck, format, unit tests, build,
+   dependency audit (fails on high or critical), integration tests against throwaway PostgreSQL and
+   Redis.
+2. **Images**: build and push `api`, `worker`, `web` tagged with the commit sha (and `beta`).
+3. **Approval**: the `deploy` job uses the GitHub Environment `beta` with required reviewers; it
+   waits until you approve. Nothing touches the server before that.
+4. **AWS**: GitHub OIDC → the deploy role (no AWS keys in GitHub). The role can only send the
+   `SSRS-Beta-Deploy` document to this one instance and read its result. The document accepts only a
+   40-character sha plus the three `sha256:` image digests the images job produced (or `stored` for
+   a rollback), and runs `ssrs-deploy`. The server pulls and runs images **by digest** and checks
+   the api image's revision label, so overwriting a tag in GHCR cannot change what is deployed; a
+   rollback uses the digests the server recorded when it first deployed that release.
+5. **On the server** (`scripts/server/deploy.sh`), stopping at the first failure:
+   1. pull the three images;
+   2. back up the database (`backup.sh`, the daily script) and confirm the upload in S3;
+   3. run the migrations from the **new** api image as a one-off container. If they fail, stop:
+      the old release keeps running;
+   4. start the new containers and wait for every health check (5 minutes);
+   5. if a health check fails: start the previous release again and fail the job;
+   6. record the tag (`/opt/ssrs/state`), point `current` at it, install the release's timers.
+6. **Summary**: the job prints the server output and writes the requested tag, the result, the
+   live tag and the previous tag to the job summary. Container logs of a failed release stay on the
+   server (`/opt/ssrs/state/last-failure.log`), never in the job log.
+
+Database commands on the server (migrations, backups, restores) run only through these scripts,
+which name the target database and refuse anything else; they are the server's equivalent of
+`scripts/db-guard.sh`, which is for development machines.
+
+**What a rollback can and cannot undo.** It brings back the previous **images** and configuration.
+It does not undo **migrations**: they only go forward. A release whose migration damaged data, or
+whose old code cannot run on the new schema, needs the database restored from the backup taken in
+step 5.2 ([runbook.md](runbook.md) "Restore a backup"). Migrations run while the old release still
+serves requests, so they must stay backwards compatible (add, then remove in a later release).
+
+## 6. Configuration
+
+All settings live in `/opt/ssrs/.env` (template with a comment per variable:
+[`deploy/.env.beta.example`](../deploy/.env.beta.example)). Only variables used in
+`deploy/compose.yml` reach the containers. The compose file fixes the security-relevant ones:
+`NODE_ENV=production`, `WEB_ORIGIN=https://$BETA_DOMAIN`, `TRUST_PROXY_HOPS=1` (Caddy),
+`SWAGGER_ENABLED=false`; the API refuses to start in production without https and secure cookies.
+
+Secrets: `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `JWT_ACCESS_SECRET` (also derives the CSRF key),
+`SENTRY_DSN`, the healthchecks.io ping URLs, and the Google key file. They exist only on the server
+(and in the school's password manager). GitHub holds only `AWS_ROLE_ARN`, `AWS_REGION` and
+`EC2_INSTANCE_ID` in the `beta` environment.
+
+Caddy does not compress `/api/v1/auth/live` and proxies the API with `flush_interval -1`, so live
+session events reach the browser at once. A proxy added in front later must not buffer
+`text/event-stream` and must allow 25 s idle between pings. `/health` answers `OK` or 503 from the
+API's readiness check (PostgreSQL and Redis), with no other detail, for an external uptime monitor.
+
+## 7. Checking the setup locally
+
+Production-like run on a developer machine (Docker Desktop), with test values and a throwaway
+database, never the dev database:
 
 ```bash
-git clone <repository> /opt/ssrs && cd /opt/ssrs
-
-# Settings: start from the template and replace every placeholder (section 6).
-# Generate secrets with `openssl rand -hex 32` (hex is safe inside connection URLs).
-cp .env.production.example .env.production
-chmod 600 .env.production
-nano .env.production
-
-# Google key, readable only by root (it is mounted into the containers as a Docker secret).
-install -d -m 700 secrets
-install -m 600 /path/to/downloaded-key.json secrets/google-sa.json
-
-# Build and start. The first start takes a few minutes (image build, certificate issuance).
-docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
-docker compose -f docker-compose.prod.yml --env-file .env.production ps -a
+docker build --target api -t ssrs-local-api .          # also worker, web
+docker compose -p ssrs -f deploy/compose.yml -f <override with localhost ports> \
+  --env-file <test env> config                          # validates the file
 ```
 
-Every service should report `running` (and `healthy` where a health check exists); `migrate` shows
-`exited (0)`. Then create the first administrator (there are no default accounts):
-
-```bash
-docker compose -f docker-compose.prod.yml --env-file .env.production \
-  run --rm api node dist/cli/create-admin.js --username registrar --display-name "Registrar"
-```
-
-Open `https://<SITE_ADDRESS>` and sign in. Tip: put the long compose prefix in a shell alias,
-e.g. `alias ssrs='docker compose -f docker-compose.prod.yml --env-file .env.production'`; the rest of
-this document uses `ssrs`.
-
-**Never** run `pnpm demo:seed` or set `SHEETS_TEST_MODE` on a server: the demo data has published
-passwords, and test mode is refused in production builds (the test fakes are not in the images).
-
-## 4. Checks after installing
-
-- `curl -fsS https://<SITE_ADDRESS>/api/v1/health/ready` → `{"status":"ok",...}`
-- The browser shows a valid certificate; `curl -sI https://<SITE_ADDRESS>` includes
-  `strict-transport-security` and `content-security-policy`.
-- `ssrs exec postgres sh -c 'exit 0'` works but PostgreSQL and Redis are **not** reachable from
-  another machine (`nc -vz <server> 5432` must fail).
-- Take a first backup and run the restore drill ([operations.md §2](operations.md#2-backups-and-restore)).
-
-## 5. Updating
-
-With CI/CD set up (§8.7), releases are automatic: merge into the branch and the pipeline deploys
-it (§8.8). Without it, update by hand on the server:
-
-```bash
-cd /opt/ssrs
-git pull
-ssrs up -d --build        # builds new images, runs migrations, restarts changed services
-ssrs ps -a
-```
-
-Migrations run automatically (`migrate` must finish before `api` and `worker` start). They are
-forward-only; take a backup first when the release notes mention a migration:
-`ssrs exec backup sh /usr/local/bin/backup.sh --once`.
-
-Before the first sheet **replacement** on production (a different spreadsheet for a term that
-already has scores; decisions.md RP1), take a manual `pg_dump` and keep it outside the repository
-and off the server's working directory. A replacement deletes that term's marks, history and
-some accounts for good; the dump is the only way back.
-
-**Before releasing the `_meta` check (decisions.md K1):** every ACTIVE source's workbook must have
-a `_meta` tab whose `generation_code` and `education_term` match its generation and term, or its
-next sync fails with `META_MISSING` / `WORKBOOK_MISMATCH` (nothing is written). Check each one
-(read-only; needs `pnpm build` and the Google credentials):
-
-```bash
-node scripts/verify-term-workbook.mjs --sheet "<spreadsheet URL>" --generation <code> --term <n>
-```
-
-On 2026-11-13 both live workbooks (GEN2026 Term 1, GEN2027 Term 1) were verified correct.
-
-**Deploying the session rules (decisions.md SR1-SR5, migration `20261117120000_session_rules`):**
-deploy outside class hours and tell users beforehand that they will need to sign in once. The
-migration starts every session's inactivity clock from its last refresh, so every session idle for
-more than 15 minutes ends at the first request after the deploy; open pages go to the login page.
-
-**Rollback:** check out the previous release (`git checkout <tag>`) and `ssrs up -d --build`. If the
-newer release ran a migration that the older code cannot use, restore the backup taken before the
-update ([operations.md §2](operations.md#2-backups-and-restore)).
-
-## 6. Configuration reference
-
-Settings come from `.env.production`, but only variables listed in the compose file reach the
-containers. `SESSION_TTL_HOURS`, `CORS_ORIGINS`, `DATABASE_POOL_MAX`, `SYNC_JOBS_PER_MINUTE`,
-`ORPHAN_SWEEP_INTERVAL_MS` and `WORKER_HEARTBEAT_INTERVAL_MS` are not passed, so setting them has
-no effect in production. `ACCESS_TOKEN_TTL_SECONDS` is passed to the API and the worker from one
-value, so the two always match.
-
-Session settings (API; `.env.example`): `SESSION_IDLE_TIMEOUT_SECONDS` (900, min 60) ends a session
-with no heartbeat for that long; `SESSION_HEARTBEAT_INTERVAL_SECONDS` (300, min 10, at most a third
-of the idle limit); `ACCESS_TOKEN_TTL_SECONDS` (900) must not exceed the idle limit, or the API
-refuses to start, and the worker's value must equal the API's (the worker sizes the denylist
-entries it writes for a sheet replacement from it); `LIVE_MAX_PER_SESSION` (3) and `LIVE_MAX_PER_USER` (5) cap open
-`GET /api/v1/auth/live` streams (extra: 429). The worker needs nothing new.
-
-Caddy (`docker/caddy/Caddyfile`) does not compress `/api/v1/auth/live` (`encode` has a
-`not path` matcher) and proxies the API with `flush_interval -1`, so live events reach the browser
-at once. A proxy or load balancer added in front later must not buffer `text/event-stream`
-responses and must allow connections idle for 25 s between pings.
-
-The compose file fixes the security-relevant ones so they cannot be forgotten: `NODE_ENV=production`,
-`WEB_ORIGIN=https://$SITE_ADDRESS`, `TRUST_PROXY_HOPS=1` (Caddy), `SWAGGER_ENABLED=false`. The API
-refuses to start in production without `https` and secure cookies.
-
-| Variable                                             | Required                        | Purpose                                                                 |
-| ---------------------------------------------------- | ------------------------------- | ----------------------------------------------------------------------- |
-| `SITE_ADDRESS`, `ACME_EMAIL`                         | yes                             | Public host name; email for certificate notices                         |
-| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`  | yes                             | Database                                                                |
-| `REDIS_PASSWORD`                                     | yes                             | Redis                                                                   |
-| `JWT_ACCESS_SECRET`                                  | yes                             | Signs sessions (≥ 32 random characters); changing it signs everyone out |
-| `GOOGLE_SA_FILE`                                     | no (`./secrets/google-sa.json`) | Path of the service-account key on the server                           |
-| `TEMP_PASSWORD_TTL_DAYS`                             | no (14)                         | Lifetime of issued temporary passwords                                  |
-| `RATE_LIMIT_PER_MINUTE`                              | no (300)                        | Requests per minute per client IP                                       |
-| `ACCESS_TOKEN_TTL_SECONDS`                           | no (900)                        | Access-token lifetime (API and worker); at most the idle timeout        |
-| `SESSION_IDLE_TIMEOUT_SECONDS`                       | no (900)                        | Inactivity logout (min 60)                                              |
-| `SESSION_HEARTBEAT_INTERVAL_SECONDS`                 | no (300)                        | Heartbeat from a visible tab (min 10, at most a third of the idle timeout) |
-| `LIVE_MAX_PER_SESSION`, `LIVE_MAX_PER_USER`          | no (3, 5)                       | Open live connections per session / per user (extra: 429)               |
-| `WORKER_CONCURRENCY`                                 | no (2)                          | Syncs processed at the same time                                        |
-| `LOG_LEVEL`                                          | no (`info`)                     | Log level of the API and worker                                         |
-| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`                   | no                              | Error reporting (scrubbed; see [security.md §8](security.md))           |
-| `BACKUP_TIME`, `BACKUP_RETENTION_DAYS`, `BACKUP_DIR` | no                              | Nightly backups (02:30 UTC, 14 days, `./backups`)                       |
-| `IMAGE_PREFIX`, `IMAGE_TAG`                          | no                              | Prebuilt images; kept in `.env.deploy` by `deploy.sh` (§8.6)            |
-
-## 7. Continuous integration and delivery
-
-`.github/workflows/ci.yml` runs on every pull request and on pushes to `main` and `development`:
-
-```text
-push / PR ─▶ checks (lint, typecheck, format, unit) ─▶ images (build api, worker, web, migrate)
-          ├▶ integration (PostgreSQL + Redis)                │ push only: publish to GHCR
-          └▶ e2e (Playwright)                                ▼
-                         all green + push to development ─▶ deploy → staging server
-                         all green + push to main        ─▶ deploy → production server
-```
-
-- **Pull requests** build the images but never publish or deploy.
-- **Pushes** publish `ghcr.io/<owner>/<repo>-<target>:<commit sha>` to GitHub Container Registry,
-  then the `deploy` job connects to the server over SSH and runs
-  [`scripts/deploy.sh`](../scripts/deploy.sh) with that sha. Images are tagged by commit only, so
-  any release can be redeployed exactly.
-- Branch pushes queue instead of cancelling each other, so a deploy is never cut off halfway.
-- Until a GitHub environment has its `DEPLOY_*` secrets (§8.7), `deploy` reports "not configured"
-  and does nothing.
-
-## 8. Hosting on AWS EC2
-
-One EC2 instance runs the whole stack of §1; nothing else in AWS is required. The closest region to
-Cambodia is **ap-southeast-1 (Singapore)**. Do every step once per server: a **staging** server for
-`development` and a **production** server for `main` (§8.11).
-
-```text
- Developer ──git push──▶ GitHub ──CI green──▶ GHCR (images :sha)
-                            │                      │ docker pull
-                            └──SSH (CI key)─────▶ EC2: /opt/ssrs/scripts/deploy.sh <sha>
-                                                     ├ git checkout <sha>  (compose file, Caddyfile)
-                                                     ├ backup → pull → migrate → restart
-                                                     └ healthy? keep it : put previous sha back
- Users ──HTTPS 443──▶ Elastic IP ──▶ caddy ──▶ web / api ──▶ postgres, redis  (Docker network only)
-```
-
-### 8.1 Launch the instance
-
-AWS console → EC2 → **Launch instance**:
-
-| Setting                | Value                                                                                     |
-| ---------------------- | ----------------------------------------------------------------------------------------- |
-| Name                   | `krosa-staging` or `krosa-production`                                                     |
-| AMI                    | Ubuntu Server 24.04 LTS, 64-bit (x86); the images are built for x86                       |
-| Instance type          | `t3.medium` (2 vCPU, 4 GB), the minimum in §2                                             |
-| Key pair               | Create one (`krosa-admin`, ED25519, `.pem`), kept by the IT admin only                    |
-| Security group         | New, `krosa-web-ssh` (rules below)                                                        |
-| Storage                | 40 GB `gp3`; under Advanced: **Delete on termination: No**, **Encrypted: Yes**            |
-| Termination protection | Advanced details → Enable                                                                 |
-| User data              | Advanced details → paste [`scripts/ec2-bootstrap.sh`](../scripts/ec2-bootstrap.sh) (§8.3) |
-
-Security group inbound rules:
-
-| Type       | Port | Source      | Why                                                                |
-| ---------- | ---- | ----------- | ------------------------------------------------------------------ |
-| HTTP       | 80   | `0.0.0.0/0` | Certificate issuance; Caddy redirects to HTTPS                     |
-| HTTPS      | 443  | `0.0.0.0/0` | The site                                                           |
-| Custom UDP | 443  | `0.0.0.0/0` | HTTP/3 (optional)                                                  |
-| SSH        | 22   | `0.0.0.0/0` | GitHub's runners deploy from changing addresses; keys only (below) |
-
-Never open 5432 (PostgreSQL) or 6379 (Redis). Open SSH is acceptable here because password login is
-off, fail2ban bans repeated failures, and the CI key can run only the deploy script (§8.7). If you
-want SSH from the office only, restrict port 22 and deploy by hand (§8.8), or run a self-hosted
-GitHub runner on the server.
-
-### 8.2 Elastic IP and DNS
-
-1. EC2 → **Elastic IPs** → Allocate → Associate with the instance. The address now survives a
-   stop and start.
-2. At the DNS provider (or Route 53), add an **A record**: `krosa.<school-domain>` (production) or
-   `krosa-staging.<school-domain>` → the Elastic IP.
-3. Wait until `dig +short krosa.<school-domain>` returns the Elastic IP. Caddy needs it before the
-   first start to obtain the certificate.
-
-### 8.3 Prepare Ubuntu
-
-If you pasted the bootstrap script as user data, it has already run: check that
-`/var/log/cloud-init-output.log` ends with `ec2-bootstrap: done`. Otherwise run it by hand:
-
-```bash
-ssh -i krosa-admin.pem ubuntu@<elastic-ip>
-git clone --depth 1 https://github.com/<owner>/<repo>.git /tmp/krosa   # private repo: copy the file with scp instead
-sudo bash /tmp/krosa/scripts/ec2-bootstrap.sh
-exit   # log in again so the docker group applies
-```
-
-It installs Docker Engine and Compose, git, automatic security updates and fail2ban; adds 2 GB of
-swap; caps container logs at 60 MB each; turns off SSH passwords; and creates `/opt/ssrs`. Check
-that `docker compose version` works without `sudo`.
-
-### 8.4 Get the code onto the server
-
-Public repository: `git clone -b development https://github.com/<owner>/<repo>.git /opt/ssrs`
-(`-b main` on production).
-
-Private repository: give the server a read-only **deploy key** first.
-
-```bash
-ssh-keygen -t ed25519 -N '' -C krosa-server-read -f ~/.ssh/github_read
-cat ~/.ssh/github_read.pub   # GitHub → repo → Settings → Deploy keys → Add key (leave write off)
-printf 'Host github.com\n  IdentityFile ~/.ssh/github_read\n  IdentitiesOnly yes\n' >> ~/.ssh/config
-ssh-keyscan github.com >> ~/.ssh/known_hosts
-git clone -b development git@github.com:<owner>/<repo>.git /opt/ssrs
-```
-
-Never edit tracked files in `/opt/ssrs`: every deploy checks out the released commit, and a local
-change would block it.
-
-### 8.5 Settings and the Google key
-
-```bash
-cd /opt/ssrs
-cp .env.production.example .env.production && chmod 600 .env.production
-nano .env.production   # SITE_ADDRESS, ACME_EMAIL; three secrets from `openssl rand -hex 32`
-install -d -m 700 secrets
-```
-
-From your own computer: `scp -i krosa-admin.pem google-sa.json ubuntu@<elastic-ip>:/opt/ssrs/secrets/`;
-then on the server `chmod 600 /opt/ssrs/secrets/google-sa.json`. Share each term sheet with the
-service account's address ([google-sheets-template.md §8](google-sheets-template.md)).
-
-### 8.6 Point the server at the published images
-
-```bash
-cd /opt/ssrs
-echo 'IMAGE_PREFIX=ghcr.io/<owner>/<repo>' > .env.deploy   # lower case, e.g. ghcr.io/radytrainer/krosa
-echo "alias ssrs='cd /opt/ssrs && docker compose -f docker-compose.prod.yml --env-file .env.production --env-file .env.deploy'" >> ~/.bashrc
-source ~/.bashrc
-```
-
-`deploy.sh` writes `IMAGE_TAG=<sha>` into `.env.deploy` on each release, so `ssrs ps`, `ssrs logs`
-and a reboot always use the live release. (Without `.env.deploy`, §3 still works: the server builds
-the images itself, which is slow on a `t3.medium`.)
-
-### 8.7 Connect GitHub Actions (CD)
-
-**1. A CI key**, made on your own computer, one per server:
-
-```bash
-ssh-keygen -t ed25519 -N '' -C krosa-ci-staging -f krosa-ci-staging
-```
-
-**2. Allow that key to run only the deploy script.** On the server, add one line to
-`~/.ssh/authorized_keys` (leave the admin key's line as it is):
-
-```text
-command="bash /opt/ssrs/scripts/deploy.sh",restrict ssh-ed25519 AAAA…(contents of krosa-ci-staging.pub)… krosa-ci-staging
-```
-
-`restrict` turns off shells, terminals and forwarding for that key. Whatever the client asks for,
-the server runs `deploy.sh`, which accepts only `deploy <40-character commit sha>`.
-
-**3. The server's host key**, so CI refuses an impostor: run `ssh-keyscan -t ed25519 <elastic-ip>`
-on your computer and compare its fingerprint with
-`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server.
-
-**4. GitHub environments.** Repo → Settings → Environments → create `staging` and `production`, each
-with:
-
-| Kind     | Name                 | Value                                                      |
-| -------- | -------------------- | ---------------------------------------------------------- |
-| Secret   | `DEPLOY_HOST`        | The Elastic IP (or host name)                              |
-| Secret   | `DEPLOY_SSH_KEY`     | The whole **private** key file (`krosa-ci-staging`)        |
-| Secret   | `DEPLOY_KNOWN_HOSTS` | The line printed by `ssh-keyscan` in step 3                |
-| Variable | `SITE_URL`           | `https://krosa-staging.<school-domain>` (smoke test, link) |
-| Variable | `DEPLOY_USER`        | Optional; default `ubuntu`                                 |
-
-On `production`, also tick **Required reviewers** (the IT admin) and limit **Deployment branches**
-to `main`: each production release then waits for an approval in the Actions tab.
-
-Delete the private key from your computer once it is stored in GitHub. To revoke it, remove its line
-from `authorized_keys`.
-
-**5. First release.** Push or merge to `development`. When CI is green, `deploy` pulls the images,
-runs migrations, starts everything and checks `/api/v1/health/ready`. Then create the first
-administrator, once:
-
-```bash
-ssrs run --rm api node dist/cli/create-admin.js --username registrar --display-name "Registrar"
-```
-
-and run the checks in §4.
-
-### 8.8 Releasing, rolling back, looking around
-
-| Task                          | How                                                                                        |
-| ----------------------------- | ------------------------------------------------------------------------------------------ |
-| Release to staging            | Merge into `development`                                                                   |
-| Release to production         | Merge `development` into `main`, then approve the `production` deployment in Actions       |
-| Redeploy an earlier commit    | Actions → the run of that commit → **Re-run all jobs**                                     |
-| Roll back to the last release | On the server: `bash /opt/ssrs/scripts/deploy.sh --rollback`                               |
-| Deploy by hand                | `docker login ghcr.io` (a token with `read:packages`), then `bash scripts/deploy.sh <sha>` |
-| Which release is live         | `grep IMAGE_TAG /opt/ssrs/.env.deploy`; history in `/opt/ssrs/.deploy-history`             |
-| Status and logs               | `ssrs ps -a`; `ssrs logs -f --tail 100 api worker`                                         |
-
-Every deploy takes a backup first. If `api` or `web` is not healthy within 3 minutes, or `migrate`
-fails, it starts the previous release again by itself. Migrations are forward-only: if a failed
-release had already migrated and the old release cannot start, restore the backup taken just before
-([operations.md §2](operations.md#2-backups-and-restore)).
-
-### 8.9 Backups off the server
-
-The nightly backups land in `BACKUP_DIR` on the same disk. Also keep copies elsewhere:
-
-- **EBS snapshots:** EC2 → Lifecycle Manager → a policy on the instance's volume, daily, kept 7 days.
-- **S3:** a private bucket with versioning and Block Public Access; an IAM role on the instance that
-  allows only `s3:PutObject` on that bucket; `sudo snap install aws-cli --classic`; and a cron job
-  (`crontab -e`): `15 3 * * * aws s3 sync /opt/ssrs/backups s3://<bucket>/ssrs-backups/ --only-show-errors`.
-
-Run the restore drill once on the new server ([operations.md §2](operations.md#2-backups-and-restore)).
-
-### 8.10 Monitoring
-
-- **Instance:** CloudWatch alarm on `StatusCheckFailed_System` with the **Recover** action and an
-  e-mail notification (SNS).
-- **Disk:** `df -h /` monthly, or the CloudWatch agent with an alarm at 80 %.
-- **Site:** any uptime checker on `https://<SITE_ADDRESS>/api/v1/health/ready`.
-- **Errors:** `SENTRY_DSN` in `.env.production` ([security.md §8](security.md)).
-- **Cost:** Billing → Budgets → a monthly budget with an e-mail alert.
-
-### 8.11 Branches and servers
-
-| Branch        | GitHub environment | Server                          | Released by                   |
-| ------------- | ------------------ | ------------------------------- | ----------------------------- |
-| `development` | `staging`          | Its own EC2, host name and data | CI, on every green push       |
-| `main`        | `production`       | The live EC2                    | CI, after a reviewer approves |
-
-A staging server has its own database and its own copies of the term sheets; never point it at live
-data. Cost guide: one `t3.medium` with 40 GB gp3 and an Elastic IP is roughly US$35–40 a month in
-Singapore; GHCR is free at this size (check the AWS pricing calculator).
+The verification run of 2026-11-18 (first deploy, redeploy with backup, automatic rollback,
+failed migration, backup and restore, login over HTTPS) is in [progress.md](progress.md).
+
+## 8. AWS resources
+
+[`deploy/aws/beta.yml`](../deploy/aws/beta.yml) (CloudFormation, created by hand in checklist step
+10): the GitHub OIDC provider and deploy role, the instance role and profile (SSM managed policy;
+`s3:PutObject`/`GetObject` on the backup prefix and `ListBucket` on it; **no delete**), the backup
+bucket (private, Block Public Access, SSE-S3, versioning, TLS only, lifecycle: `daily/` 14 days,
+`weekly/` 56 days, old versions 30 days), the security group (80/443 only; no 22, 5432 or 6379) and
+the `SSRS-Beta-Deploy` SSM document.

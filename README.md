@@ -256,10 +256,11 @@ and Redis reachable; 503 if not).
 | `packages/sync`     | The synchronization engine used by the worker                                 |
 | `packages/shared`   | Shared domain logic: grading engine, student IDs, environment validation      |
 | `packages/config`   | Shared TypeScript configuration                                               |
-| `scripts/`          | Load test, restore drill, workbook verifier, `.xlsx` converter                |
+| `scripts/`          | Load test, workbook verifier, `.xlsx` converter; `server/`: server scripts    |
 | `e2e/`              | Playwright browser scenario                                                   |
-| `docker/`           | Backup job, Caddy and PostgreSQL configuration                                |
-| `Dockerfile`        | Production images; `docker-compose.prod.yml` is the production stack          |
+| `docker/`           | Worker health check, local PostgreSQL init                                    |
+| `Dockerfile`        | Production images (web, api, worker)                                          |
+| `deploy/`           | Server stack (compose, Caddy), env template, systemd timers, AWS template     |
 | `docs/`             | Design documents (below)                                                      |
 
 ## Documentation

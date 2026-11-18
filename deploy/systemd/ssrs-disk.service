@@ -1,0 +1,8 @@
+# Disk and swap check (scripts/server/check-disk.sh). Installed by deploy.sh.
+[Unit]
+Description=SSRS disk space and swap check
+OnFailure=ssrs-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ssrs/current/bin/check-disk.sh
