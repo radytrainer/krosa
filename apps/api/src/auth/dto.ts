@@ -33,4 +33,6 @@ export interface MeResponse {
   displayName: string | null;
   mustChangePassword: boolean;
   student: { id: string; studentCode: string; fullName: string } | null;
+  /** Inactivity rules the web app needs for its heartbeat and messages. */
+  session: { idleTimeoutSeconds: number; heartbeatIntervalSeconds: number };
 }

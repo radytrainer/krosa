@@ -174,19 +174,39 @@ export async function activePreviewGate(
   return null;
 }
 
+/** The parts of a stored preview summary a sync compares with what it finds. */
+export interface ConfirmedSummary {
+  comparison?: { removed?: { offeringId: string }[] };
+  replacement?: { manifestHash: string } | null;
+  rosterCheck?: {
+    missing: { studentCode: string }[];
+    new: { studentCode: string }[];
+  } | null;
+  nameMismatches?: { studentCode: string }[];
+  nameOrderWarnings?: { studentCode: string }[];
+  studentConflicts?: { studentCode: string; code: string }[];
+}
+
+/** What an admin confirmed: the job's preview, or a pending sheet's newest one. */
+export async function confirmedSummary(
+  prisma: Pick<PrismaClient, 'sheetPreview'>,
+  sourceId: string,
+  previewId: string | null,
+): Promise<ConfirmedSummary | null> {
+  const preview = await prisma.sheetPreview.findFirst({
+    where: { sourceId, invalidatedAt: null, ...(previewId ? { id: previewId } : {}) },
+    orderBy: { createdAt: 'desc' },
+    select: { summary: true },
+  });
+  return (preview?.summary as ConfirmedSummary | undefined) ?? null;
+}
+
 /** The removals an admin confirmed: on the job's preview, or a pending sheet's newest one. */
 export async function confirmedRemovals(
   prisma: Pick<PrismaClient, 'sheetPreview'>,
   sourceId: string,
   previewId: string | null,
 ): Promise<{ offeringId: string }[]> {
-  const preview = await prisma.sheetPreview.findFirst({
-    where: { sourceId, invalidatedAt: null, ...(previewId ? { id: previewId } : {}) },
-    orderBy: { createdAt: 'desc' },
-    select: { summary: true },
-  });
-  const summary = preview?.summary as {
-    comparison?: { removed?: { offeringId: string }[] };
-  } | null;
+  const summary = await confirmedSummary(prisma, sourceId, previewId);
   return summary?.comparison?.removed ?? [];
 }

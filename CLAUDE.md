@@ -64,7 +64,9 @@ E2E_CHANNEL=msedge pnpm test:e2e
   Score columns in `ALL` are ignored. `_meta` identifies the workbook's generation and term. It
   is checked when connecting and syncing, and never imported.
 - A later term's sync never changes an earlier term's enrollments or marks.
-- Never delete marks or enrollments: flag, withdraw (with a reason) or keep history.
+- Never delete marks or enrollments: flag, withdraw (with a reason) or keep history. Only
+  exception: a sheet replacement (a pending sheet of another spreadsheet) replaces its term's data
+  for good, after a typed confirmation (decisions.md RP1–RP4).
 - Students see only their own data, and only released terms.
 - Teacher comments are plain text; never render them as HTML.
 - Never put real student names in fixtures, logs, test output or reports. Use IDs and counts.

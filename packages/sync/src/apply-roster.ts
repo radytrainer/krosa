@@ -16,10 +16,17 @@ export interface RosterResult {
   studentIdByCode: Map<string, string>;
   issues: SyncIssue[];
   counts: SyncCounts['students'];
+  /** Ids of the students this call created. */
+  createdIds: string[];
 }
 
 /** Serializes roster changes across all syncs, so two sources can't race to create one student. */
 const ROSTER_LOCK = 'ssrs:sync:roster';
+
+/** Takes the roster lock in this transaction (re-entrant: applyRoster takes it again). */
+export async function lockRoster(tx: Prisma.TransactionClient): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${ROSTER_LOCK}))`;
+}
 const TX_OPTIONS = { maxWait: 30_000, timeout: 120_000 } as const;
 
 /**
@@ -38,16 +45,20 @@ export async function applyRoster(
   now: Date,
   /** Runs inside this transaction instead of its own (all-or-nothing sheet changes). */
   shared?: Prisma.TransactionClient,
+  /** Runs right after the roster lock is taken; throwing rolls everything back. */
+  verify?: (tx: Prisma.TransactionClient) => Promise<void>,
 ): Promise<RosterResult> {
   const issues: SyncIssue[] = [];
   const counts = { created: 0, updated: 0, unchanged: 0, rejected: 0 };
   const studentIdByCode = new Map<string, string>();
-  if (students.length === 0) return { studentIdByCode, issues, counts };
+  const createdIds: string[] = [];
+  if (students.length === 0 && !verify) return { studentIdByCode, issues, counts, createdIds };
 
   const run = (work: (tx: Prisma.TransactionClient) => Promise<void>) =>
     shared ? work(shared) : prisma.$transaction(work, TX_OPTIONS);
   await run(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${ROSTER_LOCK}))`;
+    await verify?.(tx);
     const codes = students.map((s) => s.studentCode);
     const existingStudents = await tx.student.findMany({ where: { studentCode: { in: codes } } });
     const byCode = new Map(existingStudents.map((s) => [s.studentCode, s]));
@@ -142,11 +153,15 @@ export async function applyRoster(
           lastName: s.lastName,
           gender: s.gender,
           sourceId: ctx.sourceId,
+          provisionedSourceId: ctx.sourceId,
           lastSeenSyncJobId: ctx.syncJobId,
         })),
         select: { id: true, studentCode: true },
       });
-      for (const s of created) studentIdByCode.set(s.studentCode, s.id);
+      for (const s of created) {
+        studentIdByCode.set(s.studentCode, s.id);
+        createdIds.push(s.id);
+      }
       counts.created = created.length;
       await tx.auditLog.createMany({
         data: created.map((s): Prisma.AuditLogCreateManyInput => ({
@@ -172,5 +187,5 @@ export async function applyRoster(
     }
   });
 
-  return { studentIdByCode, issues, counts };
+  return { studentIdByCode, issues, counts, createdIds };
 }

@@ -509,18 +509,30 @@ describe('QA D: Google Sheets sync', () => {
     const script = '<script>alert(1)</script>';
     const sql = "Robert'); DROP TABLE students;--";
     const formula = '=HYPERLINK("http://evil.example","x")';
+    // Since 2026-11-14 (decisions.md RP6) a stored student under another name in ALL is skipped,
+    // so the hostile names arrive on new students of the same term sheet.
     setSheet((s) => {
       const all = s.tabs['ALL']!;
-      all[3]![1] = script;
-      all[3]![2] = sql;
-      all[4]![1] = formula;
+      all.push(['PNC2027-007', script, sql, 'M', 'A']);
+      all.push(['PNC2027-008', formula, 'LASTQA', 'F', 'A']);
       s.tabs['Logic']![1]![12] = script;
+      // An existing student renamed to a hostile string: skipped, the name kept as plain text.
+      all[3]![1] = script;
     });
     const job = await h.sync(source);
     expect(job.status).not.toBe('FAILED');
-    const row = await ctx.prisma.student.findUniqueOrThrow({ where: { studentCode: CODE_1 } });
+    const row = await ctx.prisma.student.findUniqueOrThrow({
+      where: { studentCode: 'PNC2027-007' },
+    });
     expect(row.fullName).toContain(script);
     expect(row.fullName).toContain(sql);
+    const formulaRow = await ctx.prisma.student.findUniqueOrThrow({
+      where: { studentCode: 'PNC2027-008' },
+    });
+    expect(formulaRow.fullName).toContain(formula);
+    expect(
+      (await ctx.prisma.student.findUniqueOrThrow({ where: { studentCode: CODE_1 } })).fullName,
+    ).not.toContain(script);
     const bulk = await h.admin
       .post(`${ADMIN_V1}/students/issue-credentials`, { generationId: h.generationId })
       .expect(200);

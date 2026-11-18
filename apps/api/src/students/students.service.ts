@@ -6,6 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type { Prisma } from '@ssrs/database';
+import { AcademicGuardService } from '../academic/academic-guard.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { LoginLockout } from '../auth/login-lockout.js';
@@ -20,8 +21,13 @@ import { PrismaService } from '../infra/prisma.service.js';
 import type {
   IssueCredentialsDto,
   ListStudentsQueryDto,
+  UpdateStudentNameDto,
   UpdateStudentStatusDto,
 } from './students.dto.js';
+
+/** Control characters (NUL, tabs, line breaks…) and zero-width characters, refused in names. */
+const HIDDEN_CHARACTERS = /[\p{Cc}\u200B-\u200D\u2060\uFEFF]/u;
+const nfc = (v: string | null) => v?.normalize('NFC') ?? null;
 
 /** Bounded so one request cannot spend minutes hashing (Argon2 ≈ 30–50 ms per password). */
 export const MAX_CREDENTIALS_PER_REQUEST = 500;
@@ -57,6 +63,9 @@ export interface StudentView {
   id: string;
   studentCode: string;
   fullName: string;
+  /** Term workbooks split names; null for a student imported without the split. */
+  firstName: string | null;
+  lastName: string | null;
   gender: 'FEMALE' | 'MALE' | 'OTHER' | 'UNSPECIFIED';
   /** The latest term's class and program. */
   className: string | null;
@@ -93,6 +102,8 @@ function toView(s: StudentRow, now = new Date()): StudentView {
     id: s.id,
     studentCode: s.studentCode,
     fullName: s.fullName,
+    firstName: s.firstName,
+    lastName: s.lastName,
     gender: s.gender,
     className: s.className,
     program: s.program,
@@ -128,7 +139,88 @@ export class StudentsService {
     private readonly lockout: LoginLockout,
     private readonly sessions: SessionService,
     private readonly audit: AuditService,
+    private readonly guard: AcademicGuardService,
   ) {}
+
+  /**
+   * Corrects a student's stored name, e.g. after a STUDENT_NAME_MISMATCH the sheet is right about.
+   * The audit entry (admin-only) keeps the old and the new name; nothing is logged. Students'
+   * cached results embed the name, so the generation's cache version is bumped.
+   */
+  async setName(
+    id: string,
+    dto: UpdateStudentNameDto,
+    actor: AuthUser,
+    meta: RequestMeta,
+  ): Promise<StudentView> {
+    const student = await this.prisma.client.student.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        generationId: true,
+        fullName: true,
+        firstName: true,
+        lastName: true,
+        nameEditedAt: true,
+      },
+    });
+    if (!student) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Student not found' });
+    if (dto.firstName === undefined && dto.lastName === undefined && dto.fullName === undefined) {
+      throw new UnprocessableEntityException({
+        code: 'NAME_REQUIRED',
+        message: 'Give a first name, a last name or a full name.',
+      });
+    }
+    await this.guard.assertGenerationEditable(student.generationId);
+    const firstName = dto.firstName === undefined ? student.firstName : nfc(dto.firstName);
+    const lastName = dto.lastName === undefined ? student.lastName : nfc(dto.lastName);
+    const derived =
+      dto.firstName !== undefined || dto.lastName !== undefined
+        ? [firstName, lastName].filter((p): p is string => !!p).join(' ')
+        : '';
+    const fullName = nfc(dto.fullName ?? null) ?? (derived || student.fullName);
+    // No control or zero-width characters: they cannot be seen, and break name matching.
+    if (
+      fullName.length < 1 ||
+      fullName.length > 200 ||
+      [fullName, firstName, lastName].some((v) => v !== null && HIDDEN_CHARACTERS.test(v))
+    ) {
+      throw new UnprocessableEntityException({
+        code: 'INVALID_NAME',
+        message: 'Names must be 1 to 200 characters, without control or zero-width characters.',
+      });
+    }
+    const old = {
+      firstName: student.firstName,
+      lastName: student.lastName,
+      fullName: student.fullName,
+    };
+    const next = { firstName, lastName, fullName };
+    if (JSON.stringify(old) === JSON.stringify(next)) return this.get(id);
+    await this.prisma.client.$transaction(async (tx) => {
+      // Marks the account as protected from sheet replacements (decisions.md RP10).
+      await tx.student.update({
+        where: { id },
+        data: { ...next, nameEditedAt: student.nameEditedAt ?? new Date() },
+      });
+      await tx.generation.update({
+        where: { id: student.generationId },
+        data: { cacheVersion: { increment: 1 } },
+      });
+      await this.audit.record(
+        {
+          action: 'student.name.changed',
+          actorUserId: actor.userId,
+          entityType: 'student',
+          entityId: id,
+          metadata: { old, new: next },
+          context: meta,
+        },
+        tx,
+      );
+    });
+    return this.get(id);
+  }
 
   async list(query: ListStudentsQueryDto): Promise<Paginated<StudentView>> {
     const where: Prisma.StudentWhereInput = {
@@ -212,12 +304,12 @@ export class StudentsService {
       });
     }
 
-    await this.prisma.client.$transaction(async (tx) => {
+    const revoked = await this.prisma.client.$transaction(async (tx) => {
       await tx.user.update({ where: { id: student.user.id }, data: { status: dto.status } });
-      let revoked = 0;
-      if (dto.status === 'DISABLED') {
-        revoked = await this.sessions.revokeAllForUser(student.user.id, 'ACCOUNT_DISABLED', { tx });
-      }
+      const ended =
+        dto.status === 'DISABLED'
+          ? await this.sessions.revokeAllForUser(student.user.id, 'ACCOUNT_DISABLED', { tx })
+          : null;
       await this.audit.record(
         {
           action:
@@ -228,13 +320,15 @@ export class StudentsService {
           metadata: {
             studentCode: student.studentCode,
             previousStatus: current,
-            sessionsRevoked: revoked,
+            sessionsRevoked: ended?.sessionIds.length ?? 0,
           },
           context: meta,
         },
         tx,
       );
+      return ended;
     });
+    if (revoked) await this.sessions.announce(revoked);
     return this.get(id);
   }
 
@@ -345,7 +439,7 @@ export class StudentsService {
     const wasPending = student.user.status === 'PENDING';
     const id = student.id;
 
-    await this.prisma.client.$transaction(async (tx) => {
+    const revoked = await this.prisma.client.$transaction(async (tx) => {
       await tx.user.update({
         where: { id: student.user.id },
         data: {
@@ -357,7 +451,7 @@ export class StudentsService {
           lockedUntil: null,
         },
       });
-      const revoked = await this.sessions.revokeAllForUser(student.user.id, 'PASSWORD_RESET', {
+      const ended = await this.sessions.revokeAllForUser(student.user.id, 'PASSWORD_RESET', {
         tx,
       });
       await this.audit.record(
@@ -366,12 +460,18 @@ export class StudentsService {
           actorUserId: actor.userId,
           entityType: 'student',
           entityId: id,
-          metadata: { studentCode: student.studentCode, expiresAt, sessionsRevoked: revoked },
+          metadata: {
+            studentCode: student.studentCode,
+            expiresAt,
+            sessionsRevoked: ended.sessionIds.length,
+          },
           context: meta,
         },
         tx,
       );
+      return ended;
     });
+    await this.sessions.announce(revoked);
     await this.lockout.clearAll(student.user.username);
     return {
       studentCode: student.studentCode,

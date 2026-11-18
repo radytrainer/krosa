@@ -17,6 +17,7 @@ import request from 'supertest';
 import type { App } from 'supertest/types.js';
 import { AppModule } from '../../src/app.module.js';
 import { PasswordService } from '../../src/auth/password.service.js';
+import { SessionService } from '../../src/auth/session.service.js';
 import { configureApp } from '../../src/bootstrap.js';
 import { loadApiEnv, type ApiEnv } from '../../src/config/env.js';
 import { PrismaService } from '../../src/infra/prisma.service.js';
@@ -200,4 +201,35 @@ export async function login(
   }
   const cookies = parseSetCookies(res);
   return { agent, csrf: cookies.get('ssrs_csrf')!.value, cookies, body: res.body };
+}
+
+/**
+ * A second active session of the same user, inserted directly (a second login would replace
+ * the first: one session per user). Returns an agent carrying its cookies.
+ */
+export async function insertSession(ctx: TestContext, userId: string): Promise<LoggedIn> {
+  const sessions = ctx.app.get(SessionService);
+  const user = await ctx.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+  const issued = await ctx.prisma.$transaction((tx) =>
+    sessions.createSession(user, { ip: '127.0.0.1', userAgent: 'test', requestId: null }, tx),
+  );
+  const agent = request.agent(ctx.app.getHttpServer());
+  const cookie = [
+    `ssrs_at=${issued.accessToken}`,
+    `ssrs_rt=${issued.refreshToken}`,
+    `ssrs_csrf=${issued.csrfToken}`,
+  ];
+  const cookies = new Map([
+    ['ssrs_at', { value: issued.accessToken, attrs: '' }],
+    ['ssrs_rt', { value: issued.refreshToken, attrs: '' }],
+    ['ssrs_csrf', { value: issued.csrfToken, attrs: '' }],
+  ]);
+  // Default header; the agent's cookie jar stays empty for this session.
+  agent.set('Cookie', cookie.join('; '));
+  return {
+    agent,
+    csrf: issued.csrfToken,
+    cookies,
+    body: { user: { id: user.id, role: user.role, mustChangePassword: user.mustChangePassword } },
+  };
 }

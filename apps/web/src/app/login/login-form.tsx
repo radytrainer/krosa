@@ -1,18 +1,19 @@
 'use client';
 
 import { useQueryClient } from '@tanstack/react-query';
-import { AlertCircle, Loader2 } from 'lucide-react';
+import { AlertCircle, Info, Loader2 } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Field, onSubmit } from '@/components/app/form';
 import { PasswordInput } from '@/components/app/password-input';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ApiError, UNREACHABLE, apiFetch } from '@/lib/api';
-import { homeFor, useAuth } from '@/lib/auth';
+import { homeFor, rememberedIdleTimeout, useAuth } from '@/lib/auth';
 import { json } from '@/lib/query';
 import type { Me } from '@/lib/types';
+import { signedOutMessage } from './signed-out-message';
 
 const MESSAGES: Record<string, string> = {
   INVALID_CREDENTIALS: 'The username / student ID or password is incorrect.',
@@ -32,6 +33,8 @@ function safeNext(value: string | null): string | null {
   return value;
 }
 
+const noSubscribe = () => () => undefined;
+
 function destination(me: Me, next: string | null): string {
   if (me.mustChangePassword) return '/change-password';
   const home = homeFor(me);
@@ -47,6 +50,10 @@ export function LoginForm() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const next = safeNext(params.get('next'));
+  const reason = params.get('reason');
+  // The remembered limit lives in this browser's storage only (none while rendering on the server).
+  const idleSeconds = useSyncExternalStore(noSubscribe, rememberedIdleTimeout, () => null);
+  const notice = signedOutMessage(reason, idleSeconds);
 
   // Already signed in: go straight to the portal.
   useEffect(() => {
@@ -75,6 +82,13 @@ export function LoginForm() {
 
   return (
     <form onSubmit={submit} className="space-y-4" noValidate={false}>
+      {notice && !error ? (
+        <Alert role="status">
+          <Info aria-hidden />
+          <AlertTitle>Signed out</AlertTitle>
+          <AlertDescription>{notice}</AlertDescription>
+        </Alert>
+      ) : null}
       {error ? (
         <Alert variant="destructive" aria-live="assertive">
           <AlertCircle aria-hidden />

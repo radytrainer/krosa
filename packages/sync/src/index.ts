@@ -8,5 +8,8 @@ export * from './confirmed.js';
 export * from './preview.js';
 export * from './removals.js';
 export * from './student-terms.js';
+export * from './names.js';
+export * from './roster-check.js';
+export * from './replacement.js';
 export { termVisibility } from './promote.js';
 export * from './release.js';

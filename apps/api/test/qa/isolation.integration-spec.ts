@@ -2,7 +2,7 @@
 import { gen2028WorkbookFixture, termWorkbookFixture } from '@ssrs/sheets/testing';
 import { confirmAllTabs } from '@ssrs/sync/testing';
 import request from 'supertest';
-import { login, WEB_ORIGIN, type TestContext } from '../support/test-app.js';
+import { api, login, WEB_ORIGIN, type TestContext } from '../support/test-app.js';
 import {
   ADMIN_V1,
   call,
@@ -51,19 +51,20 @@ describe('QA B: authorization and data isolation', () => {
 
   describe('route coverage', () => {
     // Counted from the controllers: generations 9, programs 7, sheets-sources 11, sync 8,
-    // audit-logs 1, dashboard 1, monitoring 4, sheet-mappings 9, students 6 = 56 admin;
-    // + auth 5, health 2, student/me 5 = 68.
+    // audit-logs 1, dashboard 1, monitoring 4, sheet-mappings 9, students 7 = 57 admin;
+    // + auth 7, health 2, student/me 5 = 71 (students 7 since PATCH :id/name, 2026-11-14;
+    // auth 7 since heartbeat and live, 2026-11-17).
     const MONITORING_ROUTES = [
       '/api/v1/admin/monitoring/generations',
       '/api/v1/admin/monitoring/terms/:generationId/:termNumber/subjects',
       '/api/v1/admin/monitoring/subjects/summary',
       '/api/v1/admin/monitoring/subjects/students',
     ];
-    it('sanity: the live route list matches the documented 68 routes', () => {
+    it('sanity: the live route list matches the documented 71 routes', () => {
       const routes = liveRoutes(ctx);
-      expect(routes.filter((r) => r.path.startsWith('/api/v1/admin'))).toHaveLength(56);
+      expect(routes.filter((r) => r.path.startsWith('/api/v1/admin'))).toHaveLength(57);
       expect(routes.filter((r) => r.path.startsWith('/api/v1/student'))).toHaveLength(5);
-      expect(routes).toHaveLength(68);
+      expect(routes).toHaveLength(71);
       // The four monitoring routes are live GETs, so B-01 and B-02 below cover them.
       const gets = new Set(routes.filter((r) => r.method === 'get').map((r) => r.path));
       for (const path of MONITORING_ROUTES) expect(gets.has(path), path).toBe(true);
@@ -134,6 +135,8 @@ describe('QA B: authorization and data isolation', () => {
   const aCsrf = () => sessionA.csrf;
   beforeAll(async () => {
     sessionA = await login(ctx, CODE_A, STUDENT_PASSWORD);
+    // One session per user (decisions.md SR1): this sign-in ended the one from activate().
+    a = api(sessionA);
   });
 
   describe('student A cannot reach student B', () => {

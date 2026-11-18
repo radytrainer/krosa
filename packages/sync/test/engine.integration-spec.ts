@@ -129,16 +129,24 @@ describe('first import', () => {
       schemes: { published: 5, drafted: 0, unchanged: 0, skipped: 0 },
       enrollments: { created: ENROLLMENTS, unchanged: 0, missingInSource: 0, commentsUpdated: 0 },
       scores: { created: MARKS, updated: 0, unchanged: 0, rejected: 0, clearedInSource: 0 },
+      newStudents: { ids: expect.any(Array) },
     });
+    expect(counts.newStudents?.ids).toHaveLength(3);
 
     const users = await prisma.user.findMany({ where: { role: 'STUDENT' } });
     expect(users).toHaveLength(3);
     for (const u of users) {
-      expect(u).toMatchObject({ status: 'PENDING', mustChangePassword: true });
+      expect({ status: u.status, mustChangePassword: u.mustChangePassword }).toEqual({
+        status: 'PENDING',
+        mustChangePassword: true,
+      });
       expect(u.passwordHash.startsWith('!locked:')).toBe(true);
     }
-    const student = await prisma.student.findUniqueOrThrow({ where: { studentCode: S1 } });
-    expect(student).toMatchObject({
+    const student = await prisma.student.findUniqueOrThrow({
+      where: { studentCode: S1 },
+      select: { firstName: true, lastName: true, fullName: true, gender: true, className: true },
+    });
+    expect(student).toEqual({
       firstName: 'DARA',
       lastName: 'SOK',
       fullName: 'DARA SOK',
@@ -302,6 +310,7 @@ describe('repeat synchronization', () => {
       schemes: { published: 0, drafted: 0, unchanged: 5, skipped: 0 },
       enrollments: { created: 0, unchanged: ENROLLMENTS, missingInSource: 0, commentsUpdated: 0 },
       scores: { created: 0, updated: 0, unchanged: MARKS, rejected: 0, clearedInSource: 0 },
+      newStudents: { ids: [] },
     });
     expect(await prisma.student.count()).toBe(3);
     expect(await prisma.assessmentScore.count()).toBe(MARKS);
@@ -352,27 +361,84 @@ describe('repeat synchronization', () => {
     );
   });
 
-  it('never touches existing accounts but updates profile data from the roster', async () => {
+  it('never touches existing accounts but updates the gender from the roster', async () => {
     await sync();
     const user = await prisma.user.findUniqueOrThrow({ where: { username: S1 } });
     await prisma.user.update({
       where: { id: user.id },
       data: { status: 'ACTIVE', passwordHash: '$argon2id$real', mustChangePassword: false },
     });
-    edit((tabs) => (tabs['ALL']![3]![2] = 'SOKHA'));
+    edit((tabs) => (tabs['ALL']![3]![3] = 'F'));
 
-    const { counts } = await sync();
+    const { job, counts } = await sync();
+    expect(job.status).toBe('SUCCEEDED');
     expect(counts.students).toMatchObject({ updated: 1, unchanged: 2, created: 0 });
-    const after = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-    expect(after).toMatchObject({
+    const after = await prisma.user.findUniqueOrThrow({
+      where: { id: user.id },
+      select: { status: true, passwordHash: true, mustChangePassword: true },
+    });
+    expect(after).toEqual({
       status: 'ACTIVE',
       passwordHash: '$argon2id$real',
       mustChangePassword: false,
     });
-    expect(await prisma.student.findUniqueOrThrow({ where: { userId: user.id } })).toMatchObject({
-      lastName: 'SOKHA',
-      fullName: 'DARA SOKHA',
+    expect(
+      await prisma.student.findUniqueOrThrow({
+        where: { userId: user.id },
+        select: { gender: true, fullName: true },
+      }),
+    ).toEqual({
+      gender: 'FEMALE',
+      fullName: 'DARA SOK',
     });
+  });
+
+  it('skips a student whose name in ALL is another name, and imports everyone else', async () => {
+    await sync();
+    const before = await prisma.assessmentScore.count({
+      where: { enrollment: { student: { studentCode: S1 } } },
+    });
+    edit((tabs) => {
+      tabs['ALL']![3]![2] = 'OTHERNAME';
+      tabs['Logic']![1]![9] = 99; // S1's MIDTERM: must not be imported
+    });
+    const { job, counts } = await sync();
+    expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
+    expect(counts.students).toMatchObject({ rejected: 1, unchanged: 2, updated: 0 });
+    const errors = job.errors.filter((e) => e.studentCode === S1);
+    expect(errors.map((e) => `${e.severity} ${e.code}`)).toEqual(['ERROR STUDENT_NAME_MISMATCH']);
+    expect(
+      await prisma.student.findUniqueOrThrow({
+        where: { studentCode: S1 },
+        select: { fullName: true },
+      }),
+    ).toEqual({ fullName: 'DARA SOK' });
+    expect((await scoreOf(S1, 'T1-LOGIC', 'MIDTERM'))!.mark.toString()).toBe('60');
+    expect(
+      await prisma.assessmentScore.count({
+        where: { enrollment: { student: { studentCode: S1 } } },
+      }),
+    ).toBe(before);
+  });
+
+  it('keeps the stored name when ALL has the same words in another order', async () => {
+    await sync();
+    edit((tabs) => {
+      const row = tabs['ALL']![3]!;
+      [row[1], row[2]] = [row[2]!, row[1]!];
+    });
+    const { job, counts } = await sync();
+    expect(job.status).toBe('SUCCEEDED');
+    expect(counts.students).toMatchObject({ updated: 0, unchanged: 3 });
+    expect(job.errors).toContainEqual(
+      expect.objectContaining({ code: 'STUDENT_NAME_ORDER', severity: 'WARNING', studentCode: S1 }),
+    );
+    expect(
+      await prisma.student.findUniqueOrThrow({
+        where: { studentCode: S1 },
+        select: { firstName: true, lastName: true },
+      }),
+    ).toEqual({ firstName: 'DARA', lastName: 'SOK' });
   });
 
   it('flags students who disappear from a tab without deleting anything', async () => {
@@ -534,8 +600,11 @@ describe('rejections and partial failures', () => {
     const { job, counts } = await sync();
     expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
     expect(counts.students).toMatchObject({ created: 2, rejected: 1 });
-    const student = await prisma.student.findUniqueOrThrow({ where: { studentCode: S2 } });
-    expect(student).toMatchObject({ generationId: other.id, fullName: 'Other Generation' });
+    const student = await prisma.student.findUniqueOrThrow({
+      where: { studentCode: S2 },
+      select: { generationId: true, fullName: true },
+    });
+    expect(student).toEqual({ generationId: other.id, fullName: 'Other Generation' });
     expect(job.errors).toContainEqual(
       expect.objectContaining({ code: 'STUDENT_IN_OTHER_GENERATION', studentCode: S2 }),
     );

@@ -625,4 +625,12 @@ export async function refreshLatestTerm(
       data: { className: t.class.name, programId: t.programId },
     });
   }
+  // No term enrollment left (a replacement removed the only one): no class, no program.
+  const none = studentIds.filter((id) => !latest.has(id));
+  if (none.length > 0) {
+    await tx.student.updateMany({
+      where: { id: { in: none }, OR: [{ className: { not: null } }, { programId: { not: null } }] },
+      data: { className: null, programId: null },
+    });
+  }
 }

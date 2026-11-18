@@ -21,6 +21,14 @@ import { Redis } from 'ioredis';
 import { WORKER_ENV, type WorkerEnv } from '../config/env.js';
 import { PrismaService } from '../infra/prisma.service.js';
 
+/** Same keys as apps/api/src/auth/session.service.ts. */
+const REVOKED_KEY_PREFIX = 'ssrs:v1:auth:revoked:';
+/** Removed positive cache of older API versions; deleting a missing key is harmless. */
+const VALID_KEY_PREFIX = 'ssrs:v1:auth:valid:';
+/** Same channel as the API's SessionService: open live connections of these sessions end. */
+const SESSION_ENDED_CHANNEL = 'ssrs:v1:auth:session-ended';
+const ACCOUNT_DELETED = 'ACCOUNT_DELETED';
+
 export const SHEETS_READER = Symbol('SHEETS_READER');
 
 /** Queue states in which BullMQ still owns the job (it will run or is running). */
@@ -124,7 +132,38 @@ export class SyncProcessor implements OnApplicationBootstrap, OnApplicationShutd
       await job.moveToDelayed(outcome.retryAt.getTime() + LEASE_RETRY_MARGIN_MS, token);
       throw new DelayedError();
     }
+    if (outcome.revokedSessionIds?.length) await this.denylist(outcome.revokedSessionIds);
     return outcome.status;
+  }
+
+  /**
+   * Sessions of accounts a sheet replacement deleted: revoked in PostgreSQL by the committed
+   * transaction; denylisted and announced here like the API's SessionService does. Best effort:
+   * the API reads PostgreSQL on every request, and live connections re-check it every 10 s.
+   */
+  private async denylist(sessionIds: readonly string[]): Promise<void> {
+    try {
+      const pipeline = this.connection?.pipeline();
+      if (!pipeline) throw new Error('No Redis connection');
+      for (const id of sessionIds) {
+        pipeline.del(`${VALID_KEY_PREFIX}${id}`);
+        pipeline.set(
+          `${REVOKED_KEY_PREFIX}${id}`,
+          ACCOUNT_DELETED,
+          'EX',
+          this.env.ACCESS_TOKEN_TTL_SECONDS + 60,
+        );
+        pipeline.publish(
+          SESSION_ENDED_CHANNEL,
+          JSON.stringify({ sessionId: id, reason: ACCOUNT_DELETED }),
+        );
+      }
+      await pipeline.exec();
+    } catch (err) {
+      this.logger.error(
+        `Failed to denylist ${sessionIds.length} session(s): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /** After the final attempt of an unexpected error, make sure the job is not left RUNNING. */

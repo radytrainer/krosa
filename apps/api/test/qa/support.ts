@@ -211,9 +211,17 @@ export async function createHarness(options: TestAppOptions = {}): Promise<Harne
 
     async previewAndConfirm(sourceId) {
       const preview = (await h.admin.post(`${ADMIN_V1}/sources/${sourceId}/preview`).expect(201))
-        .body as { id: string };
+        .body as {
+        id: string;
+        summary: { replacement: { termLabel: string } | null; rosterCheck: unknown };
+      };
+      const { replacement, rosterCheck } = preview.summary;
       await h.admin
-        .post(`${ADMIN_V1}/sources/${sourceId}/preview/${preview.id}/confirm`)
+        .post(`${ADMIN_V1}/sources/${sourceId}/preview/${preview.id}/confirm`, {
+          // A sheet replacement is confirmed by typing the term label (decisions.md RP3).
+          ...(replacement ? { confirmTermLabel: replacement.termLabel } : {}),
+          ...(rosterCheck ? { rosterChecked: true } : {}),
+        })
         .expect(200);
       return preview;
     },

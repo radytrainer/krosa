@@ -1,14 +1,17 @@
 'use client';
 
-import { RotateCcw, XCircle } from 'lucide-react';
+import { KeyRound, RotateCcw, XCircle } from 'lucide-react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { toast } from 'sonner';
+import { useQueryClient } from '@tanstack/react-query';
 import { ISSUES_PAGE_SIZE, IssueFilters, PagedIssues } from '@/components/admin/paged-issues';
 import { PerSourceJobs } from '@/components/admin/source-release';
 import { jobTarget } from '@/components/admin/sync-jobs-table';
 import { NativeSelect } from '@/components/app/form';
 import { PageHeader, Section } from '@/components/app/page-header';
+import { Confirm } from '@/components/app/confirm';
 import { SyncStatusPill, isActiveJob } from '@/components/app/status';
 import {
   PageSkeleton,
@@ -31,10 +34,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { apiFetch } from '@/lib/api';
+import { apiDownload, apiFetch, saveBlob } from '@/lib/api';
 import { useRefreshOnJobFinish } from '@/components/admin/use-refresh-on-job-finish';
 import { formatDateTime, formatDuration, humanize } from '@/lib/format';
-import { qs, useApi, useApiMutation } from '@/lib/query';
+import { json, qs, useApi, useApiMutation } from '@/lib/query';
 import type { SyncErrorPage, SyncJobDetail } from '@/lib/types';
 
 const PHASES: Record<string, string> = {
@@ -46,7 +49,9 @@ const PHASES: Record<string, string> = {
 /** `counts` as a table: one row per entity, one column per outcome. */
 function CountsTable({ counts }: { counts: SyncJobDetail['counts'] }) {
   const entries = Object.entries(counts ?? {}).filter(
-    (e): e is [string, Record<string, number>] => typeof e[1] === 'object' && e[1] !== null,
+    (e): e is [string, Record<string, number>] =>
+      // newStudents holds ids, not counts: it has its own button below.
+      e[0] !== 'newStudents' && typeof e[1] === 'object' && e[1] !== null,
   );
   if (!entries.length) return null;
   const columns = [...new Set(entries.flatMap(([, v]) => Object.keys(v)))];
@@ -76,6 +81,107 @@ function CountsTable({ counts }: { counts: SyncJobDetail['counts'] }) {
           ))}
         </TableBody>
       </Table>
+    </div>
+  );
+}
+
+/** The API issues at most 500 passwords per file. */
+const ISSUE_BATCH = 500;
+const BOM = String.fromCharCode(0xfeff);
+
+/**
+ * Issues the passwords in batches of 500 and joins the CSVs into one (one header row). Passwords
+ * stay in memory only until the file is saved. If a later batch fails, the passwords already
+ * issued are still saved, so none is lost.
+ */
+async function issueInBatches(
+  ids: string[],
+): Promise<{ csv: string | null; filename: string; issued: number; error: unknown }> {
+  let header: string | null = null;
+  const rows: string[] = [];
+  let issued = 0;
+  let filename = 'credentials.csv';
+  const file = () => (header ? `${BOM}${header}\r\n${rows.join('')}` : null);
+  for (let i = 0; i < ids.length; i += ISSUE_BATCH) {
+    try {
+      const res = await apiDownload(
+        '/admin/students/issue-credentials',
+        json({ studentIds: ids.slice(i, i + ISSUE_BATCH), onlyPending: true }),
+      );
+      const count = Number(res.headers.get('X-Issued-Count') ?? 0);
+      if (count === 0) continue;
+      issued += count;
+      filename = res.filename;
+      const text = await res.blob.text();
+      const csv = text.startsWith(BOM) ? text.slice(1) : text;
+      const cut = csv.indexOf('\r\n');
+      header ??= csv.slice(0, cut);
+      const body = csv.slice(cut + 2);
+      if (body) rows.push(body.endsWith('\r\n') ? body : `${body}\r\n`);
+    } catch (error) {
+      return { csv: file(), filename, issued, error };
+    }
+  }
+  return { csv: file(), filename, issued, error: null };
+}
+
+/**
+ * "Issue passwords for N new students": the students this job created, through the usual
+ * temporary-password CSV (only accounts still waiting for one), one file however many there are.
+ * The file is the only copy.
+ */
+function IssueNewStudentPasswords({ ids }: { ids: string[] }) {
+  const queryClient = useQueryClient();
+  const [issued, setIssued] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const count = ids.length;
+  const label = `Issue passwords for ${count} new ${count === 1 ? 'student' : 'students'}`;
+  if (issued !== null) {
+    return (
+      <p className="text-sm text-muted-foreground" role="status">
+        {issued} temporary {issued === 1 ? 'password' : 'passwords'} issued. The file is the only
+        copy: distribute it securely, then delete it.
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <Confirm
+        trigger={
+          <Button>
+            <KeyRound aria-hidden />
+            {label}
+          </Button>
+        }
+        title={`${label}?`}
+        description={`Downloads one CSV with a temporary password for each of the ${count} students this sync created, if they still have none. Passwords are shown only in this file, expire in 14 days, and must be changed at first sign-in.`}
+        confirmLabel="Download passwords"
+        onConfirm={async () => {
+          setError(null);
+          const result = await issueInBatches(ids);
+          if (result.csv) {
+            saveBlob(new Blob([result.csv], { type: 'text/csv;charset=utf-8' }), result.filename);
+            toast.success(
+              `Issued ${result.issued} temporary passwords. Distribute the file securely, then delete it.`,
+            );
+            await queryClient.invalidateQueries({ queryKey: ['/admin'] });
+          }
+          if (result.error) {
+            setError(
+              `${result.issued ? `${result.issued} passwords were issued and saved. ` : ''}The rest could not be issued: ${errorMessage(result.error)} Try again for the others.`,
+            );
+          } else if (result.issued === 0) {
+            setError('These students already have passwords. Nothing was issued.');
+          } else {
+            setIssued(result.issued);
+          }
+        }}
+      />
+      {error ? (
+        <p className="text-sm text-destructive" role="alert">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -213,6 +319,7 @@ export default function SyncJobPage() {
     ? Math.round((job.progress.current / job.progress.total) * 100)
     : 0;
   const retryable = job.status === 'FAILED' || job.status === 'SUCCEEDED_WITH_ERRORS';
+  const newStudentIds = active ? [] : (job.counts?.newStudents?.ids ?? []);
 
   return (
     <>
@@ -349,6 +456,15 @@ export default function SyncJobPage() {
         {job.counts && Object.keys(job.counts).length ? (
           <Section title="What changed">
             <CountsTable counts={job.counts} />
+          </Section>
+        ) : null}
+
+        {newStudentIds.length ? (
+          <Section
+            title="New students"
+            description="This sync created accounts without a password. Students cannot sign in until they get one."
+          >
+            <IssueNewStudentPasswords ids={newStudentIds} />
           </Section>
         ) : null}
 

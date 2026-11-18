@@ -2,6 +2,16 @@
 
 import { RefreshCw, TriangleAlert } from 'lucide-react';
 import { useId, useState } from 'react';
+import {
+  ReplacementSummary,
+  TermLabelInput,
+  termLabelMatches,
+} from '@/components/admin/replacement-summary';
+import {
+  RosterCheckSection,
+  StudentNameIssues,
+  rosterCheckNeeded,
+} from '@/components/admin/roster-check';
 import { ReleaseAfterSyncOption, useReleaseStatus } from '@/components/admin/source-release';
 import { useStartSync, type SyncTarget } from '@/components/admin/use-start-sync';
 import { Spinner, TaskStatus } from '@/components/app/loading';
@@ -21,7 +31,12 @@ import {
 import { Label } from '@/components/ui/label';
 import { apiFetch, withTimeout } from '@/lib/api';
 import { json, qs, useApi, useApiMutation } from '@/lib/query';
-import type { RemovedSubject, SheetPreview, SourceReleaseView } from '@/lib/types';
+import type {
+  ConfirmPreviewBody,
+  RemovedSubject,
+  SheetPreview,
+  SourceReleaseView,
+} from '@/lib/types';
 
 function RemovedLine({ subject }: { subject: RemovedSubject }) {
   return (
@@ -124,6 +139,8 @@ export function SyncActiveSheet({
   // Open only after a click on this visit: never restored when the admin comes back.
   const [open, setOpen] = useVisitState(false);
   const [acknowledged, setAcknowledged] = useState(false);
+  const [rosterChecked, setRosterChecked] = useState(false);
+  const [typed, setTyped] = useState('');
   const [release, setRelease] = useState(false);
   const status = useReleaseStatus(open ? [sourceId] : []);
   const startSync = useStartSync();
@@ -133,11 +150,8 @@ export function SyncActiveSheet({
     ),
   );
   const confirm = useApiMutation(
-    (body: { id: string; acknowledgeRemovals: boolean }) =>
-      apiFetch<SheetPreview>(
-        `/admin/sources/${sourceId}/preview/${body.id}/confirm`,
-        json({ acknowledgeRemovals: body.acknowledgeRemovals }),
-      ),
+    ({ id, ...body }: ConfirmPreviewBody & { id: string }) =>
+      apiFetch<SheetPreview>(`/admin/sources/${sourceId}/preview/${id}/confirm`, json(body)),
     {
       onSuccess: (preview) => {
         startSync.mutate(
@@ -148,9 +162,17 @@ export function SyncActiveSheet({
     },
   );
   const preview = run.data;
-  const removed = preview?.summary.comparison.removed ?? [];
+  // An active sheet is never a replacement; handled anyway, should the API ever report one.
+  const replacement = preview?.summary.replacement ?? null;
+  const removed = replacement ? [] : (preview?.summary.comparison.removed ?? []);
   const renames = preview?.summary.comparison.possibleRenames ?? [];
-  const canSync = Boolean(preview?.summary.canConfirm) && (removed.length === 0 || acknowledged);
+  const rosterCheck = preview?.summary.rosterCheck ?? null;
+  const needsRoster = rosterCheckNeeded(rosterCheck);
+  const canSync =
+    Boolean(preview?.summary.canConfirm) &&
+    (replacement ? termLabelMatches(typed, replacement) : removed.length === 0 || acknowledged) &&
+    (!needsRoster || rosterChecked);
+  const destructive = Boolean(replacement) || removed.length > 0;
   const busy = confirm.isPending || startSync.isPending;
 
   return (
@@ -160,16 +182,22 @@ export function SyncActiveSheet({
         disabled={disabled}
         onClick={() => {
           setAcknowledged(false);
+          setRosterChecked(false);
+          setTyped('');
           setRelease(false);
           setOpen(true);
           run.mutate(undefined);
         }}
       />
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>
-              {removed.length ? 'Remove subjects and sync?' : 'Sync this sheet?'}
+              {replacement
+                ? `Permanently delete the data of ${replacement.termLabel} and sync?`
+                : removed.length
+                  ? 'Remove subjects and sync?'
+                  : 'Sync this sheet?'}
             </DialogTitle>
             <DialogDescription>
               Imports the latest marks and students from the sheet.
@@ -195,11 +223,31 @@ export function SyncActiveSheet({
               </AlertDescription>
             </Alert>
           ))}
+          {preview?.summary.canConfirm && replacement ? (
+            <ReplacementSummary replacement={replacement} />
+          ) : null}
           {preview?.summary.canConfirm && removed.length > 0 ? (
             <RemovalWarning
               removed={removed}
               acknowledged={acknowledged}
               onAcknowledge={setAcknowledged}
+            />
+          ) : null}
+          {preview ? <StudentNameIssues summary={preview.summary} /> : null}
+          {preview?.summary.canConfirm ? (
+            <RosterCheckSection
+              check={rosterCheck}
+              checked={rosterChecked}
+              onCheckedChange={setRosterChecked}
+              disabled={busy}
+            />
+          ) : null}
+          {preview?.summary.canConfirm && replacement ? (
+            <TermLabelInput
+              termLabel={replacement.termLabel}
+              value={typed}
+              onChange={setTyped}
+              disabled={busy}
             />
           ) : null}
           {preview?.summary.canConfirm ? (
@@ -216,15 +264,21 @@ export function SyncActiveSheet({
               Cancel
             </Button>
             <Button
-              variant={removed.length ? 'destructive' : 'default'}
+              variant={destructive ? 'destructive' : 'default'}
               disabled={!canSync || busy}
               onClick={() =>
                 preview &&
-                confirm.mutate({ id: preview.id, acknowledgeRemovals: removed.length > 0 })
+                confirm.mutate({
+                  id: preview.id,
+                  ...(replacement
+                    ? { confirmTermLabel: typed.trim() }
+                    : { acknowledgeRemovals: removed.length > 0 }),
+                  ...(needsRoster ? { rosterChecked: true } : {}),
+                })
               }
             >
               {busy ? <Spinner /> : null}
-              {removed.length ? 'Remove and sync' : 'Sync now'}
+              {replacement ? 'Delete and sync' : removed.length ? 'Remove and sync' : 'Sync now'}
             </Button>
           </DialogFooter>
         </DialogContent>

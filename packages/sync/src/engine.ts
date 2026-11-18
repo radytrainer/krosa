@@ -10,12 +10,14 @@ import {
   type TermWorkbookRead,
 } from '@ssrs/sheets';
 import { applyCourse, type CourseTerm } from './apply-course.js';
-import { applyRoster } from './apply-roster.js';
+import { applyRoster, lockRoster } from './apply-roster.js';
 import {
   activePreviewGate,
   audienceByCourseKey,
   confirmedRemovals,
+  confirmedSummary,
   confirmedTabs,
+  type ConfirmedSummary,
   mappingVersions,
   previewGate,
   TAB_MAPPINGS_INCLUDE,
@@ -24,6 +26,21 @@ import { refreshParentJob } from './parent.js';
 import { setTermVisibility } from './release.js';
 import { linkCriteria, prepareSubjects } from './promote.js';
 import { archiveSubjects, compareSheet, sameRemovals, type RemovedSubject } from './removals.js';
+import {
+  applyReplacement,
+  computeReplacement,
+  deleteUnfedSubjects,
+  replacedSource,
+  type ReplacementSet,
+} from './replacement.js';
+import {
+  isBlockingError,
+  rosterCheck,
+  rosterCheckKey,
+  screenKey,
+  screenRoster,
+  withoutStudents,
+} from './roster-check.js';
 import {
   applyStudentTerms,
   countPlan,
@@ -64,6 +81,125 @@ const SHEET_CHANGE_TX = { maxWait: 30_000, timeout: 300_000 } as const;
 
 /** Rolls back a sheet change: students keep the old scores and the sheet stays pending. */
 class SheetChangeRejected extends Error {}
+/** Rolls back a replacement whose deletion set is not the one the admin confirmed. */
+class ReplacementChanged extends Error {}
+/** Rolls back a sync whose roster check or student skips are not the ones the admin confirmed. */
+class RosterChanged extends Error {}
+
+const ROSTER_CHANGED = {
+  failureCode: 'ROSTER_CHANGED',
+  failureMessage:
+    'The students missing from, new in or skipped by this sheet changed since the preview. Nothing was imported. Run a new preview.',
+} as const;
+
+const REPLACEMENT_CHANGED = {
+  failureCode: 'REPLACEMENT_CHANGED',
+  failureMessage:
+    'The data to delete changed since the preview. Nothing was deleted or imported. Run a new preview.',
+} as const;
+
+/** A job's counts for its audit entry: ids of created students become a count. */
+function auditCounts(counts: SyncCounts): Record<string, unknown> {
+  const { newStudents, ...rest } = counts;
+  return newStudents ? { ...rest, newStudents: { count: newStudents.ids.length } } : rest;
+}
+
+/** Every student ID in the roster tab, duplicates included. */
+function rosterCodes(workbook: Pick<TermWorkbookRead, 'roster' | 'rosterDuplicates'>): Set<string> {
+  return new Set([
+    ...workbook.roster.map((s) => s.studentCode),
+    ...workbook.rosterDuplicates.flat().map((s) => s.studentCode),
+  ]);
+}
+
+/** A subject-tab row or cell issue of a skipped student: not reported again. */
+function skippedRowIssue(
+  issue: SyncIssue,
+  skipped: ReadonlySet<string>,
+  rosterTab: string | null,
+): boolean {
+  return (
+    !!issue.studentCode &&
+    skipped.has(issue.studentCode) &&
+    issue.sheetTab !== rosterTab &&
+    (issue.scope === 'ROW' || issue.scope === 'CELL')
+  );
+}
+
+/**
+ * Who a sync imports (decisions.md RP5–RP7). Students skipped by a name, generation or login
+ * conflict are left out with one error each. Terms 2–5: a job with a preview must find the roster
+ * check the admin confirmed (ROSTER_CHANGED otherwise); a job without one creates nobody new and
+ * reports each new student once (ROSTER_APPROVAL_REQUIRED).
+ */
+async function screenStudents(
+  prisma: PrismaClient | Prisma.TransactionClient,
+  input: {
+    source: { termId: string; rosterTab: string; term: { number: number } };
+    generationId: string;
+    workbook: TermWorkbookRead;
+    replacement: ReplacementSet | null;
+    /** The confirmed preview summary; undefined for a job without a preview. */
+    preview: ConfirmedSummary | null | undefined;
+  },
+): Promise<
+  | { workbook: TermWorkbookRead; skipped: Set<string>; issues: SyncIssue[]; rejected: number }
+  | { failure: { failureCode: string; failureMessage: string } }
+> {
+  const { workbook, replacement } = input;
+  const rosterTab = workbook.rosterTab ?? input.source.rosterTab;
+  const deleted = new Set(replacement?.accounts.map((a) => a.studentId) ?? []);
+  const screen = await screenRoster(
+    prisma,
+    { generationId: input.generationId, rosterTab, excludeStudentIds: deleted },
+    workbook.roster,
+  );
+  const check = await rosterCheck(
+    prisma,
+    {
+      generationId: input.generationId,
+      termId: input.source.termId,
+      termNumber: input.source.term.number,
+      allCodes: rosterCodes(workbook),
+      replacement: replacement !== null,
+      deletedStudentIds: deleted,
+    },
+    screen.roster,
+  );
+  const issues = [...screen.issues];
+  const skipped = new Set(screen.skipped);
+  let roster = screen.roster;
+  if (input.preview !== undefined) {
+    if (
+      rosterCheckKey(check) !== rosterCheckKey(input.preview?.rosterCheck) ||
+      screenKey(screen) !== screenKey(input.preview)
+    ) {
+      return { failure: ROSTER_CHANGED };
+    }
+  } else if (check && check.new.length > 0) {
+    const fresh = new Set(check.new.map((n) => n.studentCode));
+    for (const s of roster) {
+      if (!fresh.has(s.studentCode)) continue;
+      skipped.add(s.studentCode);
+      issues.push({
+        severity: 'WARNING',
+        scope: 'ROW',
+        code: 'ROSTER_APPROVAL_REQUIRED',
+        message: `${s.studentCode} is in no earlier term of this generation. Run a preview of this sheet and confirm its roster check to add this student.`,
+        sheetTab: rosterTab,
+        rowNumber: s.rowNumber,
+        studentCode: s.studentCode,
+      });
+    }
+    roster = roster.filter((s) => !fresh.has(s.studentCode));
+  }
+  return {
+    workbook: withoutStudents(workbook, roster, skipped),
+    skipped,
+    issues,
+    rejected: screen.skipped.size,
+  };
+}
 
 /** Counts parser rejections into the job report (students, courses and cells). */
 function countParseRejections(
@@ -275,6 +411,7 @@ async function execute(
       failureMessage?: string;
       counts?: SyncCounts;
       issues?: SyncIssue[];
+      revokedSessionIds?: string[];
     } = {},
   ): Promise<RunOutcome> => {
     const issues = [...(extra.issues ?? [])];
@@ -315,13 +452,18 @@ async function execute(
           status,
           sourceId: job.sourceId,
           failureCode: extra.failureCode ?? null,
-          counts: (extra.counts ?? null) as unknown as Prisma.InputJsonValue,
+          // The job row keeps the new students' ids; the audit entry only their number.
+          counts: (extra.counts
+            ? auditCounts(extra.counts)
+            : null) as unknown as Prisma.InputJsonValue,
         },
       },
     });
     if (job.parentId) await refreshParentJob(prisma, job.parentId, finishedAt);
     logger.info('Sync job finished', { syncJobId: job.id, status, failureCode: extra.failureCode });
-    return { kind: 'finished', status };
+    return extra.revokedSessionIds?.length
+      ? { kind: 'finished', status, revokedSessionIds: extra.revokedSessionIds }
+      : { kind: 'finished', status };
   };
 
   // A re-delivered job (worker crash, stalled lock) starts its report from scratch.
@@ -430,8 +572,11 @@ async function execute(
   });
 
   const pending = source.status === 'PENDING';
+  const withPreview = pending || job.previewId !== null;
   let removed: RemovedSubject[] = [];
-  if (pending || job.previewId) {
+  // A pending sheet of another spreadsheet replaces the term's data (decisions.md RP1).
+  const old = pending ? await replacedSource(prisma, source) : null;
+  if (withPreview) {
     const gate =
       job.previewId && !pending
         ? await activePreviewGate(prisma, source.id, job.previewId)
@@ -442,7 +587,7 @@ async function execute(
     // Exactly what the admin confirmed, or nothing: checked before anything is written.
     const comparison = await compareSheet(prisma, source.termId, confirmed, workbook);
     const expected = await confirmedRemovals(prisma, source.id, job.previewId);
-    if (!sameRemovals(comparison.removed, expected)) {
+    if (!old && !sameRemovals(comparison.removed, expected)) {
       return finish('FAILED', {
         failureCode: 'REMOVALS_CHANGED',
         failureMessage:
@@ -458,6 +603,38 @@ async function execute(
     counts.offerings.rejected -= issues.length - remaining.length;
     issues = remaining;
   }
+  const summary = withPreview ? await confirmedSummary(prisma, source.id, job.previewId) : null;
+  const replacement = old
+    ? await computeReplacement(prisma, { source, old, confirmed, workbook })
+    : null;
+  if (
+    withPreview &&
+    (replacement?.manifestHash ?? null) !== (summary?.replacement?.manifestHash ?? null)
+  ) {
+    return finish('FAILED', { ...REPLACEMENT_CHANGED, issues });
+  }
+
+  // Who is imported: per-student skips (name, generation, login name) and the roster check.
+  const screenInput = {
+    source,
+    generationId: generation.id,
+    workbook,
+    replacement,
+    preview: withPreview ? summary : undefined,
+  };
+  const screened = await screenStudents(prisma, screenInput);
+  if ('failure' in screened) return finish('FAILED', { ...screened.failure, issues });
+  /** With a preview: checked again under the roster lock, so nothing changes after the check. */
+  const verifyRoster = withPreview
+    ? async (tx: Prisma.TransactionClient) => {
+        if ('failure' in (await screenStudents(tx, screenInput))) throw new RosterChanged();
+      }
+    : undefined;
+  const rawRoster = workbook.roster;
+  issues = issues.filter((i) => !skippedRowIssue(i, screened.skipped, workbook.rosterTab));
+  issues.push(...screened.issues);
+  counts.students.rejected += screened.rejected;
+  workbook = screened.workbook;
 
   if (pending || removed.length > 0) {
     const refused = pending
@@ -471,27 +648,52 @@ async function execute(
           failureMessage:
             'A sync that removes subjects needs zero errors, so nothing was imported or removed.',
         };
-    if (issues.some((i) => i.severity === 'ERROR')) return finish('FAILED', { ...refused, issues });
+    if (issues.some(isBlockingError)) return finish('FAILED', { ...refused, issues });
+    const archive = replacement ? [] : removed;
+    const read = workbook;
+    let revokedSessionIds: string[] = [];
     try {
       await prisma.$transaction(async (tx) => {
-        const courses = await prepareSubjects(tx, source, workbook.courses);
+        await lockRoster(tx);
+        await verifyRoster?.(tx);
+        if (replacement && old) {
+          // Recomputed under the roster lock: anything else to delete stops the whole sync.
+          const again = await computeReplacement(tx, {
+            source,
+            old,
+            confirmed,
+            workbook: { ...read, roster: rawRoster },
+          });
+          if (again.manifestHash !== replacement.manifestHash) throw new ReplacementChanged();
+          const applied = await applyReplacement(tx, again, {
+            sourceId: source.id,
+            now: now(),
+          });
+          revokedSessionIds = applied.revokedSessionIds;
+          counts.replacement = again.counts;
+        }
+        const courses = await prepareSubjects(tx, source, read.courses);
+        if (replacement && counts.replacement) {
+          await deleteUnfedSubjects(tx, replacement);
+        }
         const roster = await applyRoster(
           prisma,
           {
             syncJobId: job.id,
             sourceId: source.id,
             generationId: generation.id,
-            rosterTab: workbook.rosterTab ?? source.rosterTab,
+            rosterTab: read.rosterTab ?? source.rosterTab,
           },
-          workbook.roster,
+          read.roster,
           now(),
           tx,
         );
         issues.push(...roster.issues);
         addCounts(counts, { students: roster.counts });
+        counts.newStudents = { ids: roster.createdIds };
         const termOf = await applyTerm(tx, {
           source,
-          workbook,
+          workbook: read,
           syncJobId: job.id,
           studentIdByCode: roster.studentIdByCode,
           now: now(),
@@ -517,11 +719,11 @@ async function execute(
           issues.push(...result.issues);
           addCounts(counts, result.counts);
         }
-        if (issues.some((i) => i.severity === 'ERROR')) {
+        if (issues.some(isBlockingError)) {
           throw new SheetChangeRejected(refused.failureMessage);
         }
         await linkCriteria(tx, source.id);
-        if (removed.length > 0) {
+        if (archive.length > 0) {
           await archiveSubjects(
             tx,
             {
@@ -530,7 +732,7 @@ async function execute(
               requestedById: job.requestedById,
               termId: source.termId,
             },
-            removed,
+            archive,
             now(),
           );
         }
@@ -563,23 +765,34 @@ async function execute(
           data: { progressCurrent: workbook.courses.length + 1 },
         });
         if (pending) {
+          // No names, marks or student IDs: counts only.
           await tx.auditLog.create({
             data: {
-              actorType: 'SYSTEM',
+              actorType: 'USER',
+              actorUserId: job.requestedById,
               action: 'source.promoted',
               entityType: 'source',
               entityId: source.id,
               metadata: {
                 syncJobId: job.id,
                 termId: source.termId,
-                oldSpreadsheetId: previous?.spreadsheetId ?? null,
+                oldSourceId: replacement?.oldSourceId ?? previous?.id ?? null,
+                newSourceId: source.id,
+                oldSpreadsheetId: replacement?.oldSpreadsheetId ?? previous?.spreadsheetId ?? null,
                 newSpreadsheetId: source.spreadsheetId,
+                deleted: counts.replacement ?? null,
+                revokedSessions: revokedSessionIds.length,
               },
             },
           });
         }
       }, SHEET_CHANGE_TX);
     } catch (err) {
+      delete counts.replacement;
+      if (err instanceof ReplacementChanged) {
+        return finish('FAILED', { ...REPLACEMENT_CHANGED, issues });
+      }
+      if (err instanceof RosterChanged) return finish('FAILED', { ...ROSTER_CHANGED, issues });
       if (!(err instanceof SheetChangeRejected)) {
         logger.error('Sheet change failed', {
           syncJobId: job.id,
@@ -594,7 +807,7 @@ async function execute(
       }
       return finish('FAILED', { ...refused, issues });
     }
-    for (const r of removed) {
+    for (const r of archive) {
       issues.push({
         severity: 'WARNING',
         scope: 'COURSE',
@@ -603,7 +816,10 @@ async function execute(
         ...(r.tabName ? { sheetTab: r.tabName } : {}),
       });
     }
-    return finish('SUCCEEDED', { counts, issues });
+    const status = issues.some((i) => i.severity === 'ERROR')
+      ? 'SUCCEEDED_WITH_ERRORS'
+      : 'SUCCEEDED';
+    return finish(status, { counts, issues, revokedSessionIds });
   }
 
   let studentIdByCode: Map<string, string>;
@@ -618,14 +834,18 @@ async function execute(
       },
       workbook.roster,
       now(),
+      undefined,
+      verifyRoster,
     );
     studentIdByCode = roster.studentIdByCode;
+    counts.newStudents = { ids: roster.createdIds };
     issues.push(...roster.issues);
     counts.students.created += roster.counts.created;
     counts.students.updated += roster.counts.updated;
     counts.students.unchanged += roster.counts.unchanged;
     counts.students.rejected += roster.counts.rejected;
   } catch (err) {
+    if (err instanceof RosterChanged) return finish('FAILED', { ...ROSTER_CHANGED, issues });
     logger.error('Roster apply failed', {
       syncJobId: job.id,
       error: err instanceof Error ? err.message : String(err),

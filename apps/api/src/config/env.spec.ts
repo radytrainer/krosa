@@ -77,3 +77,48 @@ describe('loadApiEnv', () => {
     expect(() => loadApiEnv({ ...base, SHEETS_TEST_MODE: 'google' })).toThrow(EnvValidationError);
   });
 });
+
+describe('session settings (decisions.md SR2, SR5)', () => {
+  it('defaults to a 15-minute idle limit and a 5-minute heartbeat', () => {
+    const env = loadApiEnv(base);
+    expect(env.SESSION_IDLE_TIMEOUT_SECONDS).toBe(900);
+    expect(env.SESSION_HEARTBEAT_INTERVAL_SECONDS).toBe(300);
+    expect(env.LIVE_MAX_PER_SESSION).toBe(3);
+    expect(env.LIVE_MAX_PER_USER).toBe(5);
+  });
+
+  it('enforces the minimums', () => {
+    expect(() => loadApiEnv({ ...base, SESSION_IDLE_TIMEOUT_SECONDS: '59' })).toThrow(
+      EnvValidationError,
+    );
+    expect(() =>
+      loadApiEnv({
+        ...base,
+        SESSION_HEARTBEAT_INTERVAL_SECONDS: '9',
+        SESSION_IDLE_TIMEOUT_SECONDS: '60',
+      }),
+    ).toThrow(EnvValidationError);
+  });
+
+  it('keeps the heartbeat at most a third of the idle limit', () => {
+    const short = { ...base, SESSION_IDLE_TIMEOUT_SECONDS: '60', ACCESS_TOKEN_TTL_SECONDS: '60' };
+    expect(
+      loadApiEnv({ ...short, SESSION_HEARTBEAT_INTERVAL_SECONDS: '20' })
+        .SESSION_HEARTBEAT_INTERVAL_SECONDS,
+    ).toBe(20);
+    expect(() => loadApiEnv({ ...short, SESSION_HEARTBEAT_INTERVAL_SECONDS: '21' })).toThrow(
+      EnvValidationError,
+    );
+  });
+
+  it('refuses an access token that outlives the idle limit', () => {
+    expect(() =>
+      loadApiEnv({
+        ...base,
+        SESSION_IDLE_TIMEOUT_SECONDS: '600',
+        SESSION_HEARTBEAT_INTERVAL_SECONDS: '60',
+        ACCESS_TOKEN_TTL_SECONDS: '900',
+      }),
+    ).toThrow(EnvValidationError);
+  });
+});

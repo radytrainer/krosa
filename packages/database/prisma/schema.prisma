@@ -40,6 +40,12 @@ enum SessionRevokeReason {
   PASSWORD_RESET
   ACCOUNT_DISABLED
   ADMIN
+  /// The account was deleted by a sheet replacement (decisions.md RP4).
+  ACCOUNT_DELETED
+  /// The user signed in again; one active session per user (decisions.md SR1).
+  SIGNED_IN_ELSEWHERE
+  /// No heartbeat for the configured idle limit (decisions.md SR2).
+  IDLE_TIMEOUT
 }
 
 model User {
@@ -62,7 +68,6 @@ model User {
 
   student              Student?
   sessions             AuthSession[]
-  auditLogs            AuditLog[]
   sourcesCreated       GoogleSheetSource[]
   syncJobsRequested    SyncJob[]
   schemesCreated       GradingScheme[]           @relation("SchemeCreatedBy")
@@ -84,6 +89,8 @@ model AuthSession {
   userId       String               @map("user_id") @db.Uuid
   createdAt    DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
   lastUsedAt   DateTime             @default(now()) @map("last_used_at") @db.Timestamptz(3)
+  /// Last user activity: set at login and by POST /auth/heartbeat only (decisions.md SR2).
+  lastActivityAt DateTime           @default(now()) @map("last_activity_at") @db.Timestamptz(3)
   /// Absolute lifetime; refresh never extends it.
   expiresAt    DateTime             @map("expires_at") @db.Timestamptz(3)
   revokedAt    DateTime?            @map("revoked_at") @db.Timestamptz(3)
@@ -106,6 +113,8 @@ model RefreshToken {
   expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
   /// Set when rotated. Presenting a used token revokes the whole session.
   usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+  /// Set when the session is revoked; a revoked token is never accepted.
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
 
   session AuthSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -367,6 +376,7 @@ model GoogleSheetSource {
   createdBy    User              @relation(fields: [createdById], references: [id])
   offerings    CourseOffering[]
   students     Student[]
+  provisioned  Student[]         @relation("StudentProvisionedBy")
   syncJobs     SyncJob[]
   tabMappings  SheetTabMapping[]
   previews     SheetPreview[]
@@ -520,37 +530,45 @@ enum Gender {
 }
 
 model Student {
-  id                String   @id @default(uuid(7)) @db.Uuid
+  id                  String    @id @default(uuid(7)) @db.Uuid
   /// Business student ID, normalized to upper case (see @ssrs/shared normalizeStudentId).
-  studentCode       String   @unique @map("student_code")
-  userId            String   @unique @map("user_id") @db.Uuid
-  generationId      String   @map("generation_id") @db.Uuid
-  fullName          String   @map("full_name")
+  studentCode         String    @unique @map("student_code")
+  userId              String    @unique @map("user_id") @db.Uuid
+  generationId        String    @map("generation_id") @db.Uuid
+  fullName            String    @map("full_name")
   /// Term workbooks split names; NULL for students imported from the v1 template.
-  firstName         String?  @map("first_name")
-  lastName          String?  @map("last_name")
-  gender            Gender   @default(UNSPECIFIED)
+  firstName           String?   @map("first_name")
+  lastName            String?   @map("last_name")
+  gender              Gender    @default(UNSPECIFIED)
   /// The latest term's class: student_terms of the highest term number. Kept in step by sync.
-  className         String?  @map("class_name")
+  className           String?   @map("class_name")
   /// The latest term's program, kept in step with student_terms like `className`.
-  programId         String?  @map("program_id") @db.Uuid
+  programId           String?   @map("program_id") @db.Uuid
   /// Roster source that last updated the profile.
-  sourceId          String?  @map("source_id") @db.Uuid
-  lastSeenSyncJobId String?  @map("last_seen_sync_job_id") @db.Uuid
-  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  sourceId            String?   @map("source_id") @db.Uuid
+  lastSeenSyncJobId   String?   @map("last_seen_sync_job_id") @db.Uuid
+  /// Source whose sync created the account. A sheet replacement of that source's term may delete
+  /// the account when it has no data in any other term. NULL: never deleted that way.
+  provisionedSourceId String?   @map("provisioned_source_id") @db.Uuid
+  /// Set when an admin corrects the name (PATCH /admin/students/:id/name). A replacement never
+  /// deletes such an account (decisions.md RP10).
+  nameEditedAt        DateTime? @map("name_edited_at") @db.Timestamptz(3)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  user        User               @relation(fields: [userId], references: [id])
-  generation  Generation         @relation(fields: [generationId], references: [id])
-  source      GoogleSheetSource? @relation(fields: [sourceId], references: [id])
-  program     Program?           @relation(fields: [programId], references: [id])
-  enrollments Enrollment[]
-  terms       StudentTerm[]
-  termIssues  StudentTermIssue[]
+  user              User               @relation(fields: [userId], references: [id])
+  generation        Generation         @relation(fields: [generationId], references: [id])
+  source            GoogleSheetSource? @relation(fields: [sourceId], references: [id])
+  provisionedSource GoogleSheetSource? @relation("StudentProvisionedBy", fields: [provisionedSourceId], references: [id], onDelete: Restrict)
+  program           Program?           @relation(fields: [programId], references: [id])
+  enrollments       Enrollment[]
+  terms             StudentTerm[]
+  termIssues        StudentTermIssue[]
 
   /// Target of the composite FK keeping a student term in the student's generation.
   @@unique([id, generationId])
   @@index([generationId, className])
+  @@index([provisionedSourceId])
   @@index([generationId, programId, className])
   @@index([fullName(ops: raw("gin_trgm_ops"))], map: "students_full_name_trgm_idx", type: Gin)
   @@map("students")
@@ -986,6 +1004,7 @@ enum ActorType {
 /// Append-only (UPDATE/DELETE rejected by trigger).
 model AuditLog {
   id          String    @id @default(uuid(7)) @db.Uuid
+  /// No foreign key: the actor's account may have been deleted; the id stays for the record.
   actorUserId String?   @map("actor_user_id") @db.Uuid
   actorType   ActorType @map("actor_type")
   /// Dotted action name, e.g. auth.login.success
@@ -997,8 +1016,6 @@ model AuditLog {
   userAgent   String?   @map("user_agent")
   requestId   String?   @map("request_id")
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  actor User? @relation(fields: [actorUserId], references: [id])
 
   @@index([createdAt(sort: Desc)])
   @@index([entityType, entityId])

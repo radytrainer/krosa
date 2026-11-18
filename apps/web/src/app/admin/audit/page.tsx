@@ -141,7 +141,12 @@ function AuditLog() {
                     </TableCell>
                     <TableCell className="font-mono text-xs">{e.action}</TableCell>
                     <TableCell className="hidden md:table-cell">
-                      {e.actor ? e.actor.username : e.actorType === 'SYSTEM' ? 'System' : '—'}
+                      {e.actor
+                        ? e.actor.username
+                        : e.actorType === 'SYSTEM'
+                          ? 'System'
+                          : // A user action whose account is gone (the entry keeps its id).
+                            'Deleted account'}
                       {e.ip ? (
                         <span className="block text-xs text-muted-foreground">{e.ip}</span>
                       ) : null}

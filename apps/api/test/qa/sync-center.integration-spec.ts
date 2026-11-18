@@ -160,6 +160,15 @@ describe('QA E: Sync Center', () => {
     async function twoSourceJob() {
       const a = await connectTerm(2, SHEET_T2, sheetFor(6, 2));
       const b = await connectTerm(3, SHEET_T3, sheetFor(5, 3));
+      // Students new in Terms 2-5 are added only by a previewed sync (decisions.md RP5): one
+      // reviewed sync of Term 2 brings them in, so the generation job below imports their rows.
+      const preview = await h.previewAndConfirm(a);
+      const first = (
+        await h.admin
+          .post(`${ADMIN_V1}/sync`, { scope: 'SOURCE', sourceId: a, previewId: preview.id })
+          .expect(202)
+      ).body;
+      await h.runJob(first.jobId);
       const { jobId } = (
         await h.admin
           .post(`${ADMIN_V1}/sync`, { scope: 'GENERATION', generationId: h.generationId })

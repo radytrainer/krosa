@@ -59,6 +59,33 @@ export class ListStudentsQueryDto extends PaginationQueryDto {
   q?: string;
 }
 
+/**
+ * PATCH /admin/students/:id/name. Fields left out keep their value; null clears a first or last
+ * name. With both a first and a last name and no full name, the full name is "FIRST LAST".
+ */
+export class UpdateStudentNameDto {
+  @ApiPropertyOptional({ type: String, nullable: true, maxLength: 200 })
+  @IsOptional()
+  @Trim()
+  @IsString()
+  @Length(1, 200)
+  firstName?: string | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true, maxLength: 200 })
+  @IsOptional()
+  @Trim()
+  @IsString()
+  @Length(1, 200)
+  lastName?: string | null;
+
+  @ApiPropertyOptional({ maxLength: 200 })
+  @IsOptional()
+  @Trim()
+  @IsString()
+  @Length(1, 200)
+  fullName?: string;
+}
+
 export class UpdateStudentStatusDto {
   @ApiProperty({ enum: ['ACTIVE', 'DISABLED'] })
   @IsEnum(['ACTIVE', 'DISABLED'])

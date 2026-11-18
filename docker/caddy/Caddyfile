@@ -5,7 +5,10 @@
 }
 
 {$SITE_ADDRESS} {
-	encode zstd gzip
+	# The live session stream (GET /api/v1/auth/live, server-sent events) is never compressed,
+	# so each event reaches the browser at once.
+	@compressible not path /api/v1/auth/live
+	encode @compressible zstd gzip
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -16,6 +19,8 @@
 	# The API serves /api/v1/*; Swagger stays off in production (SWAGGER_ENABLED=false).
 	handle /api/* {
 		reverse_proxy api:4000 {
+			# Streams (text/event-stream) are flushed immediately; this keeps every response unbuffered.
+			flush_interval -1
 			header_up X-Request-Id {http.request.uuid}
 		}
 	}

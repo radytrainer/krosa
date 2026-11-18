@@ -9,7 +9,8 @@ Conventions:
 - Tables/columns `snake_case` (Prisma models mapped with `@@map`/`@map`).
 - All timestamps `timestamptz` in UTC: `created_at`, `updated_at`.
 - Grading values `numeric`: marks/max marks `numeric(8,3)`, weights `numeric(6,3)`, credits `numeric(4,1)`.
-- Foreign keys default to `ON DELETE RESTRICT`. Academic records are archived, never cascaded away.
+- Foreign keys default to `ON DELETE RESTRICT`. Academic records are archived, never cascaded away,
+  except by a sheet replacement, which deletes one term's student data (decisions.md RP1–RP4).
   Exceptions are noted (`CASCADE` only for pure child rows such as scheme items of a deleted draft).
 - Constraints that Prisma cannot express (CHECKs, triggers) are added in raw SQL in the migration
   files. Partial unique indexes are declared in `schema.prisma`.
@@ -36,7 +37,7 @@ enrollments 1─* assessment_scores *─1 assessment_criteria
 assessment_scores 1─* assessment_score_revisions
 users 1─* auth_sessions 1─* refresh_tokens
 sync_jobs (parent) 1─* sync_jobs (children) ; sync_jobs 1─* sync_errors ; sync_jobs *─1 google_sheet_sources
-audit_logs *─1 users (actor, nullable)
+audit_logs ·· users (actor_user_id, no FK: the account may be deleted)
 ```
 
 ## 2. Tables
@@ -67,10 +68,11 @@ One row per login (a refresh-token family).
 | ------------------------ | ---------------- | -------------------------------------------------------------------------------------------------------- |
 | id                       | uuid PK          | also the `sid` claim in access tokens                                                                    |
 | user_id                  | uuid FK users    | ON DELETE CASCADE                                                                                        |
-| created_at, last_used_at | timestamptz      |                                                                                                          |
+| created_at, last_used_at | timestamptz      | `last_used_at`: last refresh                                                                             |
+| last_activity_at         | timestamptz      | NOT NULL, default now(); set at login and by `POST /auth/heartbeat` only; the idle limit counts from it  |
 | expires_at               | timestamptz      | absolute session lifetime (default 7 days)                                                               |
 | revoked_at               | timestamptz NULL |                                                                                                          |
-| revoke_reason            | enum NULL        | `SessionRevokeReason`: LOGOUT, REUSE_DETECTED, PASSWORD_CHANGED, PASSWORD_RESET, ACCOUNT_DISABLED, ADMIN |
+| revoke_reason            | enum NULL        | `SessionRevokeReason`: LOGOUT, REUSE_DETECTED, PASSWORD_CHANGED, PASSWORD_RESET, ACCOUNT_DISABLED, ADMIN, ACCOUNT_DELETED, SIGNED_IN_ELSEWHERE (one session per user), IDLE_TIMEOUT (inactivity) |
 | ip, user_agent           | text NULL        |                                                                                                          |
 
 Index: `(user_id) WHERE revoked_at IS NULL`.
@@ -84,6 +86,7 @@ Index: `(user_id) WHERE revoked_at IS NULL`.
 | token_hash | char(64) UNIQUE       | SHA-256 of 256-bit random token (high-entropy, so no slow hash needed) |
 | expires_at | timestamptz           |                                                                        |
 | used_at    | timestamptz NULL      | set on rotation; reuse of a used token ⇒ revoke session                |
+| revoked_at | timestamptz NULL      | set with its session's revocation; a revoked token is never accepted   |
 | created_at | timestamptz           |                                                                        |
 
 ### generations
@@ -160,20 +163,22 @@ Index: `(user_id) WHERE revoked_at IS NULL`.
 
 ### students
 
-| column                                                                                                                            | type                                    | notes                                                                              |
-| --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------- |
-| id                                                                                                                                | uuid PK                                 |                                                                                    |
-| student_code                                                                                                                      | text UNIQUE NOT NULL                    | business student ID, stored normalized (upper case); CHECK regex on the exact text |
-| user_id                                                                                                                           | uuid UNIQUE FK users                    |                                                                                    |
-| generation_id                                                                                                                     | uuid FK                                 |                                                                                    |
-| full_name                                                                                                                         | text NOT NULL                           |                                                                                    |
-| first_name, last_name                                                                                                             | text NULL                               | from the term workbook                                                             |
-| gender                                                                                                                            | enum (FEMALE, MALE, OTHER, UNSPECIFIED) |                                                                                    |
-| class_name                                                                                                                        | text NULL                               | the latest term's class (highest term number in student_terms), same transaction   |
-| program_id                                                                                                                        | uuid FK programs NULL                   | the latest term's program, kept with class_name                                    |
-| source_id                                                                                                                         | uuid FK google_sheet_sources NULL       | roster source that last updated profile                                            |
-| last_seen_sync_job_id                                                                                                             | uuid NULL                               |                                                                                    |
-| created_at, updated_at                                                                                                            |                                         |                                                                                    |
+| column                                                                                                                            | type                                                  | notes                                                                                                                                                                                                                           |
+| --------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| id                                                                                                                                | uuid PK                                               |                                                                                                                                                                                                                                 |
+| student_code                                                                                                                      | text UNIQUE NOT NULL                                  | business student ID, stored normalized (upper case); CHECK regex on the exact text                                                                                                                                              |
+| user_id                                                                                                                           | uuid UNIQUE FK users                                  |                                                                                                                                                                                                                                 |
+| generation_id                                                                                                                     | uuid FK                                               |                                                                                                                                                                                                                                 |
+| full_name                                                                                                                         | text NOT NULL                                         |                                                                                                                                                                                                                                 |
+| first_name, last_name                                                                                                             | text NULL                                             | from the term workbook                                                                                                                                                                                                          |
+| gender                                                                                                                            | enum (FEMALE, MALE, OTHER, UNSPECIFIED)               |                                                                                                                                                                                                                                 |
+| class_name                                                                                                                        | text NULL                                             | the latest term's class (highest term number in student_terms), same transaction                                                                                                                                                |
+| program_id                                                                                                                        | uuid FK programs NULL                                 | the latest term's program, kept with class_name                                                                                                                                                                                 |
+| source_id                                                                                                                         | uuid FK google_sheet_sources NULL                     | roster source that last updated profile                                                                                                                                                                                         |
+| provisioned_source_id                                                                                                             | uuid FK google_sheet_sources NULL (RESTRICT), indexed | source whose sync created the account; a replacement of that source's term may delete it (RP4). Backfilled from `student.provisioned` audit rows; NULL: never deleted that way                                                  |
+| name_edited_at                                                                                                                    | timestamptz NULL                                      | first name correction by an admin (PATCH /admin/students/:id/name); such an account is never deleted by a replacement (RP10). Backfilled from `student.name.changed` audit rows (migration `20261115090000_protected_accounts`) |
+| last_seen_sync_job_id                                                                                                             | uuid NULL                                             |                                                                                                                                                                                                                                 |
+| created_at, updated_at                                                                                                            |                                                       |                                                                                                                                                                                                                                 |
 | Indexes: `(generation_id, class_name)`, `(generation_id, program_id, class_name)`, trigram index on `full_name` for admin search. |
 
 ### enrollments (student_courses)
@@ -318,16 +323,16 @@ Append-only history.
 
 ### audit_logs
 
-| column                                                                                                                                                                                                                                                                    | type                | notes                                                                           |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------- |
-| id                                                                                                                                                                                                                                                                        | uuid PK             |                                                                                 |
-| actor_user_id                                                                                                                                                                                                                                                             | uuid NULL FK users  | NULL for SYSTEM (worker)                                                        |
-| actor_type                                                                                                                                                                                                                                                                | enum (USER, SYSTEM) |                                                                                 |
-| action                                                                                                                                                                                                                                                                    | text                | dotted: `auth.login.success`, `student.credentials.issued`, `scheme.published`… |
-| entity_type, entity_id                                                                                                                                                                                                                                                    | text NULL           |                                                                                 |
-| metadata                                                                                                                                                                                                                                                                  | jsonb               | scrubbed by a key denylist (known deviation, see security.md)                   |
-| ip, user_agent, request_id                                                                                                                                                                                                                                                | text NULL           |                                                                                 |
-| created_at                                                                                                                                                                                                                                                                | timestamptz         |                                                                                 |
+| column                                                                                                                                                                                                                                                                    | type                | notes                                                                                       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------- |
+| id                                                                                                                                                                                                                                                                        | uuid PK             |                                                                                             |
+| actor_user_id                                                                                                                                                                                                                                                             | uuid NULL (no FK)   | NULL for SYSTEM (worker). No foreign key since 2026-11-14: kept when the account is deleted |
+| actor_type                                                                                                                                                                                                                                                                | enum (USER, SYSTEM) |                                                                                             |
+| action                                                                                                                                                                                                                                                                    | text                | dotted: `auth.login.success`, `student.credentials.issued`, `scheme.published`…             |
+| entity_type, entity_id                                                                                                                                                                                                                                                    | text NULL           |                                                                                             |
+| metadata                                                                                                                                                                                                                                                                  | jsonb               | scrubbed by a key denylist (known deviation, see security.md)                               |
+| ip, user_agent, request_id                                                                                                                                                                                                                                                | text NULL           |                                                                                             |
+| created_at                                                                                                                                                                                                                                                                | timestamptz         |                                                                                             |
 | Indexes: `(created_at DESC)`, `(entity_type, entity_id)`, `(actor_user_id, created_at DESC)`, `(action, created_at)`.                                                                                                                                                     |
 | Append-only: the production DB role used by the app is granted INSERT/SELECT only on this table. **Known deviation, to fix before go-live:** no GRANT exists and production connects as the bootstrap role. Only the `audit_logs_append_only` trigger protects the table. |
 
@@ -460,10 +465,16 @@ in the sheet. If per-session attendance is later required, add `participation_re
   - `audit_logs_append_only` and `assessment_score_revisions_append_only`: reject UPDATE and
     DELETE. A retention job may purge only after `SET LOCAL ssrs.allow_append_only_purge = 'on'`
     inside its transaction.
+  - Sheet replacement (migration `20261114120000_term_replacement`): inside a transaction with
+    `ssrs.allow_term_replacement = 'on'` and `ssrs.replacement_term_id = <term id>` (both
+    transaction-local, `set_config(..., true)`), score revisions, non-draft schemes and their items
+    may be deleted when they belong to that term (revision → score → offering → term; scheme or
+    item → offering → term). Any other row or term is refused as before. `audit_logs` has its own
+    function (`ssrs_audit_log_append_only`) that ignores these flags.
 - **Optional foreign keys** (`source_id`, `published_by`…) use `ON DELETE SET NULL`. Exceptions:
   `sheet_tab_mappings.offering_id` and `sheet_column_mappings.criterion_id` use RESTRICT.
 - Users, sources and academic records are never deleted by the application; they are disabled or
-  archived. One migration deleted sources once: `20261030130000_term_workbooks_only` removed all
+  archived. Exception: a sheet replacement deletes one term's student data and the accounts of RP4. One migration deleted sources once: `20261030130000_term_workbooks_only` removed all
   pre-term-workbook rows (D14).
 - Constraint behaviour is covered by `packages/database/test/constraints.integration-spec.ts`.
 

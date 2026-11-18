@@ -31,7 +31,12 @@ export interface Me {
   displayName: string | null;
   mustChangePassword: boolean;
   student: { id: string; studentCode: string; fullName: string } | null;
+  /** Session rules from configuration (inactivity limit, how often a visible tab reports activity). */
+  session?: { idleTimeoutSeconds: number; heartbeatIntervalSeconds: number };
 }
+
+/** Why the server ended a session (401 codes and live `ended` reasons the browser reacts to). */
+export type SessionEndReason = 'SIGNED_IN_ELSEWHERE' | 'IDLE_TIMEOUT' | 'REVOKED';
 
 export interface Term {
   id: string;
@@ -214,7 +219,101 @@ export interface SheetPreview {
     issueCounts: { total: number; errors: number; warnings: number };
     firstErrors: string[];
     issuesTruncated: boolean;
+    /**
+     * A different spreadsheet replacing the term's data: what is deleted for good. Null when it
+     * is not a replacement; missing on previews run before replacements were counted.
+     */
+    replacement?: Replacement | null;
+    /** Terms 2–5: the roster against earlier terms. Null for Term 1. */
+    rosterCheck?: RosterCheck | null;
+    /** Same ID, different name: the student's rows are skipped (STUDENT_NAME_MISMATCH). */
+    nameMismatches?: NameIssue[];
+    /** Same name with first and last swapped or words reordered: imported, warning only. */
+    nameOrderWarnings?: NameIssue[];
+    /** IDs from another generation or used by an admin: the student's rows are skipped. */
+    studentConflicts?: StudentConflict[];
   };
+}
+
+/** Counts of what a replacement deletes (also `counts.replacement` on a sync job). */
+export type ReplacementCounts = {
+  subjects: number;
+  scoreRows: number;
+  scoreHistoryRows: number;
+  comments: number;
+  enrollments: number;
+  termEnrollments: number;
+  accounts: number;
+  /** Accounts the deletion would take but keeps (logged in, or name edited by an admin). */
+  accountsProtected?: number;
+};
+
+export interface Replacement {
+  /** `${generation.code} Term ${term.number}`: typed exactly to confirm. */
+  termLabel: string;
+  oldSourceId: string | null;
+  subjects: {
+    kept: string[];
+    added: string[];
+    deleted: {
+      offeringId: string;
+      subject: string;
+      students: number;
+      scores: number;
+      comments: number;
+    }[];
+  };
+  students: {
+    kept: number;
+    added: number;
+    dataRemoved: { studentCode: string; fullName: string }[];
+    accountsDeleted: { studentCode: string; fullName: string }[];
+    /** Missing on previews run before protected accounts were counted. */
+    accountsProtected?: {
+      studentCode: string;
+      fullName: string;
+      reason: 'LOGGED_IN' | 'NAME_EDITED';
+    }[];
+  };
+  counts: ReplacementCounts;
+  manifestHash: string;
+}
+
+export interface RosterCheck {
+  earlierTerms: number[];
+  missing: { studentCode: string; fullName: string; lastTerm: number }[];
+  new: { studentCode: string; fullName: string; existingAccount: boolean }[];
+}
+
+export interface NameIssue {
+  sheetTab: string;
+  rowNumber: number;
+  studentCode: string;
+  sheetName: string;
+  systemName: string;
+}
+
+export interface StudentConflict {
+  sheetTab: string;
+  rowNumber: number;
+  studentCode: string;
+  code: 'STUDENT_IN_OTHER_GENERATION' | 'STUDENT_ID_CONFLICT';
+}
+
+/** POST /admin/sources/:id/preview/:previewId/confirm. */
+export interface ConfirmPreviewBody {
+  acknowledgeRemovals?: boolean;
+  /** Required for a replacement: equal to `replacement.termLabel` after trim. */
+  confirmTermLabel?: string;
+  /** Required when the roster check lists anyone. */
+  rosterChecked?: boolean;
+}
+
+/** PATCH /admin/students/:id/name. */
+export interface EditStudentNameBody {
+  firstName?: string | null;
+  lastName?: string | null;
+  fullName?: string;
 }
 
 /** One page of a preview's issues. */
@@ -274,6 +373,9 @@ export interface Student {
   id: string;
   studentCode: string;
   fullName: string;
+  /** From the sheet's first and last name columns, when it has them. */
+  firstName?: string | null;
+  lastName?: string | null;
   gender: 'FEMALE' | 'MALE' | 'OTHER' | 'UNSPECIFIED';
   /** The latest term's class and program. */
   className: string | null;
@@ -358,7 +460,16 @@ export interface SyncJob {
   status: SyncStatus;
   phase: string | null;
   progress: { current: number; total: number };
-  counts: Record<string, Record<string, number> | number> | null;
+  /**
+   * Per entity, per outcome. `newStudents.ids` lists the students this job created (for issuing
+   * their passwords); `replacement` what a sheet replacement deleted.
+   */
+  counts:
+    | (Record<string, Record<string, number> | number | { ids: string[] }> & {
+        newStudents?: { ids: string[] };
+        replacement?: ReplacementCounts;
+      })
+    | null;
   errorCount: number;
   warningCount: number;
   failureCode: string | null;
@@ -409,7 +520,9 @@ export interface AuditEntry {
   id: string;
   action: string;
   actorType: 'USER' | 'SYSTEM';
+  /** Null for the system, or for a user whose account was deleted (`actorUserId` still set). */
   actor: { id: string; username: string; role: Role } | null;
+  actorUserId?: string | null;
   entityType: string | null;
   entityId: string | null;
   metadata: Record<string, unknown>;

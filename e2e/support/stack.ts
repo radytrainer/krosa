@@ -38,6 +38,13 @@ export function serviceEnv(): NodeJS.ProcessEnv {
     JWT_ACCESS_SECRET: testSecret('jwt'),
     // The scenario signs in a few times from one IP; keep login limits but lift the global one.
     RATE_LIMIT_PER_MINUTE: '10000',
+    // Session limits: the production defaults unless E2E_* overrides are set (the session-rules
+    // spec runs with short ones, e.g. 60 / 15 / 60). Start-up rules: idle >= 60,
+    // heartbeat <= idle / 3, access TTL <= idle.
+    SESSION_IDLE_TIMEOUT_SECONDS: process.env['E2E_SESSION_IDLE_TIMEOUT_SECONDS'] ?? '900',
+    SESSION_HEARTBEAT_INTERVAL_SECONDS:
+      process.env['E2E_SESSION_HEARTBEAT_INTERVAL_SECONDS'] ?? '300',
+    ACCESS_TOKEN_TTL_SECONDS: process.env['E2E_ACCESS_TOKEN_TTL_SECONDS'] ?? '900',
     // Serve the fixture workbook; takes precedence over any Google credentials in .env.
     SHEETS_TEST_MODE: 'fixtures',
   };

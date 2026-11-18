@@ -44,6 +44,13 @@ export const apiEnvSchema = z
     /** HS256 key for access tokens; also derives CSRF tokens. ≥ 32 characters of randomness. */
     JWT_ACCESS_SECRET: z.string().min(32, 'must be at least 32 characters'),
     ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
+    /** Inactivity logout: no heartbeat for this long ends the session (decisions.md SR2). */
+    SESSION_IDLE_TIMEOUT_SECONDS: z.coerce.number().int().min(60).max(86_400).default(900),
+    /** How often a visible tab sends POST /auth/heartbeat. At most a third of the idle limit. */
+    SESSION_HEARTBEAT_INTERVAL_SECONDS: z.coerce.number().int().min(10).max(28_800).default(300),
+    /** Open GET /auth/live connections allowed per session and per user (decisions.md SR5). */
+    LIVE_MAX_PER_SESSION: z.coerce.number().int().min(1).max(50).default(3),
+    LIVE_MAX_PER_USER: z.coerce.number().int().min(1).max(100).default(5),
     /** Absolute session lifetime; refreshing never extends it. */
     SESSION_TTL_HOURS: z.coerce
       .number()
@@ -66,6 +73,20 @@ export const apiEnvSchema = z
     SHEETS_TEST_MODE: z.literal('fixtures').optional(),
   })
   .superRefine((env, ctx) => {
+    if (env.SESSION_HEARTBEAT_INTERVAL_SECONDS * 3 > env.SESSION_IDLE_TIMEOUT_SECONDS) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SESSION_HEARTBEAT_INTERVAL_SECONDS'],
+        message: 'must be at most a third of SESSION_IDLE_TIMEOUT_SECONDS',
+      });
+    }
+    if (env.ACCESS_TOKEN_TTL_SECONDS > env.SESSION_IDLE_TIMEOUT_SECONDS) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ACCESS_TOKEN_TTL_SECONDS'],
+        message: 'must not exceed SESSION_IDLE_TIMEOUT_SECONDS',
+      });
+    }
     const inline =
       env.GOOGLE_SERVICE_ACCOUNT_EMAIL !== undefined || env.GOOGLE_PRIVATE_KEY !== undefined;
     if (inline && (!env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !env.GOOGLE_PRIVATE_KEY)) {

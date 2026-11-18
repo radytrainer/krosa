@@ -3,6 +3,7 @@
 import { Check, Copy, Eye, EyeOff, KeyRound, Power, ShieldAlert } from 'lucide-react';
 import { useParams, useSearchParams } from 'next/navigation';
 import { useState } from 'react';
+import { EditStudentName } from '@/components/admin/edit-student-name';
 import { StudentTerms } from '@/components/admin/student-terms';
 import { Confirm } from '@/components/app/confirm';
 import { PageHeader, Section } from '@/components/app/page-header';
@@ -148,6 +149,7 @@ export default function StudentDetailPage() {
         }
         actions={
           <>
+            <EditStudentName student={s} />
             {account.status === 'DISABLED' ? (
               <Button
                 variant="outline"
