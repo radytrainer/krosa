@@ -12,7 +12,8 @@
 # run time.
 #
 # The api image also carries:
-#   /app/migrate   the Prisma CLI and migrations, run as a one-off container before a release starts
+#   /app/migrate   only the Prisma CLI (@ssrs/migrate) and the migrations, run as a one-off
+#                  container before a release starts
 #   /app/deploy    the server bundle (compose file, Caddyfile, scripts, systemd units) of the same
 #                  commit, which the server extracts on each deploy (docs/deployment.md §3-§4)
 
@@ -40,6 +41,7 @@ COPY apps/worker/package.json apps/worker/
 COPY apps/web/package.json apps/web/
 COPY packages/config/package.json packages/config/
 COPY packages/database/package.json packages/database/
+COPY packages/migrate/package.json packages/migrate/
 COPY packages/sheets/package.json packages/sheets/
 COPY packages/shared/package.json packages/shared/
 COPY packages/sync/package.json packages/sync/
@@ -53,12 +55,18 @@ RUN pnpm build
 
 # Per-service production dependency trees. Workspace packages are injected (copied with their
 # dist/ and dependencies) so each tree is self-contained; `--legacy` would leave symlinks into
-# /repo, which does not exist in the runtime images. The migrate tree keeps the Prisma CLI
-# (a dev dependency of @ssrs/database), so it is not --prod.
+# /repo, which does not exist in the runtime images. The migrate tree is @ssrs/migrate: only the
+# Prisma CLI and what the Prisma config imports (no test or build tools), plus the schema,
+# migrations and config of @ssrs/database.
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter=@ssrs/api deploy --prod --config.inject-workspace-packages=true /out/api && \
     pnpm --filter=@ssrs/worker deploy --prod --config.inject-workspace-packages=true /out/worker && \
-    pnpm --filter=@ssrs/database deploy --config.side-effects-cache=false --config.inject-workspace-packages=true /out/migrate
+    pnpm --filter=@ssrs/migrate deploy --prod --config.side-effects-cache=false --config.inject-workspace-packages=true /out/migrate && \
+    cp -r packages/database/prisma packages/database/prisma7.config.ts /out/migrate/ && \
+    rm -rf /out/migrate/node_modules/.pnpm/typescript@* && \
+    find /out/migrate/node_modules -name typescript -type l -delete
+# (TypeScript reaches the migrate tree only as an optional peer of prisma; migrate deploy does not
+# use it, so it is removed above.)
 # The Google Sheets test fakes must not exist in production images: without them the
 # end-to-end test mode (SHEETS_TEST_MODE) cannot start even if someone sets it. The checks
 # prove the package is present, the fakes are gone, and Node can no longer load them.

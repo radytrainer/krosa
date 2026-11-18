@@ -8,7 +8,6 @@ What is left, most urgent first. Built work is in [progress.md](progress.md).
 | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Deploy the beta server                      | Follow [beta-checklist.md](beta-checklist.md): AWS, GitHub, server, first deploy, restore test                                                                                                                                         |
 | Restricted database role for the app        | api and worker connect as the database owner (superuser). Create an app role with DML only (audit_logs INSERT/SELECT), keep the owner for migrations and backups ([security.md §13](security.md)). Database change: needs its own task |
-| Fix the high dependency advisories          | CI's audit fails today: `multer` <2.5.0 (via `@nestjs/platform-express`, production) and `picomatch` <=4.0.7 (via `@nestjs/cli` and others). Upgrade or pin with `pnpm.overrides`; needs approval                                      |
 | Restore drill                               | A backup is only proven by restoring it ([operations.md §2](operations.md#2-backups-and-restore))                                                                                                                                      |
 | Fix Web Design and UXUI in the Term 2 sheet | 74 of 75 rows carry another student's name; both tabs are blocked until the teacher fixes them                                                                                                                                         |
 | Weights for the SNAC tabs                   | `ASSESSMENT 1–6` and `Column 13` have no weights: enter them when confirming, or add them to headers                                                                                                                                   |
@@ -16,20 +15,23 @@ What is left, most urgent first. Built work is in [progress.md](progress.md).
 
 ## After go-live
 
-| Item                                  | Notes                                                                                                  |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Slim the api image                    | 1.6 GB: `/app/migrate` keeps the Prisma CLI's dev dependencies; install only `prisma` there            |
-| Alert on unexpected backup writes     | CloudTrail/EventBridge on PutObject outside the backup window would show a compromised server          |
-| Sentry in the web app                 | Only api and worker report errors; web needs `@sentry/nextjs` with the same scrubbing (security.md §8) |
-| Production environment                | Reuse `deploy/` for `main`: its own instance, stack, `production` environment and secrets              |
-| S3 Object Lock for backups            | Versioning keeps overwritten backups 30 days; Object Lock (governance) would make them immutable       |
-| Skip unchanged tabs (`content_hash`)  | `sheet_tab_mappings.last_content_hash` exists but nothing reads or writes it                           |
-| Carry a tab's audience to a new sheet | A replacement sheet's tabs get a fresh proposal instead of the previous sheet's audience               |
-| Dark mode                             | The white PN logo is ready; the app has no dark theme                                                  |
-| Grade scale editor                    | The official scale is seeded per generation (G1); `grade_bands` is ready for an admin editor           |
-| Update dated QA records               | `qa/test-plan.md`, `qa/qa-report.md`, `doc-review.md` still say 53 routes and SNA                      |
-| Playwright Chromium on Windows        | Its bundled browser version may not match; end-to-end runs use `E2E_CHANNEL=msedge`                    |
-| Format check on Windows               | `pnpm format:check` fails on CRLF working trees; not a content problem                                 |
-| QA config runs the manual specs       | `qa/playwright.qa.config.ts` also picks up `qa/manual/*`; pass `ui.spec.ts session.spec.ts`            |
-| Line endings: repo-wide rule          | Server files are pinned to LF (`.gitattributes`); still to do: `* text=auto eol=lf`, then renormalize  |
-| Security review: inline styles in CSP | `style-src 'unsafe-inline'` remains for the toast library (charts removed); review, no change          |
+| Item                                        | Notes                                                                                                                                                                                        |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Upgrade `@nestjs/platform-express` to 12.3+ | It ships multer 2.5.0 (GHSA-q7qp-rjg7-q26m); then remove the `multer` override in `pnpm-workspace.yaml`                                                                                      |
+| Remove the picomatch audit exception        | GHSA-fc5q-39xc-vjpf has no fixed release. Review by 2026-12-31 and re-check after the Next.js 16.4.5 upgrade (its bundled copy); remove the ignore in `pnpm-workspace.yaml` once a fix ships |
+| Upgrade Next.js to 16.4.5                   | Fixes GHSA-mfr8-8qww-v76h (the app uses neither `use cache` nor `unstable_cache`); afterwards re-check the picomatch exception                                                               |
+| Production region                           | Consider ap-southeast-1 (Singapore) for production, for lower latency from Cambodia (beta runs in ap-southeast-2, Sydney)                                                                    |
+| Alert on unexpected backup writes           | CloudTrail/EventBridge on PutObject outside the backup window would show a compromised server                                                                                                |
+| Sentry in the web app                       | Only api and worker report errors; web needs `@sentry/nextjs` with the same scrubbing (security.md §8)                                                                                       |
+| Production environment                      | Reuse `deploy/` for `main`: its own instance, stack, `production` environment and secrets                                                                                                    |
+| S3 Object Lock for backups                  | Versioning keeps overwritten backups 30 days; Object Lock (governance) would make them immutable                                                                                             |
+| Skip unchanged tabs (`content_hash`)        | `sheet_tab_mappings.last_content_hash` exists but nothing reads or writes it                                                                                                                 |
+| Carry a tab's audience to a new sheet       | A replacement sheet's tabs get a fresh proposal instead of the previous sheet's audience                                                                                                     |
+| Dark mode                                   | The white PN logo is ready; the app has no dark theme                                                                                                                                        |
+| Grade scale editor                          | The official scale is seeded per generation (G1); `grade_bands` is ready for an admin editor                                                                                                 |
+| Update dated QA records                     | `qa/test-plan.md`, `qa/qa-report.md`, `doc-review.md` still say 53 routes and SNA                                                                                                            |
+| Playwright Chromium on Windows              | Its bundled browser version may not match; end-to-end runs use `E2E_CHANNEL=msedge`                                                                                                          |
+| Format check on Windows                     | `pnpm format:check` fails on CRLF working trees; not a content problem                                                                                                                       |
+| QA config runs the manual specs             | `qa/playwright.qa.config.ts` also picks up `qa/manual/*`; pass `ui.spec.ts session.spec.ts`                                                                                                  |
+| Line endings: repo-wide rule                | Server files are pinned to LF (`.gitattributes`); still to do: `* text=auto eol=lf`, then renormalize                                                                                        |
+| Security review: inline styles in CSP       | `style-src 'unsafe-inline'` remains for the toast library (charts removed); review, no change                                                                                                |

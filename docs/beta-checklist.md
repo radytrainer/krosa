@@ -209,10 +209,10 @@ manager, and [age](https://github.com/FiloSottile/age) on your computer
       `EC2_INSTANCE_ID` = `<INSTANCE_ID>`. Nothing else: no passwords, no AWS keys.
     - Settings → Actions → General → Workflow permissions: **Read repository contents and packages
       permissions** (the workflows ask for more per job where needed).
-      **Before step 19:** CI's dependency audit fails today (two high advisories, `multer` and
-      `picomatch`; [backlog.md](backlog.md) "Fix the high dependency advisories"). Until a pull request
-      fixes them, every required CI run fails and the first deploy (step 20) cannot start. Fix them
-      first.
+
+    **Before step 19:** CI's dependency audit passes with one documented exception (picomatch,
+    no fixed release; `pnpm-workspace.yaml`, review by 2026-12-31). If a new high advisory appears,
+    every required CI run fails and the first deploy (step 20) cannot start until it is fixed.
 
     **Known risk to accept or fix before real data:** the app connects to PostgreSQL as the
     database owner, not a restricted role ([security.md §13](security.md),

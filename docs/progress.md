@@ -1,11 +1,11 @@
 # Progress
 
-Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+Last verified: 2026-11-18, branch feature/beta-deploy (sections below carry their own dates).
 
 Legend: ✅ done · 🟡 in progress · ⬜ pending · ⛔ blocked · unverified = finished at the time, but the
 code was later removed or changed, so it cannot be checked now
 
-_Last updated: 2026-11-01_
+_Last updated: 2026-11-18_
 
 ## Phases
 
@@ -41,6 +41,21 @@ _Last updated: 2026-11-01_
 | STU-01…05   | ✅         | API + UI. STU-05: responsive (checked at 390 px and 1280 px, no page overflow), labelled controls, status never color-only |
 | ADM pages   | unverified | Offering, criteria and scheme pages removed by D15                                                                         |
 | OBS-01…04   | ✅         | OBS-04: Sentry in API and worker, off without `SENTRY_DSN`, all data collection disabled                                   |
+
+## Dependency audit fix (2026-11-18, actually executed)
+
+- multer GHSA-q7qp-rjg7-q26m: pnpm override to 2.5.0 (`@nestjs/platform-express` 12.2.0 pins 2.4.0).
+  The app has no upload route; `robustness.integration-spec.ts` (multipart bodies) passes 29/29.
+- picomatch GHSA-fc5q-39xc-vjpf: no fixed release exists; ignored in `pnpm-workspace.yaml` with
+  the reasons and a review date (2026-12-31).
+- Images searched for picomatch after the change: api none, worker none, web only Next.js's own
+  bundled copy (`next/dist/compiled/picomatch`). Next compiles patterns only from
+  `images.localPatterns`/`remotePatterns`, which are not set; `headers()` (`/:path*`) and the
+  proxy matcher are path patterns, not globs; no extglob anywhere.
+- `/app/migrate` is now `@ssrs/migrate` (Prisma CLI only): 401 → 280 MB, api image 1.63 → 1.46 GB.
+  `prisma migrate deploy` from the image applied every migration to an emptied `ssrs_test`
+  (read-only root file system).
+- `pnpm audit --audit-level high` passes ("1 high (1 ignored)"); lint, typecheck, build pass.
 
 ## Beta deployment setup verification (2026-11-18, actually executed)
 

@@ -85,8 +85,8 @@ sha; nothing ever runs `latest`.
   production dependencies (`pnpm deploy --prod`). Base `node:22.17.0-bookworm-slim`, pinned by
   digest. Runs as `node`; application files are root-owned and read-only.
 - `web`: Next.js standalone output. `worker`: plus `/app/healthcheck.mjs` (heartbeat in Redis).
-- `api`: plus `/app/migrate` (Prisma CLI and migrations; with the CLI's own dependencies the image
-  is about 1.6 GB, slimming it is in [backlog.md](backlog.md)) and `/app/deploy`, the server bundle of
+- `api`: plus `/app/migrate` (only the Prisma CLI and its own dependencies, with the schema and
+  migrations; about 280 MB of the 1.46 GB image) and `/app/deploy`, the server bundle of
   the same commit (compose file, Caddyfile, scripts, systemd units). The server takes its
   configuration from the image it deploys, so code and configuration can never drift and the
   server needs no git checkout or deploy key.
