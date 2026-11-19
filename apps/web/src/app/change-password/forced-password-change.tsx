@@ -11,14 +11,15 @@ import { homeFor, useAuth } from '@/lib/auth';
 
 /** Shown after signing in with a temporary password; every other page is blocked until done. */
 export function ForcedPasswordChange() {
-  const { me, loading, refresh, signOut } = useAuth();
+  const { me, loading, refresh, signOut, sessionEnding } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (loading) return;
+    // A session end in progress loads the login page with its reason itself.
+    if (loading || sessionEnding) return;
     if (!me) router.replace('/login');
     else if (!me.mustChangePassword) router.replace(homeFor(me));
-  }, [loading, me, router]);
+  }, [loading, me, router, sessionEnding]);
 
   if (!me?.mustChangePassword) return <PageLoading />;
 

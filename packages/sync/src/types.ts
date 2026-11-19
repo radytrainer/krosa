@@ -29,6 +29,19 @@ export interface SyncCounts {
     rejected: number;
     clearedInSource: number;
   };
+  /** Students whose accounts this job created, for issuing their first passwords (RP9). */
+  newStudents?: { ids: string[] };
+  /** What a sheet replacement deleted (decisions.md RP1); absent for any other job. */
+  replacement?: {
+    subjects: number;
+    scoreRows: number;
+    scoreHistoryRows: number;
+    comments: number;
+    enrollments: number;
+    termEnrollments: number;
+    accounts: number;
+    accountsProtected: number;
+  };
 }
 
 export function emptyCounts(): SyncCounts {
@@ -64,7 +77,10 @@ export type ApplyIssueCode =
   | 'MARK_CLEARED_IN_SOURCE'
   | 'ENROLLMENT_MISSING_IN_SOURCE'
   | 'CRITERION_REMOVED_IN_SOURCE'
-  | 'SUBJECT_ARCHIVED';
+  | 'SUBJECT_ARCHIVED'
+  | 'STUDENT_NAME_MISMATCH'
+  | 'STUDENT_NAME_ORDER'
+  | 'ROSTER_APPROVAL_REQUIRED';
 
 export interface SyncIssue {
   severity: IssueSeverity;
@@ -108,7 +124,12 @@ export interface RunOptions {
 }
 
 export type RunOutcome =
-  | { kind: 'finished'; status: 'SUCCEEDED' | 'SUCCEEDED_WITH_ERRORS' | 'FAILED' | 'CANCELLED' }
+  | {
+      kind: 'finished';
+      status: 'SUCCEEDED' | 'SUCCEEDED_WITH_ERRORS' | 'FAILED' | 'CANCELLED';
+      /** Sessions of accounts a replacement deleted; the caller denylists them after commit. */
+      revokedSessionIds?: string[];
+    }
   /** Transient failure before any write: the caller should let the queue retry. */
   | { kind: 'retry'; code: string; message: string }
   /** Another run holds the job's lease until `retryAt`; nothing was done. */

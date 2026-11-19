@@ -6,7 +6,8 @@ import { useUrlState } from '@/components/admin/use-url-state';
 import { NativeSelect } from '@/components/app/form';
 import { PageHeader } from '@/components/app/page-header';
 import { Pagination } from '@/components/app/pagination';
-import { EmptyState, ErrorState, LoadingRows, PageLoading } from '@/components/app/states';
+import { PageSkeleton, TableSkeleton, useLoading } from '@/components/app/loading';
+import { EmptyState, ErrorState } from '@/components/app/states';
 import { Input } from '@/components/ui/input';
 import {
   Table,
@@ -70,6 +71,7 @@ function AuditLog() {
     })}`,
     { keepPrevious: true },
   );
+  const loading = useLoading(!list.data);
 
   return (
     <>
@@ -110,8 +112,8 @@ function AuditLog() {
       </div>
       {list.error ? (
         <ErrorState error={list.error} onRetry={() => list.refetch()} />
-      ) : !list.data ? (
-        <LoadingRows />
+      ) : loading || !list.data ? (
+        <TableSkeleton rows={10} columns={5} label="Loading audit log" />
       ) : list.data.data.length === 0 ? (
         <EmptyState
           icon={<ScrollText className="size-8" />}
@@ -139,7 +141,12 @@ function AuditLog() {
                     </TableCell>
                     <TableCell className="font-mono text-xs">{e.action}</TableCell>
                     <TableCell className="hidden md:table-cell">
-                      {e.actor ? e.actor.username : e.actorType === 'SYSTEM' ? 'System' : '—'}
+                      {e.actor
+                        ? e.actor.username
+                        : e.actorType === 'SYSTEM'
+                          ? 'System'
+                          : // A user action whose account is gone (the entry keeps its id).
+                            'Deleted account'}
                       {e.ip ? (
                         <span className="block text-xs text-muted-foreground">{e.ip}</span>
                       ) : null}
@@ -192,7 +199,7 @@ function AuditLog() {
 
 export default function AuditPage() {
   return (
-    <Suspense fallback={<PageLoading />}>
+    <Suspense fallback={<PageSkeleton columns={5} />}>
       <AuditLog />
     </Suspense>
   );

@@ -4,6 +4,14 @@ import { useState, type ReactNode } from 'react';
 import { IssuesTable } from '@/components/admin/issues-table';
 import { NativeSelect } from '@/components/app/form';
 import { Pagination } from '@/components/app/pagination';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import type { SheetIssue } from '@/lib/types';
 
 /** Issues per page on every issue list: sync jobs, previews and tab detection. */
@@ -104,6 +112,82 @@ export function IssueFilters({
         <option value="ERROR">Errors only</option>
         <option value="WARNING">Warnings only</option>
       </NativeSelect>
+    </div>
+  );
+}
+
+export interface PagedColumn<T> {
+  header: string;
+  cell(row: T): ReactNode;
+  align?: 'right';
+}
+
+/**
+ * Any short list of rows (students, subjects) paged 5 at a time in memory, like `PagedIssues`.
+ * Cells render as text: names are never parsed as HTML.
+ */
+export function PagedTable<T>({
+  label,
+  rows,
+  columns,
+  rowKey,
+  noun = ['row', 'rows'],
+}: {
+  /** Accessible name of the table. */
+  label: string;
+  rows: readonly T[];
+  columns: PagedColumn<T>[];
+  rowKey(row: T, index: number): string;
+  noun?: [string, string];
+}) {
+  const paged = useIssuePage(rows, `${label}:${rows.length}`);
+  if (rows.length === 0) return null;
+  return (
+    <div>
+      <div className="overflow-x-auto rounded-xl ring-1 ring-foreground/10">
+        <Table aria-label={label}>
+          <TableHeader>
+            <TableRow>
+              {columns.map((c) => (
+                <TableHead
+                  key={c.header}
+                  className={c.align === 'right' ? 'text-right' : undefined}
+                >
+                  {c.header}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {paged.items.map((row, i) => (
+              <TableRow key={rowKey(row, (paged.page - 1) * ISSUES_PAGE_SIZE + i)}>
+                {columns.map((c) => (
+                  <TableCell
+                    key={c.header}
+                    className={
+                      c.align === 'right' ? 'text-right tabular-nums' : 'whitespace-normal'
+                    }
+                  >
+                    {c.cell(row)}
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      {paged.total > ISSUES_PAGE_SIZE ? (
+        <Pagination
+          page={paged.page}
+          pageSize={ISSUES_PAGE_SIZE}
+          total={paged.total}
+          onPage={paged.setPage}
+        />
+      ) : (
+        <p className="pt-2 text-sm text-muted-foreground">
+          {paged.total === 1 ? `1 ${noun[0]}` : `${paged.total} ${noun[1]}`}
+        </p>
+      )}
     </div>
   );
 }

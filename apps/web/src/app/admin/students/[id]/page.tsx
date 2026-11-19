@@ -3,11 +3,13 @@
 import { Check, Copy, Eye, EyeOff, KeyRound, Power, ShieldAlert } from 'lucide-react';
 import { useParams, useSearchParams } from 'next/navigation';
 import { useState } from 'react';
+import { EditStudentName } from '@/components/admin/edit-student-name';
 import { StudentTerms } from '@/components/admin/student-terms';
 import { Confirm } from '@/components/app/confirm';
 import { PageHeader, Section } from '@/components/app/page-header';
 import { AccountStatusPill } from '@/components/app/status';
-import { ErrorState, LoadingRows, PageLoading } from '@/components/app/states';
+import { CardGridSkeleton, PageSkeleton, useLoading } from '@/components/app/loading';
+import { ErrorState } from '@/components/app/states';
 import { ResultsTabs, defaultTerm } from '@/components/results/results-tabs';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -127,8 +129,11 @@ export default function StudentDetailPage() {
     { success: 'Account updated.', invalidate: ['/admin/students', '/admin/dashboard'] },
   );
 
+  const loading = useLoading(isPending);
+  const resultsLoading = useLoading(!results.data);
+
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
-  if (isPending) return <PageLoading />;
+  if (loading || isPending) return <PageSkeleton summary columns={4} />;
   const { account } = s;
 
   return (
@@ -144,6 +149,7 @@ export default function StudentDetailPage() {
         }
         actions={
           <>
+            <EditStudentName student={s} />
             {account.status === 'DISABLED' ? (
               <Button
                 variant="outline"
@@ -267,8 +273,8 @@ export default function StudentDetailPage() {
         >
           {results.error ? (
             <ErrorState error={results.error} onRetry={() => results.refetch()} />
-          ) : !results.data ? (
-            <LoadingRows rows={4} />
+          ) : resultsLoading || !results.data ? (
+            <CardGridSkeleton cards={4} label="Loading results" />
           ) : (
             <ResultsTabs
               terms={results.data.terms}

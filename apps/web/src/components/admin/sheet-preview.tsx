@@ -3,9 +3,20 @@
 import { CheckCircle2, ScanSearch, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import { ISSUES_PAGE_SIZE, IssueFilters, PagedIssues } from '@/components/admin/paged-issues';
+import {
+  ReplacementSummary,
+  TermLabelInput,
+  termLabelMatches,
+} from '@/components/admin/replacement-summary';
+import {
+  RosterCheckSection,
+  StudentNameIssues,
+  rosterCheckNeeded,
+} from '@/components/admin/roster-check';
 import { RemovalWarning } from '@/components/admin/sync-confirm';
 import { StatusPill } from '@/components/app/status';
-import { ErrorState } from '@/components/app/states';
+import { Spinner, TaskStatus } from '@/components/app/loading';
+import { ErrorState, errorMessage } from '@/components/app/states';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
@@ -25,14 +36,17 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, withTimeout } from '@/lib/api';
 import { json, qs, useApi, useApiMutation } from '@/lib/query';
 import type {
   CommentCounts,
+  ConfirmPreviewBody,
   ImpactCounts,
   PreviewIssuePage,
   PreviewTab,
   RemovedSubject,
+  Replacement,
+  RosterCheck,
   SheetComparison,
   SheetPreview,
 } from '@/lib/types';
@@ -141,15 +155,26 @@ function List({ title, items }: { title: string; items: string[] }) {
 }
 
 /** The term's subjects today against this sheet. */
-function Comparison({ comparison }: { comparison: SheetComparison }) {
+function Comparison({
+  comparison,
+  replacing,
+}: {
+  comparison: SheetComparison;
+  /** A replacement lists its subjects itself, as deleted rather than removed. */
+  replacing: boolean;
+}) {
   const added = comparison.added.map((a) =>
     a.returning ? `${a.subject} (returning, starts with no old scores)` : a.subject,
   );
   return (
     <div className="space-y-3">
-      <List title="Kept subjects" items={comparison.kept} />
-      <List title="Added subjects" items={added} />
-      {comparison.removed.length ? (
+      {replacing ? null : (
+        <>
+          <List title="Kept subjects" items={comparison.kept} />
+          <List title="Added subjects" items={added} />
+        </>
+      )}
+      {!replacing && comparison.removed.length ? (
         <div className="space-y-2">
           <p className="text-sm font-medium">Removed subjects (lost compared with the old sheet)</p>
           <div className="overflow-x-auto rounded-xl ring-1 ring-foreground/10">
@@ -205,40 +230,65 @@ function Comparison({ comparison }: { comparison: SheetComparison }) {
   );
 }
 
-/** Asks before a sheet's preview is accepted, with the removal warning when it removes subjects. */
+/**
+ * Asks before a sheet's preview is accepted. A replacement (a different spreadsheet) deletes the
+ * term's data for good, so the term label must be typed; removed subjects need the tick; a roster
+ * check needs "I have checked these students". Cancel changes nothing.
+ */
 function ConfirmPreview({
   removed,
+  replacement,
+  rosterCheck,
   busy,
   onConfirm,
 }: {
   removed: RemovedSubject[];
+  replacement: Replacement | null;
+  rosterCheck: RosterCheck | null;
   busy: boolean;
-  onConfirm(acknowledgeRemovals: boolean): void;
+  onConfirm(body: ConfirmPreviewBody): void;
 }) {
   const [open, setOpen] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
-  const removing = removed.length > 0;
+  const [typed, setTyped] = useState('');
+  const [rosterChecked, setRosterChecked] = useState(false);
+  // A replacement deletes instead of removing: the typed label replaces the tick.
+  const removing = !replacement && removed.length > 0;
+  const needsRoster = rosterCheckNeeded(rosterCheck);
+  const ready =
+    (replacement ? termLabelMatches(typed, replacement) : !removing || acknowledged) &&
+    (!needsRoster || rosterChecked);
+  const destructive = Boolean(replacement) || removing;
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
         setAcknowledged(false);
+        setTyped('');
+        setRosterChecked(false);
       }}
     >
-      <DialogTrigger render={<Button />}>
+      <DialogTrigger render={<Button variant={replacement ? 'destructive' : 'default'} />}>
         <CheckCircle2 aria-hidden />
         Confirm preview
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {removing ? 'Remove subjects with this sheet?' : 'Confirm preview?'}
+            {replacement
+              ? `Permanently delete the data of ${replacement.termLabel} and replace it?`
+              : removing
+                ? 'Remove subjects with this sheet?'
+                : 'Confirm preview?'}
           </DialogTitle>
           <DialogDescription>
-            The sync that follows imports exactly what this preview shows.
+            {replacement
+              ? 'This cannot be undone. The sync that follows deletes what is listed here, then imports exactly what this preview shows.'
+              : 'The sync that follows imports exactly what this preview shows.'}
           </DialogDescription>
         </DialogHeader>
+        {replacement ? <ReplacementSummary replacement={replacement} /> : null}
         {removing ? (
           <RemovalWarning
             removed={removed}
@@ -246,19 +296,38 @@ function ConfirmPreview({
             onAcknowledge={setAcknowledged}
           />
         ) : null}
+        <RosterCheckSection
+          check={rosterCheck}
+          checked={rosterChecked}
+          onCheckedChange={setRosterChecked}
+          disabled={busy}
+        />
+        {replacement ? (
+          <TermLabelInput
+            termLabel={replacement.termLabel}
+            value={typed}
+            onChange={setTyped}
+            disabled={busy}
+          />
+        ) : null}
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>
             Cancel
           </Button>
           <Button
-            variant={removing ? 'destructive' : 'default'}
-            disabled={busy || (removing && !acknowledged)}
+            variant={destructive ? 'destructive' : 'default'}
+            disabled={busy || !ready}
             onClick={() => {
-              onConfirm(removing);
+              onConfirm({
+                ...(replacement
+                  ? { confirmTermLabel: typed.trim() }
+                  : { acknowledgeRemovals: removing }),
+                ...(needsRoster ? { rosterChecked: true } : {}),
+              });
               setOpen(false);
             }}
           >
-            Confirm
+            {replacement ? 'Delete and replace' : 'Confirm'}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -271,19 +340,20 @@ export function SheetPreviewPanel({ sourceId }: { sourceId: string }) {
   const latest = useApi<SheetPreview | null>(`/admin/sources/${sourceId}/preview`);
   const invalidate = [`/admin/sources/${sourceId}`, '/admin/term-workbooks'];
   const run = useApiMutation(
-    () => apiFetch<SheetPreview>(`/admin/sources/${sourceId}/preview`, { method: 'POST' }),
+    () =>
+      withTimeout((signal) =>
+        apiFetch<SheetPreview>(`/admin/sources/${sourceId}/preview`, { method: 'POST', signal }),
+      ),
     { invalidate },
   );
   const confirm = useApiMutation(
-    (body: { id: string; acknowledgeRemovals: boolean }) =>
-      apiFetch<SheetPreview>(
-        `/admin/sources/${sourceId}/preview/${body.id}/confirm`,
-        json({ acknowledgeRemovals: body.acknowledgeRemovals }),
-      ),
+    ({ id, ...body }: ConfirmPreviewBody & { id: string }) =>
+      apiFetch<SheetPreview>(`/admin/sources/${sourceId}/preview/${id}/confirm`, json(body)),
     { success: 'Preview confirmed. You can sync this sheet now.', invalidate },
   );
   const preview = latest.data;
   const summary = preview?.summary;
+  const replacement = summary?.replacement ?? null;
 
   return (
     <div className="space-y-4">
@@ -292,12 +362,23 @@ export function SheetPreviewPanel({ sourceId }: { sourceId: string }) {
           Compares this sheet with the current scores. Nothing is imported. Any change to the sheet
           or its tabs means running this again.
         </p>
-        <Button variant="outline" onClick={() => run.mutate(undefined)} disabled={run.isPending}>
-          <ScanSearch aria-hidden />
+        <Button
+          variant="outline"
+          onClick={() => run.mutate(undefined)}
+          disabled={run.isPending}
+          aria-busy={run.isPending || undefined}
+        >
+          {run.isPending ? <Spinner /> : <ScanSearch aria-hidden />}
           {run.isPending ? 'Reading the sheet…' : preview ? 'Run preview again' : 'Run preview'}
         </Button>
       </div>
-      {run.error ? <ErrorState error={run.error} /> : null}
+      <TaskStatus
+        running={run.isPending}
+        label="Building preview…"
+        error={run.error ? errorMessage(run.error) : null}
+        errorTitle="The preview did not finish"
+        onRetry={() => run.mutate(undefined)}
+      />
       {latest.error ? <ErrorState error={latest.error} onRetry={() => latest.refetch()} /> : null}
       {preview && summary ? (
         <>
@@ -388,9 +469,11 @@ export function SheetPreviewPanel({ sourceId }: { sourceId: string }) {
               </TableBody>
             </Table>
           </div>
-          <Comparison comparison={summary.comparison} />
+          {replacement ? <ReplacementSummary replacement={replacement} /> : null}
+          <Comparison comparison={summary.comparison} replacing={Boolean(replacement)} />
+          <StudentNameIssues summary={summary} />
           <List title="Tabs with no confirmed mapping" items={summary.unmappedTabs} />
-          {summary.missingStudents.total ? (
+          {!replacement && summary.missingStudents.total ? (
             <p className="text-sm">
               <span className="font-medium">
                 {summary.missingStudents.total} students missing from this sheet (they keep their
@@ -406,10 +489,10 @@ export function SheetPreviewPanel({ sourceId }: { sourceId: string }) {
             <div className="flex justify-end">
               <ConfirmPreview
                 removed={summary.comparison.removed}
+                replacement={replacement}
+                rosterCheck={summary.rosterCheck ?? null}
                 busy={confirm.isPending}
-                onConfirm={(acknowledgeRemovals) =>
-                  confirm.mutate({ id: preview.id, acknowledgeRemovals })
-                }
+                onConfirm={(body) => confirm.mutate({ id: preview.id, ...body })}
               />
             </div>
           ) : null}

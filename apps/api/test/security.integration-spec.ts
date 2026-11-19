@@ -3,6 +3,7 @@ import {
   WEB_ORIGIN,
   api,
   createTestApp,
+  insertSession,
   login,
   resetState,
   seedUser,
@@ -138,7 +139,8 @@ describe('Security hardening (integration)', () => {
 
     it('requires the CSRF token of the same session', async () => {
       const a = await login(ctx, ADMIN.username, ADMIN.password);
-      const b = await login(ctx, ADMIN.username, ADMIN.password);
+      // Another live session of the same user; a second login would end `a`.
+      const b = await insertSession(ctx, a.body.user.id);
       const missing = await a.agent
         .post('/api/v1/admin/generations')
         .set('Origin', WEB_ORIGIN)

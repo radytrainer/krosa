@@ -40,13 +40,53 @@ Last verified: 2026-11-01, commit 66888b7 plus uncommitted working tree.
   refresh; old token marked used. Presenting a used token revokes the whole session (reuse
   detection). Absolute session lifetime 7 days. No `JWT_REFRESH_SECRET` is needed because refresh
   tokens are opaque, not JWTs.
-- **Revocation**: logout / password change / disable / reuse detection set `auth_sessions.revoked_at`
-  and write `ssrs:v1:auth:revoked:{sid}` to Redis with TTL = access TTL + 60 s. PostgreSQL decides: on
-  a Redis miss the guard reads `revoked_at`, `expires_at` and `users.status`, treats a missing row as
-  revoked, and caches a valid answer for 5 s. Losing Redis or its data never lets a revoked session
-  through. If the denylist write fails, a token already cached as valid can last up to 5 s.
+- **Revocation**: logout, sign-in elsewhere, inactivity, password change or reset, disable, reuse
+  detection and sheet replacement set `auth_sessions.revoked_at` / `revoke_reason` and
+  `refresh_tokens.revoked_at` of every token of the session, in one transaction. After the commit
+  and before the response, `ssrs:v1:auth:revoked:{sid}` (value = reason, TTL = access TTL + 60 s) is
+  written and `{ sessionId, reason }` is published on `ssrs:v1:auth:session-ended`. From the moment
+  the revoking request returns, the old access and refresh tokens get 401 on every route, refresh,
+  heartbeat and live connection. No grace period. A request that had already passed the guard
+  when the revocation committed may still finish; every later request is refused.
+- **Sheet replacement**: it locks the affected users' rows before their sessions (the same order as
+  login), so a login cannot slip in. A session created by a login that completed just before the
+  replacement's lock is deleted with its account (cascade): its tokens get 401 at once, and an
+  open live connection ends within the 10 s re-check (the worker publishes only the sessions it
+  revoked).
+- **Session check (every request)**: PostgreSQL decides. Nothing caches a positive answer
+  (decisions.md SR3): the guard reads the session by primary key each time and rejects a missing,
+  revoked or expired row, an account that is not ACTIVE, and a session idle for the configured
+  limit (revoked on the spot as `IDLE_TIMEOUT`). The Redis denylist is only a fast reject; with
+  Redis down every check goes to PostgreSQL. 401 codes: `SESSION_REPLACED` (signed in elsewhere),
+  `SESSION_IDLE` (inactivity), `SESSION_REVOKED` (anything else).
+- **One session per user (Rule A, decisions.md SR1)**: a successful login (password, status and
+  temporary-password checks passed) locks the user row, revokes every other active session of the
+  user (`SIGNED_IN_ELSEWHERE`) and creates the new one, in one transaction; concurrent logins leave
+  exactly one session. Audit: `auth.sessions.replaced` with `revokedCount` (no tokens). Failed
+  logins change nothing. Applies to students and admins. Tabs of one browser share the session.
+  Refresh locks the session row and re-checks everything inside its transaction, so a refresh
+  racing a login elsewhere cannot keep the old session alive.
+- **Inactivity logout (Rule B, decisions.md SR2)**: `SESSION_IDLE_TIMEOUT_SECONDS` (15 min). Only
+  `POST /auth/heartbeat` counts as activity; the web app sends it from a visible tab every
+  `SESSION_HEARTBEAT_INTERVAL_SECONDS` (5 min), at most one per browser. "Activity" means a tab of
+  the app is visible, not that the user clicks or types: a visible tab with no input keeps the
+  session alive. The session ends 15 minutes after the last moment any tab of the app was visible
+  (hidden, minimised or closed tabs and a sleeping laptop send nothing); after a laptop sleep the
+  first request or heartbeat gets `SESSION_IDLE`. A heartbeat never revives an idle session (one
+  conditional update). Refresh is not activity.
+- **Live connection (decisions.md SR4)**: `GET /auth/live` (server-sent events) needs the session's
+  `X-CSRF-Token` header (like a state-changing request) and refuses `Sec-Fetch-Site: cross-site`
+  (403 `CSRF_INVALID`, before any connection slot is taken). It tells the browser at
+  once that its session ended (`ended` with `SIGNED_IN_ELSEWHERE` / `IDLE_TIMEOUT` / `REVOKED`, no
+  ids). Each API process has one Redis subscriber and delivers a message only to streams of the
+  session id in their own access token; a 10 s database re-check covers lost messages, Redis
+  outages and the idle limit. Limits (SR5): `LIVE_MAX_PER_SESSION` (3) and `LIVE_MAX_PER_USER` (5)
+  open streams, counted in Redis sorted sets with a 60 s expiry (per process if Redis is down);
+  extra -> 429 `TOO_MANY_LIVE_CONNECTIONS`. The browser clearing its state is cosmetic; the server
+  decides.
 - **Forced password change**: `MustChangePasswordGuard` allows only routes marked
-  `@AllowWhenPasswordChangeRequired` (`/auth/me`, `/auth/change-password`; login, refresh and logout are
+  `@AllowWhenPasswordChangeRequired` (`/auth/me`, `/auth/change-password`, `/auth/heartbeat`,
+  `/auth/live`; login, refresh and logout are
   public) while `mcp` is true. A successful change re-issues the access cookie with `mcp=false` and
   revokes the user's other sessions.
   Temporary passwords past `password_expires_at` cannot log in (admin must re-issue).

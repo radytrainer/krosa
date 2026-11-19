@@ -33,7 +33,8 @@ describe('QA A-25: no hash or token in any response', () => {
   afterAll(async () => h.close());
 
   it('every GET route, as admin and as student', async () => {
-    const student = await h.activate('PNC2027-001');
+    await h.activate('PNC2027-001');
+    // One session per user (decisions.md SR1): this sign-in ends the one activate() made.
     const studentSession = await login(ctx, 'PNC2027-001', STUDENT_PASSWORD);
     const row = await ctx.prisma.student.findUniqueOrThrow({
       where: { studentCode: 'PNC2027-001' },
@@ -82,7 +83,12 @@ describe('QA A-25: no hash or token in any response', () => {
       studentSession.cookies.get('ssrs_at')!.value,
       studentSession.cookies.get('ssrs_rt')!.value,
     ];
-    for (const route of liveRoutes(ctx).filter((r) => r.method === 'get')) {
+    // GET /auth/live is an endless event stream (and needs X-CSRF-Token); its events are checked
+    // for ids in session-rules.integration-spec.ts.
+    const gets = liveRoutes(ctx).filter(
+      (r) => r.method === 'get' && r.path !== '/api/v1/auth/live',
+    );
+    for (const route of gets) {
       const path = fill(route.path) + (queries[route.path] ?? '');
       expect(path, 'an id was not filled in').not.toContain(':');
       const agent = route.path.startsWith('/api/v1/student')
@@ -95,7 +101,7 @@ describe('QA A-25: no hash or token in any response', () => {
       checked++;
     }
     expect(checked).toBeGreaterThanOrEqual(24);
-    await student.get(`${V1}/auth/me`).expect(200);
+    await studentSession.agent.get(`${V1}/auth/me`).expect(200);
   });
 
   it('login, refresh and change-password bodies carry no token or hash', async () => {

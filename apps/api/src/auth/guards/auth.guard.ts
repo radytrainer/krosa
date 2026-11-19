@@ -8,7 +8,7 @@ import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { ACCESS_COOKIE, readCookie } from '../cookies.js';
 import { IS_PUBLIC } from '../decorators.js';
-import { SessionService } from '../session.service.js';
+import { SessionService, sessionRejection } from '../session.service.js';
 import { TokenService } from '../token.service.js';
 
 /** Global guard #1: authenticates the request from the access-token cookie. */
@@ -44,12 +44,10 @@ export class AuthGuard implements CanActivate {
           : { code: 'UNAUTHENTICATED', message: 'Authentication required' },
       );
     }
-    if (await this.sessions.isSessionRevoked(result.user.sessionId)) {
-      throw new UnauthorizedException({
-        code: 'SESSION_REVOKED',
-        message: 'Session is no longer valid',
-      });
-    }
+    // Every request reads the session by primary key; nothing caches a positive answer.
+    // The session must exist, be valid and belong to the token's subject (sid ↔ sub).
+    const check = await this.sessions.checkSession(result.user.sessionId, result.user.userId);
+    if (!check.ok) throw sessionRejection(check.reason);
 
     req.user = result.user;
     return true;

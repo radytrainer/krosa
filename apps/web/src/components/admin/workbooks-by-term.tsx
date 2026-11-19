@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { StatusPill } from '@/components/app/status';
-import { EmptyState, ErrorState, LoadingRows } from '@/components/app/states';
+import { TableSkeleton, useLoading } from '@/components/app/loading';
+import { EmptyState, ErrorState } from '@/components/app/states';
 import {
   Table,
   TableBody,
@@ -28,8 +29,9 @@ export function WorkbooksByTerm() {
   const { data, error, refetch } = useFreshApi<TermWorkbooks[]>('/admin/term-workbooks', {
     refetchInterval: (q) => (q.state.data?.some((r) => r.runningJobId) ? 3000 : false),
   });
+  const loading = useLoading(!data);
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
-  if (!data) return <LoadingRows rows={3} />;
+  if (loading || !data) return <TableSkeleton rows={3} columns={3} label="Loading workbooks" />;
   const rows = data.filter((r) => r.active || r.pending || r.history.length > 0);
   if (rows.length === 0) {
     return (

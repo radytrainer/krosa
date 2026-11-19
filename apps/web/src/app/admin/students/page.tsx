@@ -2,21 +2,15 @@
 
 import { KeyRound, Search, Users } from 'lucide-react';
 import Link from 'next/link';
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useUrlState } from '@/components/admin/use-url-state';
+import { Spinner, TableSkeleton, TaskStatus, useLoading } from '@/components/app/loading';
 import { Field, NativeSelect, onSubmit } from '@/components/app/form';
 import { PageHeader } from '@/components/app/page-header';
 import { Pagination } from '@/components/app/pagination';
 import { AccountStatusPill } from '@/components/app/status';
-import {
-  EmptyState,
-  ErrorState,
-  LoadingRows,
-  PageLoading,
-  errorMessage,
-} from '@/components/app/states';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { EmptyState, ErrorState, PageLoading, errorMessage } from '@/components/app/states';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
@@ -64,7 +58,10 @@ function IssueCredentialsDialog({
   const [mode, setMode] = useState<'selected' | 'filter'>('filter');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** False when sending the same request again cannot help (nothing matched). */
+  const [retryable, setRetryable] = useState(true);
   const [onlyPending, setOnlyPending] = useState(true);
+  const form = useRef<HTMLFormElement>(null);
 
   const submit = onSubmit(async (d) => {
     setBusy(true);
@@ -86,6 +83,7 @@ function IssueCredentialsDialog({
       );
       const count = Number(headers.get('X-Issued-Count') ?? 0);
       if (count === 0) {
+        setRetryable(false);
         setError('No matching students needed credentials. Nothing was issued.');
         return;
       }
@@ -98,6 +96,7 @@ function IssueCredentialsDialog({
       setOpen(false);
     } catch (err) {
       const code = errorCode(err);
+      setRetryable(true);
       setError((code && ISSUE_ERRORS[code]) ?? errorMessage(err));
     } finally {
       setBusy(false);
@@ -121,7 +120,7 @@ function IssueCredentialsDialog({
         Issue credentials
       </DialogTrigger>
       <DialogContent className="sm:max-w-lg">
-        <form onSubmit={submit} className="space-y-4">
+        <form ref={form} onSubmit={submit} className="space-y-4">
           <DialogHeader>
             <DialogTitle>Issue temporary passwords</DialogTitle>
             <DialogDescription>
@@ -188,14 +187,18 @@ function IssueCredentialsDialog({
               </span>
             </span>
           </label>
-          {error ? (
-            <Alert variant="destructive">
-              <AlertTitle>No file was issued</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          ) : null}
+          {/* No client time limit: giving up after the server issued the passwords would lose
+              the only copy of the file. */}
+          <TaskStatus
+            running={busy}
+            label="Generating passwords…"
+            error={error}
+            errorTitle="No file was issued"
+            onRetry={retryable ? () => form.current?.requestSubmit() : undefined}
+          />
           <DialogFooter>
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy} aria-busy={busy || undefined}>
+              {busy ? <Spinner /> : null}
               {busy ? 'Generating passwords…' : 'Issue and download CSV'}
             </Button>
           </DialogFooter>
@@ -243,6 +246,7 @@ function StudentsList() {
   }, [q, className, values.q, values.className, set]);
 
   const rows = list.data?.data ?? [];
+  const listLoading = useLoading(!list.data);
   const allOnPage = rows.length > 0 && rows.every((s) => selected.has(s.id));
   const toggle = (s: Student, on: boolean) =>
     setSelected((m) => {
@@ -338,8 +342,8 @@ function StudentsList() {
 
       {list.error ? (
         <ErrorState error={list.error} onRetry={() => list.refetch()} />
-      ) : !list.data ? (
-        <LoadingRows />
+      ) : listLoading || !list.data ? (
+        <TableSkeleton rows={8} columns={5} label="Loading students" />
       ) : rows.length === 0 ? (
         <EmptyState
           icon={<Users className="size-8" />}

@@ -6,7 +6,8 @@ import { Suspense } from 'react';
 import { useUrlState } from '@/components/admin/use-url-state';
 import { Field, NativeSelect } from '@/components/app/form';
 import { PageHeader } from '@/components/app/page-header';
-import { EmptyState, ErrorState, LoadingRows, PageLoading } from '@/components/app/states';
+import { PageSkeleton, TableSkeleton, useLoading } from '@/components/app/loading';
+import { EmptyState, ErrorState } from '@/components/app/states';
 import { useMonitoringGenerations, useTermSubjects } from '@/components/monitoring/api';
 import { GenerationTermPicker } from '@/components/monitoring/generation-term-picker';
 import { LevelLegend } from '@/components/monitoring/level-summary';
@@ -61,6 +62,9 @@ function Monitoring() {
       },
     )}`;
 
+  const gensLoading = useLoading(!gens.data);
+  const subjectsLoading = useLoading(!subjects.data);
+
   const header = (
     <PageHeader
       title="Subject monitoring"
@@ -76,11 +80,11 @@ function Monitoring() {
       </>
     );
   }
-  if (!gens.data) {
+  if (gensLoading || !gens.data) {
     return (
       <>
         {header}
-        <LoadingRows rows={6} label="Loading generations" />
+        <TableSkeleton rows={6} columns={5} label="Loading generations" />
       </>
     );
   }
@@ -148,8 +152,8 @@ function Monitoring() {
         />
       ) : subjects.error ? (
         <MonitoringError error={subjects.error} onRetry={() => subjects.refetch()} />
-      ) : !view ? (
-        <LoadingRows rows={6} label="Loading subjects" />
+      ) : subjectsLoading || !view ? (
+        <TableSkeleton rows={6} columns={6} label="Loading subjects" />
       ) : (
         <div className="space-y-4">
           <div className="flex flex-col gap-2 rounded-xl border p-3 sm:flex-row sm:items-center sm:justify-between">
@@ -188,7 +192,7 @@ function Monitoring() {
 
 export default function MonitoringPage() {
   return (
-    <Suspense fallback={<PageLoading />}>
+    <Suspense fallback={<PageSkeleton columns={6} />}>
       <Monitoring />
     </Suspense>
   );

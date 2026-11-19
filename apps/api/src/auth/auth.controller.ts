@@ -40,6 +40,7 @@ import {
   SkipCsrfToken,
 } from './decorators.js';
 import { ChangePasswordDto, LoginDto, type MeResponse } from './dto.js';
+import { LiveService } from './live.service.js';
 import { TokenService } from './token.service.js';
 import { Throttle } from '../common/throttle.js';
 
@@ -55,6 +56,7 @@ export class AuthController {
     @Inject(API_ENV) private readonly env: ApiEnv,
     private readonly auth: AuthService,
     private readonly tokens: TokenService,
+    private readonly live: LiveService,
   ) {}
 
   @Post('login')
@@ -137,6 +139,33 @@ export class AuthController {
       mustChangePassword: updated.mustChangePassword,
     });
     setSessionCookies(res, this.env, { accessToken });
+  }
+
+  @Post('heartbeat')
+  @Authenticated()
+  @AllowWhenPasswordChangeRequired()
+  @Throttle({ bucket: 'heartbeat', perUser: { limit: 10, windowSeconds: 60 } })
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiCookieAuth()
+  @ApiNoContentResponse({ description: 'Activity recorded' })
+  @ApiUnauthorizedResponse({ description: 'SESSION_REPLACED / SESSION_IDLE / SESSION_REVOKED' })
+  heartbeat(@CurrentUser() user: AuthUser): Promise<void> {
+    return this.auth.heartbeat(user);
+  }
+
+  @Get('live')
+  @Authenticated()
+  @AllowWhenPasswordChangeRequired()
+  @ApiCookieAuth()
+  @ApiOkResponse({ description: 'text/event-stream: ready, ping comments, ended' })
+  @ApiTooManyRequestsResponse({ description: 'TOO_MANY_LIVE_CONNECTIONS' })
+  async liveStream(
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+    @Res() res: Response,
+  ): Promise<void> {
+    // The guard verified this cookie; it is read again only for its expiry.
+    await this.live.open(user, readCookie(req.cookies, ACCESS_COOKIE) ?? '', req, res);
   }
 
   @Get('me')

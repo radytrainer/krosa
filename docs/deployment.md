@@ -98,6 +98,11 @@ Migrations run automatically (`migrate` must finish before `api` and `worker` st
 forward-only; take a backup first when the release notes mention a migration:
 `ssrs exec backup sh /usr/local/bin/backup.sh --once`.
 
+Before the first sheet **replacement** on production (a different spreadsheet for a term that
+already has scores; decisions.md RP1), take a manual `pg_dump` and keep it outside the repository
+and off the server's working directory. A replacement deletes that term's marks, history and
+some accounts for good; the dump is the only way back.
+
 **Before releasing the `_meta` check (decisions.md K1):** every ACTIVE source's workbook must have
 a `_meta` tab whose `generation_code` and `education_term` match its generation and term, or its
 next sync fails with `META_MISSING` / `WORKBOOK_MISMATCH` (nothing is written). Check each one
@@ -109,6 +114,11 @@ node scripts/verify-term-workbook.mjs --sheet "<spreadsheet URL>" --generation <
 
 On 2026-11-13 both live workbooks (GEN2026 Term 1, GEN2027 Term 1) were verified correct.
 
+**Deploying the session rules (decisions.md SR1-SR5, migration `20261117120000_session_rules`):**
+deploy outside class hours and tell users beforehand that they will need to sign in once. The
+migration starts every session's inactivity clock from its last refresh, so every session idle for
+more than 15 minutes ends at the first request after the deploy; open pages go to the login page.
+
 **Rollback:** check out the previous release (`git checkout <tag>`) and `ssrs up -d --build`. If the
 newer release ran a migration that the older code cannot use, restore the backup taken before the
 update ([operations.md §2](operations.md#2-backups-and-restore)).
@@ -116,9 +126,22 @@ update ([operations.md §2](operations.md#2-backups-and-restore)).
 ## 6. Configuration reference
 
 Settings come from `.env.production`, but only variables listed in the compose file reach the
-containers. `ACCESS_TOKEN_TTL_SECONDS`, `SESSION_TTL_HOURS`, `CORS_ORIGINS`, `DATABASE_POOL_MAX`,
-`SYNC_JOBS_PER_MINUTE`, `ORPHAN_SWEEP_INTERVAL_MS` and `WORKER_HEARTBEAT_INTERVAL_MS` are not passed,
-so setting them has no effect in production.
+containers. `SESSION_TTL_HOURS`, `CORS_ORIGINS`, `DATABASE_POOL_MAX`, `SYNC_JOBS_PER_MINUTE`,
+`ORPHAN_SWEEP_INTERVAL_MS` and `WORKER_HEARTBEAT_INTERVAL_MS` are not passed, so setting them has
+no effect in production. `ACCESS_TOKEN_TTL_SECONDS` is passed to the API and the worker from one
+value, so the two always match.
+
+Session settings (API; `.env.example`): `SESSION_IDLE_TIMEOUT_SECONDS` (900, min 60) ends a session
+with no heartbeat for that long; `SESSION_HEARTBEAT_INTERVAL_SECONDS` (300, min 10, at most a third
+of the idle limit); `ACCESS_TOKEN_TTL_SECONDS` (900) must not exceed the idle limit, or the API
+refuses to start, and the worker's value must equal the API's (the worker sizes the denylist
+entries it writes for a sheet replacement from it); `LIVE_MAX_PER_SESSION` (3) and `LIVE_MAX_PER_USER` (5) cap open
+`GET /api/v1/auth/live` streams (extra: 429). The worker needs nothing new.
+
+Caddy (`docker/caddy/Caddyfile`) does not compress `/api/v1/auth/live` (`encode` has a
+`not path` matcher) and proxies the API with `flush_interval -1`, so live events reach the browser
+at once. A proxy or load balancer added in front later must not buffer `text/event-stream`
+responses and must allow connections idle for 25 s between pings.
 
 The compose file fixes the security-relevant ones so they cannot be forgotten: `NODE_ENV=production`,
 `WEB_ORIGIN=https://$SITE_ADDRESS`, `TRUST_PROXY_HOPS=1` (Caddy), `SWAGGER_ENABLED=false`. The API
@@ -133,6 +156,10 @@ refuses to start in production without `https` and secure cookies.
 | `GOOGLE_SA_FILE`                                     | no (`./secrets/google-sa.json`) | Path of the service-account key on the server                           |
 | `TEMP_PASSWORD_TTL_DAYS`                             | no (14)                         | Lifetime of issued temporary passwords                                  |
 | `RATE_LIMIT_PER_MINUTE`                              | no (300)                        | Requests per minute per client IP                                       |
+| `ACCESS_TOKEN_TTL_SECONDS`                           | no (900)                        | Access-token lifetime (API and worker); at most the idle timeout        |
+| `SESSION_IDLE_TIMEOUT_SECONDS`                       | no (900)                        | Inactivity logout (min 60)                                              |
+| `SESSION_HEARTBEAT_INTERVAL_SECONDS`                 | no (300)                        | Heartbeat from a visible tab (min 10, at most a third of the idle timeout) |
+| `LIVE_MAX_PER_SESSION`, `LIVE_MAX_PER_USER`          | no (3, 5)                       | Open live connections per session / per user (extra: 429)               |
 | `WORKER_CONCURRENCY`                                 | no (2)                          | Syncs processed at the same time                                        |
 | `LOG_LEVEL`                                          | no (`info`)                     | Log level of the API and worker                                         |
 | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`                   | no                              | Error reporting (scrubbed; see [security.md §8](security.md))           |

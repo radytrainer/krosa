@@ -20,7 +20,8 @@ import { useUrlState } from '@/components/admin/use-url-state';
 import { Field, NativeSelect } from '@/components/app/form';
 import { PageHeader, Section } from '@/components/app/page-header';
 import { Pagination } from '@/components/app/pagination';
-import { EmptyState, LoadingRows, PageLoading } from '@/components/app/states';
+import { PageSkeleton, SummarySkeleton, TableSkeleton, useLoading } from '@/components/app/loading';
+import { EmptyState } from '@/components/app/states';
 import { useSubjectStudents, useSubjectSummary } from '@/components/monitoring/api';
 import { DataNotes } from '@/components/monitoring/data-notes';
 import { LEVEL_LABEL } from '@/components/monitoring/level-labels';
@@ -152,6 +153,8 @@ function SubjectMonitoring() {
     pageSize,
   };
   const students = useSubjectStudents(levelPending ? null : studentsQuery);
+  const summaryLoading = useLoading(!summary.data);
+  const studentsLoading = useLoading(!students.data);
 
   const backHref = `/admin/monitoring${qs({
     generation: generationId,
@@ -234,11 +237,14 @@ function SubjectMonitoring() {
       </>
     );
   }
-  if (!s) {
+  if (summaryLoading || !s) {
     return (
       <>
         {header}
-        <LoadingRows rows={6} label="Loading subject" />
+        <div className="space-y-6">
+          <SummarySkeleton label="Loading subject" />
+          <TableSkeleton rows={6} columns={5} label="Loading students" />
+        </div>
       </>
     );
   }
@@ -440,8 +446,8 @@ function SubjectMonitoring() {
                   onRetry={() => students.refetch()}
                   actions={errorActions}
                 />
-              ) : !students.data ? (
-                <LoadingRows rows={8} label="Loading students" />
+              ) : studentsLoading || !students.data ? (
+                <TableSkeleton rows={8} columns={5} label="Loading students" />
               ) : students.data.data.length === 0 && students.data.meta.total > 0 ? (
                 <EmptyState
                   title="This page is past the end of the list"
@@ -493,7 +499,7 @@ function SubjectMonitoring() {
 
 export default function SubjectMonitoringPage() {
   return (
-    <Suspense fallback={<PageLoading />}>
+    <Suspense fallback={<PageSkeleton summary columns={5} />}>
       <SubjectMonitoring />
     </Suspense>
   );

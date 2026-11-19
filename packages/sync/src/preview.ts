@@ -18,6 +18,23 @@ import {
 } from './confirmed.js';
 import { isNewOffering } from './promote.js';
 import { compareSheet, type SheetComparison } from './removals.js';
+import {
+  computeReplacement,
+  replacedSource,
+  replacementSummary,
+  termLabel,
+  type ReplacementSet,
+  type ReplacementSummary,
+} from './replacement.js';
+import {
+  isBlockingError,
+  rosterCheck,
+  screenRoster,
+  withoutStudents,
+  type NameIssueRow,
+  type RosterCheck,
+  type StudentConflictRow,
+} from './roster-check.js';
 import { sameSchemeItems } from './scheme-diff.js';
 import {
   countPlan,
@@ -86,6 +103,16 @@ export interface PreviewSummary {
     total: number;
     sample: { studentCode: string; fullName: string }[];
   };
+  /** A pending sheet of another spreadsheet: what it deletes for good (decisions.md RP1). */
+  replacement: ReplacementSummary | null;
+  /** Terms 2–5: the roster against the earlier terms (RP5). Null for Term 1. */
+  rosterCheck: RosterCheck | null;
+  /** Students skipped because the stored name is another (RP6). */
+  nameMismatches: NameIssueRow[];
+  /** Same name with its words in another order: imported, the stored name kept. */
+  nameOrderWarnings: NameIssueRow[];
+  /** Students skipped: ID of another generation, or another account's login name (RP7). */
+  studentConflicts: StudentConflictRow[];
   /** At most PREVIEW_ISSUE_LIMIT; `issueCount` is the number found. */
   issues: TemplateIssue[];
   issueCount: number;
@@ -121,27 +148,21 @@ async function rosterImpact(
   generationId: string,
   roster: readonly RosterStudent[],
   counts: ImpactCounts,
-  issues: TemplateIssue[],
+  skipped: ReadonlySet<string>,
+  deleted: ReadonlySet<string>,
 ): Promise<void> {
   const existing = await prisma.student.findMany({
     where: { studentCode: { in: roster.map((s) => s.studentCode) } },
   });
-  const byCode = new Map(existing.map((s) => [s.studentCode, s]));
+  const byCode = new Map(existing.filter((s) => !deleted.has(s.id)).map((s) => [s.studentCode, s]));
   for (const student of roster) {
+    // Skipped students are counted as invalid from their issues.
+    if (skipped.has(student.studentCode)) continue;
     const current = byCode.get(student.studentCode);
     if (!current) {
       counts.new++;
     } else if (current.generationId !== generationId) {
-      // The sync would reject this row, so the preview must not look clean.
       counts.invalid++;
-      issues.push({
-        severity: 'ERROR',
-        scope: 'ROW',
-        code: 'STUDENT_IN_OTHER_GENERATION' as TemplateIssue['code'],
-        message: `Student ${student.studentCode} belongs to another generation.`,
-        rowNumber: student.rowNumber,
-        studentCode: student.studentCode,
-      });
     } else if (
       current.fullName !== student.fullName ||
       (current.firstName ?? null) !== student.firstName ||
@@ -270,21 +291,69 @@ export async function previewSource(
       ...waiting.map((tab) => `Tab "${tab}" has no confirmed subject. Confirm or ignore it first.`),
     );
   }
+  // A replacement: the deletion set, computed by the function the sync runs again (RP3).
+  const old = await replacedSource(prisma, source);
+  const replacement: ReplacementSet | null = old
+    ? await computeReplacement(prisma, { source, old, confirmed, workbook })
+    : null;
+  const deleted = new Set(replacement?.accounts.map((a) => a.studentId) ?? []);
+  const rosterTab = workbook.rosterTab ?? source.rosterTab;
+  const screen = await screenRoster(
+    prisma,
+    { generationId: source.generationId, rosterTab, excludeStudentIds: deleted },
+    workbook.roster,
+  );
+  const check = await rosterCheck(
+    prisma,
+    {
+      generationId: source.generationId,
+      termId: source.termId,
+      termNumber: source.term.number,
+      allCodes: new Set([
+        ...workbook.roster.map((s) => s.studentCode),
+        ...workbook.rosterDuplicates.flat().map((s) => s.studentCode),
+      ]),
+      replacement: replacement !== null,
+      deletedStudentIds: deleted,
+    },
+    screen.roster,
+  );
+  const read = withoutStudents(workbook, screen.roster, screen.skipped);
+  const shown = issues.filter((i) => read.issues.includes(i) || i.sheetTab === workbook.rosterTab);
+  issues.length = 0;
+  issues.push(...shown, ...(screen.issues as TemplateIssue[]));
+
   const students = zero();
-  await rosterImpact(prisma, source.generationId, workbook.roster, students, issues);
+  await rosterImpact(
+    prisma,
+    source.generationId,
+    workbook.roster,
+    students,
+    screen.skipped,
+    deleted,
+  );
   students.invalid += issues.filter(
     (i) => i.severity === 'ERROR' && i.scope === 'ROW' && i.sheetTab === workbook.rosterTab,
   ).length;
 
-  // Term enrollments, decided exactly as the sync would (student-terms.ts).
+  // Term enrollments, decided exactly as the sync would (student-terms.ts). In a replacement
+  // only an admin's assignment of a listed student survives the deletion.
   const config = await loadTermConfig(prisma, source.termId);
-  const plan = planStudentTerms(
-    config,
-    workbook.roster,
-    await existingTerms(prisma, source.termId),
-    workbook.rosterDuplicates,
-    workbook.rosterTab ?? source.rosterTab,
-  );
+  // The same rule as computeReplacement: duplicates count as listed; a deleted account loses all.
+  const listed = new Set([
+    ...workbook.roster.map((s) => s.studentCode),
+    ...workbook.rosterDuplicates.flat().map((s) => s.studentCode),
+  ]);
+  const deletedCodes = new Set(replacement?.accounts.map((a) => a.studentCode) ?? []);
+  const current = await existingTerms(prisma, source.termId);
+  if (replacement) {
+    for (const [code, t] of current) {
+      if (t.programSource !== 'ADMIN' || !listed.has(code) || deletedCodes.has(code)) {
+        current.delete(code);
+      }
+    }
+  }
+  const plan = planStudentTerms(config, read.roster, current, workbook.rosterDuplicates, rosterTab);
   issues.push(...(plan.issues as TemplateIssue[]));
   const audiences = audienceByCourseKey(source.tabMappings);
   const rosterByCode = new Map(workbook.roster.map((s) => [s.studentCode, s]));
@@ -304,7 +373,7 @@ export async function previewSource(
   const comments = zeroComments();
   for (const tab of confirmed) {
     if (removedTabs.has(tab.tabName)) continue;
-    let course = workbook.courses.find((c) => c.offeringId === tab.offeringId);
+    let course = read.courses.find((c) => c.offeringId === tab.offeringId);
     if (course) {
       const confirmedAudience = audiences.get(course.courseKey.toUpperCase());
       let audience = confirmedAudience ? tabAudience(config, confirmedAudience) : null;
@@ -345,7 +414,9 @@ export async function previewSource(
     );
     if (problem?.code === 'NEEDS_REMAP') row.status = 'HEADERS_CHANGED';
     else if (problem) row.status = 'MISSING';
-    if (course) await tabImpact(prisma, course, row, startsFresh.has(tab.tabName));
+    if (course) {
+      await tabImpact(prisma, course, row, replacement !== null || startsFresh.has(tab.tabName));
+    }
     row.scores.invalid = issues.filter(
       (i) =>
         i.severity === 'ERROR' &&
@@ -373,7 +444,8 @@ export async function previewSource(
     orderBy: { studentCode: 'asc' },
   });
   const missing = inTerm.filter((s) => !roster.has(s.studentCode));
-  const hasErrors = issues.some((i) => i.severity === 'ERROR');
+  // Per-student skips never block (RP6, RP7).
+  const hasErrors = issues.some(isBlockingError);
   // Plain re-syncs of the active sheet may save what they can; anything else needs zero errors.
   const allOrNothing = reviewing || comparison.removed.length > 0;
 
@@ -397,6 +469,25 @@ export async function previewSource(
       unmappedTabs: workbook.unmappedTabs,
       comparison,
       missingStudents: { total: missing.length, sample: missing.slice(0, MISSING_STUDENT_LIMIT) },
+      replacement: replacement
+        ? replacementSummary(
+            replacement,
+            termLabel(source.generation.code, source.term.number),
+            read.roster,
+            new Set(
+              (
+                await prisma.student.findMany({
+                  where: { studentCode: { in: read.roster.map((s) => s.studentCode) } },
+                  select: { studentCode: true },
+                })
+              ).map((s) => s.studentCode),
+            ),
+          )
+        : null,
+      rosterCheck: check,
+      nameMismatches: screen.nameMismatches,
+      nameOrderWarnings: screen.nameOrderWarnings,
+      studentConflicts: screen.studentConflicts,
       issues: issues.slice(0, PREVIEW_ISSUE_LIMIT),
       issueCount: issues.length,
       issuesTruncated: issues.length > PREVIEW_ISSUE_LIMIT,

@@ -7,9 +7,12 @@ import { AuthGuard } from './guards/auth.guard.js';
 import { CsrfGuard } from './guards/csrf.guard.js';
 import { MustChangePasswordGuard } from './guards/must-change-password.guard.js';
 import { RolesGuard } from './guards/roles.guard.js';
+import { LiveSlots } from './live-slots.js';
+import { LiveService } from './live.service.js';
 import { LoginLockout } from './login-lockout.js';
 import { RateLimiter } from './login-rate-limiter.js';
 import { PasswordService } from './password.service.js';
+import { SessionEvents } from './session-events.js';
 import { SessionService } from './session.service.js';
 import { TokenService } from './token.service.js';
 
@@ -25,6 +28,9 @@ import { TokenService } from './token.service.js';
     AuthService,
     PasswordService,
     SessionService,
+    SessionEvents,
+    LiveSlots,
+    LiveService,
     TokenService,
     RateLimiter,
     LoginLockout,

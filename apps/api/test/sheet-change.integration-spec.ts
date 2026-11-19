@@ -62,6 +62,13 @@ const withScience = () => {
   return sheet;
 };
 
+/** A sheet without one student, in every tab. */
+const dropFromSheet = (sheet: ReturnType<typeof sheetB>, code: string) => {
+  for (const [tab, rows] of Object.entries(sheet.tabs)) {
+    if (tab !== '_meta') sheet.tabs[tab] = rows.filter((r) => r[0] !== code);
+  }
+  return sheet;
+};
 describe('Changing the sheet of a term (integration)', () => {
   let ctx: TestContext;
   let reader: InMemorySheetsReader;
@@ -130,7 +137,14 @@ describe('Changing the sheet of a term (integration)', () => {
 
   async function previewAndConfirm(sourceId: string) {
     const preview = (await admin.post(`${V1}/sources/${sourceId}/preview`).expect(201)).body;
-    await admin.post(`${V1}/sources/${sourceId}/preview/${preview.id}/confirm`).expect(200);
+    const { replacement, rosterCheck } = preview.summary;
+    await admin
+      .post(`${V1}/sources/${sourceId}/preview/${preview.id}/confirm`, {
+        // A sheet replacement is confirmed by typing the term label (decisions.md RP3).
+        ...(replacement ? { confirmTermLabel: replacement.termLabel } : {}),
+        ...(rosterCheck ? { rosterChecked: true } : {}),
+      })
+      .expect(200);
     return preview;
   }
 
@@ -545,12 +559,13 @@ describe('Changing the sheet of a term (integration)', () => {
       const { summary } = (await admin.post(`${V1}/sources/${source.id}/preview`).expect(201)).body;
       expect(summary.canConfirm).toBe(false);
       expect(summary.students).toEqual({ new: 0, changed: 0, unchanged: 2, invalid: 0 });
-      expect(summary.scores).toMatchObject({ new: 0, changed: 1, unchanged: 11, invalid: 0 });
+      // Another spreadsheet replaces the term's data, so every mark it holds is new.
+      expect(summary.scores).toMatchObject({ new: 12, changed: 0, unchanged: 0, invalid: 0 });
       expect(summary.tabs).toEqual([
         expect.objectContaining({
           tabName: 'Logic',
           status: 'OK',
-          scores: { new: 0, changed: 1, unchanged: 11, invalid: 0 },
+          scores: { new: 12, changed: 0, unchanged: 0, invalid: 0 },
         }),
       ]);
       expect(summary.unmappedTabs).toEqual(expect.arrayContaining(['ENG', 'Extra']));
@@ -624,11 +639,13 @@ describe('Changing the sheet of a term (integration)', () => {
   });
 
   describe('syncing the new sheet', () => {
-    it('promotes it on completion, with score history for every change', async () => {
+    it('promotes it on completion; the term is replaced, so history starts from the new sheet', async () => {
       const pending = await readyToSync();
       const job = await sync(pending);
       expect(job).toMatchObject({ status: 'SUCCEEDED', errorCount: 0 });
-      expect(job.counts.scores).toMatchObject({ updated: 1, created: 0, unchanged: MARKS - 1 });
+      // Another spreadsheet replaces the term's data: every mark is created again.
+      expect(job.counts.scores).toMatchObject({ updated: 0, created: MARKS, unchanged: 0 });
+      expect(job.counts.replacement).toMatchObject({ scoreRows: MARKS, accounts: 0 });
 
       expect(await statusOf(SHEET_B)).toBe('ACTIVE');
       expect(await statusOf(SHEET_A)).toBe('DISABLED');
@@ -641,16 +658,23 @@ describe('Changing the sheet of a term (integration)', () => {
         orderBy: { createdAt: 'asc' },
       });
       expect(history.map((h) => [h.oldMark?.toString() ?? null, h.newMark.toString()])).toEqual([
-        [null, '90'],
-        ['90', '55'],
+        [null, '55'],
       ]);
       const audit = await ctx.prisma.auditLog.findFirstOrThrow({
         where: { action: 'source.promoted' },
       });
+      expect(audit).toMatchObject({ actorType: 'USER' });
+      expect(audit.actorUserId).not.toBeNull();
       expect(audit.metadata).toMatchObject({
+        oldSourceId: sourceA,
+        newSourceId: pending,
         oldSpreadsheetId: SHEET_A,
         newSpreadsheetId: SHEET_B,
+        deleted: { subjects: 0, scoreRows: MARKS, accounts: 0 },
       });
+      // Counts only: no student IDs or names in the entry.
+      expect(JSON.stringify(audit.metadata)).not.toMatch(/PNC2027-/);
+      expect(await ctx.prisma.auditLog.count({ where: { action: 'subject.archived' } })).toBe(0);
 
       const shown = (await student.get('/api/v1/student/me/results?term=1').expect(200)).body;
       const logic = shown.terms[0].courses.find((c: { title: string }) => c.title === 'Logic');
@@ -706,7 +730,7 @@ describe('Changing the sheet of a term (integration)', () => {
       expect((await quiz1()).mark.toString()).toBe('90');
     });
 
-    it('rolls back on a rejection the preview could not foresee', async () => {
+    it('refuses a sync whose skipped students changed since the preview', async () => {
       const pending = await readyToSync();
       // Between the preview and the sync, a student comes to belong to another generation.
       const other = await ctx.prisma.generation.create({
@@ -717,25 +741,41 @@ describe('Changing the sheet of a term (integration)', () => {
         data: { generationId: other.id },
       });
       const job = await sync(pending);
-      expect(job).toMatchObject({ status: 'FAILED', failureCode: 'SHEET_CHANGE_REJECTED' });
+      // The student no longer belongs to this generation, so the students losing this term's data
+      // are not the ones the admin confirmed: nothing is deleted or imported (decisions.md RP3).
+      expect(job).toMatchObject({ status: 'FAILED', failureCode: 'REPLACEMENT_CHANGED' });
       expect((await quiz1()).mark.toString()).toBe('90');
       expect(await statusOf(SHEET_A)).toBe('ACTIVE');
+      expect(await ctx.prisma.assessmentScoreRevision.count()).toBe(MARKS);
     });
 
-    it('keeps a missing student scores and removes nothing', async () => {
+    it('deletes a missing student data, and the account when it has no other term', async () => {
       const edited = sheetB();
       edited.tabs['ALL']!.splice(5, 1); // PNC2027-003
       edited.tabs['Logic']!.splice(3, 1);
       edited.tabs['PL']!.splice(3, 1);
       reader.set(SHEET_B, edited);
       const pending = await readyToSync();
+      const missing = await ctx.prisma.student.findUniqueOrThrow({
+        where: { studentCode: 'PNC2027-003' },
+        include: { user: true },
+      });
+      const session = await ctx.prisma.authSession.create({
+        data: { userId: missing.userId, expiresAt: new Date(Date.now() + 3_600_000) },
+      });
       const job = await sync(pending);
       expect(job.status).toBe('SUCCEEDED');
-      const scores = await ctx.prisma.assessmentScore.count({
-        where: { enrollment: { student: { studentCode: 'PNC2027-003' } } },
-      });
-      expect(scores).toBeGreaterThan(0);
-      expect(await ctx.prisma.assessmentScore.count()).toBe(MARKS);
+      expect(job.counts.replacement).toMatchObject({ accounts: 1 });
+      expect(
+        await ctx.prisma.assessmentScore.count({
+          where: { enrollment: { studentId: missing.id } },
+        }),
+      ).toBe(0);
+      expect(await ctx.prisma.student.count({ where: { id: missing.id } })).toBe(0);
+      expect(await ctx.prisma.user.count({ where: { id: missing.userId } })).toBe(0);
+      // Sessions and refresh tokens go with the account (cascade).
+      expect(await ctx.prisma.authSession.findUnique({ where: { id: session.id } })).toBeNull();
+      expect(await ctx.prisma.assessmentScore.count()).toBeLessThan(MARKS);
     });
 
     it('goes back to the old sheet through the same flow, without duplicating it', async () => {
@@ -764,6 +804,255 @@ describe('Changing the sheet of a term (integration)', () => {
       const { jobId } = (await admin.post(`${V1}/sync`, { scope: 'ALL' }).expect(202)).body;
       const job = (await admin.get(`${V1}/sync/${jobId}`).expect(200)).body;
       expect(job.children.map((c: { source: { id: string } }) => c.source.id)).toEqual([sourceA]);
+    });
+  });
+
+  describe('a replacement (decisions.md RP1–RP4)', () => {
+    const S2 = 'PNC2027-002';
+
+    it('deletes nothing when the data to delete changed after the preview', async () => {
+      const pending = await readyToSync();
+      const enrollment = await ctx.prisma.enrollment.findFirstOrThrow({
+        where: { teacherComment: null },
+      });
+      await ctx.prisma.enrollment.update({
+        where: { id: enrollment.id },
+        data: { teacherComment: 'Added after the preview' },
+      });
+      const job = await sync(pending);
+      expect(job).toMatchObject({ status: 'FAILED', failureCode: 'REPLACEMENT_CHANGED' });
+      expect(await statusOf(SHEET_B)).toBe('PENDING');
+      expect(await statusOf(SHEET_A)).toBe('ACTIVE');
+      expect(await ctx.prisma.assessmentScoreRevision.count()).toBe(MARKS);
+      expect((await quiz1()).mark.toString()).toBe('90');
+    });
+
+    it('recreates a student listed under another name, revoking the old sessions', async () => {
+      const edited = sheetB();
+      edited.tabs['ALL']![4]![2] = 'RENAMED';
+      reader.set(SHEET_B, edited);
+      const old = await ctx.prisma.student.findUniqueOrThrow({ where: { studentCode: S2 } });
+      const session = await ctx.prisma.authSession.create({
+        data: { userId: old.userId, expiresAt: new Date(Date.now() + 3_600_000) },
+      });
+      await ctx.prisma.auditLog.create({
+        data: { actorType: 'USER', actorUserId: old.userId, action: 'test.deleted_actor' },
+      });
+      const source = (await change(SHEET_B).expect(201)).body as { id: string };
+      await reviewTabs(source.id);
+      const preview = await previewAndConfirm(source.id);
+      expect(preview.summary.nameMismatches).toEqual([]);
+      expect(preview.summary.replacement.students.accountsDeleted).toEqual([
+        { studentCode: S2, fullName: expect.any(String) },
+      ]);
+      expect(preview.summary.replacement.students.added).toBe(1);
+
+      const { jobId } = (
+        await admin.post(`${V1}/sync`, { scope: 'SOURCE', sourceId: source.id }).expect(202)
+      ).body;
+      const outcome = await runJob(jobId);
+      expect(outcome).toMatchObject({ kind: 'finished', status: 'SUCCEEDED' });
+      expect(outcome).toHaveProperty('revokedSessionIds', [session.id]);
+
+      const fresh = await ctx.prisma.student.findUniqueOrThrow({
+        where: { studentCode: S2 },
+        include: { user: true },
+      });
+      expect(fresh.id).not.toBe(old.id);
+      expect(fresh.lastName).toBe('RENAMED');
+      expect(fresh.provisionedSourceId).toBe(source.id);
+      expect(fresh.user).toMatchObject({ status: 'PENDING', mustChangePassword: true });
+      const job = (await admin.get(`${V1}/sync/${jobId}`).expect(200)).body;
+      expect(job.counts.newStudents.ids).toEqual([fresh.id]);
+      expect(job.counts.replacement).toMatchObject({ accounts: 1 });
+
+      // The audit entry outlives the account; the list says who only while the account exists.
+      const logs = (await admin.get(`${V1}/audit-logs?action=test.deleted_actor`).expect(200)).body
+        .data;
+      expect(logs).toEqual([expect.objectContaining({ actorUserId: old.userId, actor: null })]);
+    });
+
+    it('lists a name in another order as a warning and keeps the stored name', async () => {
+      await sync(await readyToSync());
+      const edited = termWorkbookFixture();
+      edited.title = 'Sheet C';
+      const row = edited.tabs['ALL']![4]!;
+      [row[1], row[2]] = [row[2]!, row[1]!];
+      reader.set(SHEET_C, edited);
+      const source = (await change(SHEET_C).expect(201)).body as { id: string };
+      await reviewTabs(source.id);
+      const preview = await previewAndConfirm(source.id);
+      expect(preview.summary.nameOrderWarnings).toEqual([
+        expect.objectContaining({ studentCode: S2, sheetTab: 'ALL' }),
+      ]);
+      expect(preview.summary.replacement.students.accountsDeleted).toEqual([]);
+      expect(preview.summary.canConfirm).toBe(true);
+    });
+  });
+
+  async function replace(sheet: ReturnType<typeof sheetB>) {
+    reader.set(SHEET_B, sheet);
+    const source = (await change(SHEET_B).expect(201)).body as { id: string };
+    await reviewTabs(source.id);
+    const preview = await previewAndConfirm(source.id);
+    return { preview: preview.summary, job: await sync(source.id) };
+  }
+  async function editName(code: string) {
+    const s = await ctx.prisma.student.findUniqueOrThrow({ where: { studentCode: code } });
+    await admin.patch(`${V1}/students/${s.id}/name`, { lastName: 'EDITED' }).expect(200);
+    const edited = await ctx.prisma.student.findUniqueOrThrow({ where: { id: s.id } });
+    expect(edited.nameEditedAt).not.toBeNull();
+    return edited;
+  }
+
+  const scoresOf = (studentId: string) =>
+    ctx.prisma.assessmentScore.count({ where: { enrollment: { studentId } } });
+
+  describe('protected accounts (decisions.md RP10)', () => {
+    const S1 = 'PNC2027-001'; // signed in (beforeEach)
+    const S3 = 'PNC2027-003';
+    it('keeps a signed-in student missing from the new sheet; only the term data goes', async () => {
+      const before = await ctx.prisma.student.findUniqueOrThrow({ where: { studentCode: S1 } });
+      const { preview, job } = await replace(dropFromSheet(sheetB(), S1));
+      expect(preview.replacement.students.accountsProtected).toEqual([
+        { studentCode: S1, fullName: before.fullName, reason: 'LOGGED_IN' },
+      ]);
+      expect(preview.replacement.students.accountsDeleted).toEqual([]);
+      expect(preview.replacement.counts).toMatchObject({ accounts: 0, accountsProtected: 1 });
+      expect(job.status).toBe('SUCCEEDED');
+      expect(await ctx.prisma.student.count({ where: { id: before.id } })).toBe(1);
+      expect(await scoresOf(before.id)).toBe(0);
+      const audit = await ctx.prisma.auditLog.findFirstOrThrow({
+        where: { action: 'source.promoted' },
+      });
+      expect(audit.metadata).toMatchObject({ deleted: { accounts: 0, accountsProtected: 1 } });
+    });
+
+    it('skips a signed-in student under another name, keeping the account and its id', async () => {
+      const before = await ctx.prisma.student.findUniqueOrThrow({ where: { studentCode: S1 } });
+      const sheet = sheetB();
+      sheet.tabs['ALL']![3]![2] = 'OTHERNAME';
+      const { preview, job } = await replace(sheet);
+      expect(preview.replacement.students.accountsProtected).toEqual([
+        expect.objectContaining({ studentCode: S1, reason: 'LOGGED_IN' }),
+      ]);
+      expect(preview.nameMismatches).toEqual([expect.objectContaining({ studentCode: S1 })]);
+      expect(preview.canConfirm).toBe(true);
+      expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
+      const errors = (await admin.get(`${V1}/sync/${job.id}/errors?pageSize=100`).expect(200)).body
+        .data as { code: string; studentCode: string | null }[];
+      expect(errors.filter((e) => e.studentCode === S1).map((e) => e.code)).toEqual([
+        'STUDENT_NAME_MISMATCH',
+      ]);
+      const after = await ctx.prisma.student.findUniqueOrThrow({
+        where: { studentCode: S1 },
+        select: { id: true, fullName: true },
+      });
+      expect(after.id).toBe(before.id);
+      // Compared as a boolean so a failure never prints the name.
+      expect(after.fullName === before.fullName).toBe(true);
+      expect(await scoresOf(before.id)).toBe(0);
+    });
+
+    it('keeps a student whose name was edited when missing from the new sheet', async () => {
+      const edited = await editName(S3);
+      const { preview, job } = await replace(dropFromSheet(sheetB(), S3));
+      expect(preview.replacement.students.accountsProtected).toEqual([
+        { studentCode: S3, fullName: edited.fullName, reason: 'NAME_EDITED' },
+      ]);
+      expect(preview.replacement.counts.accountsProtected).toBe(1);
+      expect(job.status).toBe('SUCCEEDED');
+      expect(await ctx.prisma.student.count({ where: { id: edited.id } })).toBe(1);
+      expect(await scoresOf(edited.id)).toBe(0);
+    });
+
+    it('skips a student whose name was edited when the sheet still has the old name', async () => {
+      const edited = await editName(S3);
+      const { preview, job } = await replace(sheetB());
+      expect(preview.replacement.students.accountsProtected).toEqual([
+        expect.objectContaining({ studentCode: S3, reason: 'NAME_EDITED' }),
+      ]);
+      expect(preview.nameMismatches).toEqual([expect.objectContaining({ studentCode: S3 })]);
+      expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
+      const after = await ctx.prisma.student.findUniqueOrThrow({
+        where: { studentCode: S3 },
+        select: { id: true, lastName: true },
+      });
+      expect(after).toEqual({ id: edited.id, lastName: 'EDITED' });
+      expect(await scoresOf(edited.id)).toBe(0);
+    });
+  });
+
+  describe('the roster check on confirm (decisions.md RP5)', () => {
+    it('needs rosterChecked when students are missing or new: 422 ROSTER_CHECK_REQUIRED', async () => {
+      const source = (await change(SHEET_B).expect(201)).body as { id: string };
+      await reviewTabs(source.id);
+      const preview = (await admin.post(`${V1}/sources/${source.id}/preview`).expect(201)).body;
+      // Term 1 has no roster check; give the stored preview one, as a Term 2 preview would have.
+      await ctx.prisma.sheetPreview.update({
+        where: { id: preview.id },
+        data: {
+          summary: {
+            ...preview.summary,
+            rosterCheck: {
+              earlierTerms: [1],
+              missing: [{ studentCode: 'PNC2027-099', fullName: 'X', lastTerm: 1 }],
+              new: [],
+            },
+          },
+        },
+      });
+      const url = `${V1}/sources/${source.id}/preview/${preview.id}/confirm`;
+      const label = { confirmTermLabel: preview.summary.replacement.termLabel };
+      for (const body of [label, { ...label, rosterChecked: false }]) {
+        const res = await admin.post(url, body).expect(422);
+        expect(res.body.error.code).toBe('ROSTER_CHECK_REQUIRED');
+      }
+      await admin.post(url, { ...label, rosterChecked: true }).expect(200);
+      const audit = await ctx.prisma.auditLog.findFirstOrThrow({
+        where: { action: 'source.preview.confirmed' },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(audit.metadata).toMatchObject({ rosterCheck: { missing: 1, new: 0 } });
+    });
+  });
+
+  describe('editing a stored name (decisions.md RP8)', () => {
+    it('changes the name, audits old and new, and bumps the cache version', async () => {
+      const s = await ctx.prisma.student.findUniqueOrThrow({
+        where: { studentCode: 'PNC2027-002' },
+      });
+      const before = (
+        await ctx.prisma.generation.findUniqueOrThrow({ where: { id: generationId } })
+      ).cacheVersion;
+      const url = `${V1}/students/${s.id}/name`;
+      await admin.patch(url, {}).expect(422);
+      await admin.patch(url, { firstName: '' }).expect(400);
+      await admin.patch(url, { lastName: 'X'.repeat(201) }).expect(400);
+      for (const lastName of ['TAB\tNAME', 'ZERO\u200BWIDTH']) {
+        const res = await admin.patch(url, { lastName }).expect(422);
+        expect(res.body.error.code).toBe('INVALID_NAME');
+      }
+      await student.patch(url, { lastName: 'NEW' }).expect(403);
+
+      const view = (await admin.patch(url, { firstName: ' FIRST ', lastName: 'LAST' }).expect(200))
+        .body;
+      expect(view).toMatchObject({ firstName: 'FIRST', lastName: 'LAST', fullName: 'FIRST LAST' });
+      expect((await admin.get(`${V1}/students/${s.id}`).expect(200)).body).toMatchObject({
+        firstName: 'FIRST',
+        lastName: 'LAST',
+      });
+      const audit = await ctx.prisma.auditLog.findFirstOrThrow({
+        where: { action: 'student.name.changed', entityId: s.id },
+      });
+      expect(audit.metadata).toEqual({
+        old: { firstName: s.firstName, lastName: s.lastName, fullName: s.fullName },
+        new: { firstName: 'FIRST', lastName: 'LAST', fullName: 'FIRST LAST' },
+      });
+      expect(
+        (await ctx.prisma.generation.findUniqueOrThrow({ where: { id: generationId } }))
+          .cacheVersion,
+      ).toBe(before + 1);
     });
   });
 

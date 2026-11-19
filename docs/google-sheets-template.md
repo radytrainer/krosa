@@ -130,18 +130,20 @@ Administrators and Cybersecurity (`SNA` in a sheet means SNAC).
 This table is for an active sheet. On a new sheet waiting to replace it, any error refuses the whole
 sync (section 5).
 
-| Change                                 | What happens                                                                                                                                           |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Mark edited                            | Next sync updates it and records the change                                                                                                            |
-| Student removed from a subject tab     | Enrollment flagged, marks kept (`ENROLLMENT_MISSING_IN_SOURCE`)                                                                                        |
-| Student in a subject tab, not in `ALL` | That row is rejected (`UNKNOWN_STUDENT`)                                                                                                               |
-| Name differs from `ALL`                | Warning only (`PROFILE_MISMATCH`). `ALL` wins                                                                                                          |
-| Headers of a confirmed tab changed     | That tab is skipped (`NEEDS_REMAP`). Reopen it, detect again, confirm                                                                                  |
-| Tab renamed                            | Sync finds it through Google's tab ID. Detect tabs then shows a duplicate draft: do not confirm it                                                     |
-| New tab added                          | Warning (`UNMAPPED_TAB`) until Detect tabs lists it and it is confirmed or marked "Not a subject". A tab with no `STUDENT ID` header keeps the warning |
-| Confirmed tab deleted                  | `WORKSHEET_NOT_FOUND`. Other tabs still sync                                                                                                           |
-| Mapped column deleted                  | Scores kept (`CRITERION_REMOVED_IN_SOURCE`)                                                                                                            |
-| Weights changed on the review screen   | The next sync publishes a new weight version; older versions stay on record                                                                            |
+| Change                                           | What happens                                                                                                                                                                       |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mark edited                                      | Next sync updates it and records the change                                                                                                                                        |
+| Student removed from a subject tab               | Enrollment flagged, marks kept (`ENROLLMENT_MISSING_IN_SOURCE`)                                                                                                                    |
+| Student in a subject tab, not in `ALL`           | That row is rejected (`UNKNOWN_STUDENT`)                                                                                                                                           |
+| Name differs from `ALL`                          | Warning only (`PROFILE_MISMATCH`). `ALL` wins                                                                                                                                      |
+| Name in `ALL` differs from the stored name       | The student is skipped (`STUDENT_NAME_MISMATCH`), the others sync. Same words in another order: warning `STUDENT_NAME_ORDER`, stored name kept. Fix the sheet or use **Edit name** |
+| Student new in Term 2–5 (not in an earlier term) | Added only from a previewed sync whose roster check was confirmed. A sync without a preview skips them (`ROSTER_APPROVAL_REQUIRED`)                                                |
+| Headers of a confirmed tab changed               | That tab is skipped (`NEEDS_REMAP`). Reopen it, detect again, confirm                                                                                                              |
+| Tab renamed                                      | Sync finds it through Google's tab ID. Detect tabs then shows a duplicate draft: do not confirm it                                                                                 |
+| New tab added                                    | Warning (`UNMAPPED_TAB`) until Detect tabs lists it and it is confirmed or marked "Not a subject". A tab with no `STUDENT ID` header keeps the warning                             |
+| Confirmed tab deleted                            | `WORKSHEET_NOT_FOUND`. Other tabs still sync                                                                                                                                       |
+| Mapped column deleted                            | Scores kept (`CRITERION_REMOVED_IN_SOURCE`)                                                                                                                                        |
+| Weights changed on the review screen             | The next sync publishes a new weight version; older versions stay on record                                                                                                        |
 
 ## 6. Changing a term's sheet
 
@@ -154,9 +156,23 @@ On the generation page, choose **Edit** on the term. The dialog shows the sheet'
 2. On the new sheet's page, choose **Detect tabs**. Tabs with the same name start from the old
    sheet. Confirm each one.
 3. Choose **Run preview**. It shows new, changed, unchanged and invalid counts, tab problems, and
-   students missing from the new sheet. They keep their scores.
+   students missing from the new sheet. From Term 2 it also shows the roster check: students of an
+   earlier term missing from `ALL`, and students new in `ALL`.
 4. Choose **Confirm preview**, then **Sync now**. The whole sync saves or none of it does, and any
-   error leaves the old sheet active.
+   error leaves the old sheet active. A student skipped for a name or ID conflict does not block it.
+
+**A different spreadsheet replaces the term's data for good.** When the new sheet is another file
+than the one that last fed the term, the sync deletes every mark, comment, score history and
+enrollment of that term, and every subject the new sheet does not have, then imports the new sheet
+into the empty term. Accounts created by this term's sheets that have nothing in another term are
+deleted when the new `ALL` does not list them (or lists them under another name). An account a
+student has already used, or whose name an admin corrected with **Edit name**, is never deleted:
+only its data for this term goes, and under another name it is skipped (`STUDENT_NAME_MISMATCH`).
+The preview lists these as protected. The preview lists
+exactly what goes, with counts, and you confirm by typing the term label, for example
+`GEN2027 Term 1`. If anything to delete changed after the preview, the sync stops with
+`REPLACEMENT_CHANGED` and deletes nothing. Other terms are never touched. Re-connecting the same
+spreadsheet keeps its data.
 
 Editing the sheet or its tabs after the preview means running it again. So does a sync of the old
 sheet, or Detect tabs, Reopen, Confirm tab or Not a subject on the new one. If the sheet changed,
@@ -168,7 +184,7 @@ the sync succeeds, and a subject that only the new sheet has is created then. Di
 behind. A blank cell in the new sheet clears a stored mark, and the preview counts these.
 
 **Remove** disconnects the sheet and stops its syncs. Students keep their current scores, and the
-sheet stays in the term's history. A term with synced scores then connects a new sheet through the
+sheet stays in the term's history. A different sheet connected afterwards is a replacement (above). A term with synced scores then connects a new sheet through the
 same reviewed steps; a term that never synced connects one straight away, including the same sheet.
 
 ## 7. Common errors
@@ -185,6 +201,10 @@ same reviewed steps; a term that never synced connects one straight away, includ
 | `TERM_SOURCE_EXISTS`                                         | The term already has an active workbook. Use Replace, or Remove first                             |
 | `SOURCE_EXISTS`                                              | This spreadsheet is already connected                                                             |
 | `NO_CONFIRMED_TABS`                                          | Confirm at least one tab before syncing                                                           |
+| `TERM_LABEL_MISMATCH`                                        | A replacement is confirmed by typing the term label exactly, e.g. `GEN2027 Term 1`                |
+| `ROSTER_CHECK_REQUIRED`                                      | Tick "I have checked these students" on the roster check, then confirm                            |
+| `REPLACEMENT_CHANGED` / `ROSTER_CHANGED`                     | Data to delete, or the missing / new / skipped students, changed after the preview. Run a new one |
+| `STUDENT_NAME_MISMATCH`                                      | The name in `ALL` is not the stored one: that student was skipped. Fix the sheet or Edit name     |
 | `GOOGLE_NOT_CONFIGURED`                                      | The server has no service-account credentials. See `.env.example`                                 |
 | `RATE_LIMITED` / `GOOGLE_UNAVAILABLE`                        | Temporary. Requests are already retried; try again later                                          |
 

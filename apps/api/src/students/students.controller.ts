@@ -21,6 +21,7 @@ import { ResultsService } from '../results/results.service.js';
 import {
   IssueCredentialsDto,
   ListStudentsQueryDto,
+  UpdateStudentNameDto,
   UpdateStudentStatusDto,
 } from './students.dto.js';
 import { StudentsService } from './students.service.js';
@@ -77,6 +78,17 @@ export class StudentsController {
   @Get(':id/results')
   getResults(@Param('id', ParseUUIDPipe) id: string) {
     return this.results.forAdmin(id);
+  }
+
+  /** Corrects a stored name (decisions.md RP8). Audited with the old and the new name. */
+  @Patch(':id/name')
+  setName(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateStudentNameDto,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    return this.students.setName(id, dto, user, requestMeta(req));
   }
 
   @Patch(':id/status')

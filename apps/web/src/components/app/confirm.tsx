@@ -11,6 +11,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
+import { Spinner } from '@/components/app/loading';
 import { Button } from '@/components/ui/button';
 
 /**
@@ -47,6 +48,7 @@ export function Confirm({
           <Button
             variant={destructive ? 'destructive' : 'default'}
             disabled={busy}
+            aria-busy={busy || undefined}
             onClick={async () => {
               setBusy(true);
               try {
@@ -57,6 +59,7 @@ export function Confirm({
               }
             }}
           >
+            {busy ? <Spinner /> : null}
             {confirmLabel}
           </Button>
         </AlertDialogFooter>

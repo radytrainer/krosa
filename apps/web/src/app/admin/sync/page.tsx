@@ -11,7 +11,8 @@ import { Field, NativeSelect } from '@/components/app/form';
 import { PageHeader, Section } from '@/components/app/page-header';
 import { Pagination } from '@/components/app/pagination';
 import { isActiveJob } from '@/components/app/status';
-import { EmptyState, ErrorState, LoadingRows, PageLoading } from '@/components/app/states';
+import { PageSkeleton, TableSkeleton, useLoading } from '@/components/app/loading';
+import { EmptyState, ErrorState } from '@/components/app/states';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { humanize } from '@/lib/format';
 import { qs, useApi } from '@/lib/query';
@@ -109,6 +110,7 @@ function SyncCenter() {
     refetchInterval: (q) => (q.state.data?.data.some((j) => isActiveJob(j.status)) ? 3000 : false),
   });
   useRefreshOnJobFinish(jobs.data?.data ?? null);
+  const jobsLoading = useLoading(!jobs.data);
 
   return (
     <>
@@ -171,8 +173,8 @@ function SyncCenter() {
           </div>
           {jobs.error ? (
             <ErrorState error={jobs.error} onRetry={() => jobs.refetch()} />
-          ) : !jobs.data ? (
-            <LoadingRows />
+          ) : jobsLoading || !jobs.data ? (
+            <TableSkeleton rows={5} columns={5} label="Loading jobs" />
           ) : jobs.data.data.length === 0 ? (
             <EmptyState
               title="No jobs found"
@@ -192,7 +194,7 @@ function SyncCenter() {
 
 export default function SyncCenterPage() {
   return (
-    <Suspense fallback={<PageLoading />}>
+    <Suspense fallback={<PageSkeleton />}>
       <SyncCenter />
     </Suspense>
   );

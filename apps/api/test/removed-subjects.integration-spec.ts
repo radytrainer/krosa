@@ -134,14 +134,24 @@ describe('Subjects removed from a term sheet (integration)', () => {
   const preview = async (sourceId: string) =>
     (await admin.post(`${V1}/sources/${sourceId}/preview`).expect(201)).body;
 
-  const confirmPreview = (sourceId: string, id: string, acknowledgeRemovals = true) =>
+  /** A replacement is confirmed by typing its term label instead of the removal tick. */
+  const confirmPreview = (
+    sourceId: string,
+    id: string,
+    acknowledgeRemovals = true,
+    confirmTermLabel?: string,
+  ) =>
     admin
-      .post(`${V1}/sources/${sourceId}/preview/${id}/confirm`, { acknowledgeRemovals })
+      .post(`${V1}/sources/${sourceId}/preview/${id}/confirm`, {
+        acknowledgeRemovals,
+        rosterChecked: true,
+        ...(confirmTermLabel ? { confirmTermLabel } : {}),
+      })
       .expect(200);
 
   const previewed = async (sourceId: string) => {
     const p = await preview(sourceId);
-    await confirmPreview(sourceId, p.id);
+    await confirmPreview(sourceId, p.id, true, p.summary.replacement?.termLabel);
     return p;
   };
 
@@ -379,8 +389,25 @@ describe('Subjects removed from a term sheet (integration)', () => {
         'BCU',
         'MsOffice',
       ]);
-      expect((await sync(id)).status).toBe('SUCCEEDED');
+      const { replacement } = p.summary;
+      expect(replacement.termLabel).toBe('GEN2027 Term 1');
+      expect(replacement.subjects.kept.toSorted()).toEqual(['ENG', 'Logic', 'PL']);
+      expect(replacement.subjects.added).toEqual(['Science']);
+      expect(replacement.subjects.deleted.map((d: { subject: string }) => d.subject)).toEqual([
+        'BCU',
+        'MsOffice',
+      ]);
+      expect(replacement.counts.subjects).toBe(2);
+      const job = await sync(id);
+      expect(job.status).toBe('SUCCEEDED');
+      expect(job.counts.replacement).toEqual(replacement.counts);
       expect(await titles()).toEqual(['ENG', 'Logic', 'PL', 'Science']);
+      // Deleted, not archived: the rows are gone and nothing points at them.
+      expect(
+        await ctx.prisma.courseOffering.count({ where: { title: { in: ['BCU', 'MsOffice'] } } }),
+      ).toBe(0);
+      expect(await ctx.prisma.courseOffering.count({ where: { status: 'ARCHIVED' } })).toBe(0);
+      expect(await ctx.prisma.auditLog.count({ where: { action: 'subject.archived' } })).toBe(0);
     });
 
     it('works with a completely different set of subjects', async () => {
@@ -391,15 +418,33 @@ describe('Subjects removed from a term sheet (integration)', () => {
       expect(p.summary.comparison.removed).toHaveLength(5);
       expect((await sync(id)).status).toBe('SUCCEEDED');
       expect(await titles()).toEqual(['Chemistry', 'Physics']);
-      expect(await ctx.prisma.courseOffering.count({ where: { status: 'ARCHIVED' } })).toBe(5);
+      expect(await ctx.prisma.courseOffering.count({ where: { status: 'ARCHIVED' } })).toBe(0);
+      expect(await ctx.prisma.courseOffering.count()).toBe(2);
     });
 
-    it('needs the acknowledgment too', async () => {
+    it('needs the term label typed exactly, not the tick', async () => {
       reader.set(SHEET_B, { ...without('BCU'), title: 'Sheet B' });
       const id = await replaceWith();
       const p = await preview(id);
-      const res = await admin.post(`${V1}/sources/${id}/preview/${p.id}/confirm`, {}).expect(422);
-      expect(res.body.error.code).toBe('REMOVAL_ACK_REQUIRED');
+      const url = `${V1}/sources/${id}/preview/${p.id}/confirm`;
+      for (const body of [
+        {},
+        { acknowledgeRemovals: true },
+        { confirmTermLabel: 'gen2027 term 1' },
+        { confirmTermLabel: 'GEN2027 Term 2' },
+      ]) {
+        const res = await admin.post(url, body).expect(422);
+        expect(res.body.error.code).toBe('TERM_LABEL_MISMATCH');
+      }
+      await admin.post(url, { confirmTermLabel: '  GEN2027 Term 1 ' }).expect(200);
+      const audit = await ctx.prisma.auditLog.findFirstOrThrow({
+        where: { action: 'source.preview.confirmed' },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(audit.metadata).toMatchObject({
+        replacement: p.summary.replacement.counts,
+        rosterCheck: null,
+      });
     });
 
     it('blocks on a new tab with no mapping, not on a tab that is not a subject', async () => {
@@ -416,7 +461,7 @@ describe('Subjects removed from a term sheet (integration)', () => {
       ]);
     });
 
-    it('keeps old scores of a student missing from the new sheet', async () => {
+    it('deletes the old scores of a student missing from the new sheet', async () => {
       const sheet = termWorkbookFixture();
       sheet.title = 'Sheet B';
       sheet.tabs['ALL'] = sheet.tabs['ALL']!.filter((r) => r[0] !== 'PNC2027-001');
@@ -427,8 +472,19 @@ describe('Subjects removed from a term sheet (integration)', () => {
       const id = await replaceWith();
       const p = await previewed(id);
       expect(p.summary.missingStudents.total).toBe(1);
+      // PNC2027-001 has signed in, so the account is protected (decisions.md RP10): kept, with
+      // only this term's data deleted.
+      expect(p.summary.replacement.students.accountsDeleted).toEqual([]);
+      expect(p.summary.replacement.students.accountsProtected).toEqual([
+        { studentCode: 'PNC2027-001', fullName: expect.any(String), reason: 'LOGGED_IN' },
+      ]);
       await sync(id);
-      expect((await titles()).length).toBe(5);
+      expect(
+        await ctx.prisma.assessmentScore.count({
+          where: { enrollment: { student: { studentCode: 'PNC2027-001' } } },
+        }),
+      ).toBe(0);
+      expect(await ctx.prisma.student.count({ where: { studentCode: 'PNC2027-001' } })).toBe(1);
     });
   });
 

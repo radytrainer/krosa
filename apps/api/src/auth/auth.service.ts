@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -8,6 +9,7 @@ import {
 } from '@nestjs/common';
 import type { User } from '@ssrs/database';
 import { AuditService } from '../audit/audit.service.js';
+import { API_ENV, type ApiEnv } from '../config/env.js';
 import { RateLimitedException } from '../common/rate-limited.exception.js';
 import type { RequestMeta } from '../common/request-meta.js';
 import { PrismaService } from '../infra/prisma.service.js';
@@ -18,7 +20,7 @@ import { LoginLockout } from './login-lockout.js';
 import { LOGIN_LIMITS, RateLimiter } from './login-rate-limiter.js';
 import { checkPasswordPolicy, PASSWORD_POLICY_MESSAGES } from './password-policy.js';
 import { PasswordService } from './password.service.js';
-import { SessionService, type IssuedSession } from './session.service.js';
+import { SessionService, sessionRejection, type IssuedSession } from './session.service.js';
 import { TokenService } from './token.service.js';
 
 const INVALID_CREDENTIALS = {
@@ -38,6 +40,7 @@ const tooManyAttempts = (retryAfterSeconds: number) =>
 @Injectable()
 export class AuthService {
   constructor(
+    @Inject(API_ENV) private readonly env: ApiEnv,
     private readonly prisma: PrismaService,
     private readonly passwords: PasswordService,
     private readonly sessions: SessionService,
@@ -94,6 +97,84 @@ export class AuthService {
     }
 
     // The password is correct: status-specific errors no longer help an attacker.
+    await this.assertCanSignIn(user, now, meta);
+
+    const rehash = this.passwords.needsRehash(user.passwordHash)
+      ? await this.passwords.hash(dto.password)
+      : null;
+
+    // One session per user (decisions.md SR1): the user row lock serializes logins of the same
+    // account, so concurrent sign-ins leave exactly one active session.
+    const { session, replaced } = await this.prisma.client.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${user.id}::uuid FOR UPDATE`;
+      // Re-read under the lock: a disable, reset or lockout that committed after the checks
+      // above must still stop this sign-in (nothing below runs, the transaction rolls back).
+      const locked = await tx.user.findUniqueOrThrow({ where: { id: user.id } });
+      // A changed hash is a reset or password change (or a concurrent rehash of the same password).
+      if (
+        locked.passwordHash !== user.passwordHash &&
+        !(await this.passwords.verify(locked.passwordHash, dto.password))
+      ) {
+        throw new UnauthorizedException(INVALID_CREDENTIALS);
+      }
+      await this.assertCanSignIn(locked, now, meta);
+      if (
+        locked.lockedUntil &&
+        locked.lockedUntil > now &&
+        locked.lockedUntil.getTime() !== user.lockedUntil?.getTime()
+      ) {
+        throw tooManyAttempts(Math.ceil((locked.lockedUntil.getTime() - now.getTime()) / 1000));
+      }
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          failedLoginCount: 0,
+          lockedUntil: null,
+          lastLoginAt: now,
+          ...(rehash ? { passwordHash: rehash } : {}),
+        },
+      });
+      const ended = await this.sessions.revokeAllForUser(user.id, 'SIGNED_IN_ELSEWHERE', { tx });
+      const issued = await this.sessions.createSession(user, meta, tx);
+      await this.audit.record(
+        {
+          action: 'auth.login.success',
+          actorUserId: user.id,
+          entityType: 'session',
+          entityId: issued.principal.sessionId,
+          metadata: { role: user.role },
+          context: meta,
+        },
+        tx,
+      );
+      if (ended.sessionIds.length > 0) {
+        await this.audit.record(
+          {
+            action: 'auth.sessions.replaced',
+            actorUserId: user.id,
+            entityType: 'user',
+            entityId: user.id,
+            metadata: { revokedCount: ended.sessionIds.length },
+            context: meta,
+          },
+          tx,
+        );
+      }
+      return { session: issued, replaced: ended };
+    });
+    // Before the response: the old sessions' tokens and live connections stop now.
+    await this.sessions.announce(replaced);
+    await this.lockout.clear(identifier, ip);
+
+    return { session, me: await this.me(user.id) };
+  }
+
+  /** Account state that blocks a sign-in once the password is known to be correct. */
+  private async assertCanSignIn(
+    user: Pick<User, 'id' | 'status' | 'passwordExpiresAt'>,
+    now: Date,
+    meta: RequestMeta,
+  ): Promise<void> {
     if (user.status === 'DISABLED') {
       await this.audit.record({
         action: 'auth.login.failure',
@@ -124,38 +205,6 @@ export class AuthService {
         message: 'Your temporary password has expired. Ask the administrator for a new one.',
       });
     }
-
-    const rehash = this.passwords.needsRehash(user.passwordHash)
-      ? await this.passwords.hash(dto.password)
-      : null;
-
-    const session = await this.prisma.client.$transaction(async (tx) => {
-      await tx.user.update({
-        where: { id: user.id },
-        data: {
-          failedLoginCount: 0,
-          lockedUntil: null,
-          lastLoginAt: now,
-          ...(rehash ? { passwordHash: rehash } : {}),
-        },
-      });
-      const issued = await this.sessions.createSession(user, meta, tx);
-      await this.audit.record(
-        {
-          action: 'auth.login.success',
-          actorUserId: user.id,
-          entityType: 'session',
-          entityId: issued.principal.sessionId,
-          metadata: { role: user.role },
-          context: meta,
-        },
-        tx,
-      );
-      return issued;
-    });
-    await this.lockout.clear(identifier, ip);
-
-    return { session, me: await this.me(user.id) };
   }
 
   private async recordFailedLogin(user: User, now: Date, meta: RequestMeta): Promise<void> {
@@ -226,7 +275,12 @@ export class AuthService {
     let userId: string | null = null;
     if (tokens.access) {
       const verified = await this.tokenService.verifyAccessToken(tokens.access);
-      if (verified.ok) {
+      // Only a session of the token's own subject (sid ↔ sub); otherwise fall back to the refresh
+      // cookie, as for an expired access token.
+      if (
+        verified.ok &&
+        (await this.sessions.isOwnedBy(verified.user.sessionId, verified.user.userId))
+      ) {
         sessionId = verified.user.sessionId;
         userId = verified.user.userId;
       }
@@ -257,6 +311,11 @@ export class AuthService {
     dto: ChangePasswordDto,
     meta: RequestMeta,
   ): Promise<User> {
+    // The guard checked this already; kept here because the session id decides which session
+    // survives the change (sid must belong to sub).
+    if (!(await this.sessions.isOwnedBy(principal.sessionId, principal.userId))) {
+      throw sessionRejection('MISSING');
+    }
     const limit = await this.limiter.hit('pwchange', principal.userId, PASSWORD_CHANGE_LIMIT);
     if (!limit.allowed) throw new RateLimitedException(limit.retryAfterSeconds);
 
@@ -299,8 +358,8 @@ export class AuthService {
 
     const passwordHash = await this.passwords.hash(dto.newPassword);
     await this.lockout.clearAll(user.username);
-    return this.prisma.client.$transaction(async (tx) => {
-      const updated = await tx.user.update({
+    const { updated, revoked } = await this.prisma.client.$transaction(async (tx) => {
+      const saved = await tx.user.update({
         where: { id: user.id },
         data: {
           passwordHash,
@@ -311,7 +370,7 @@ export class AuthService {
           lockedUntil: null,
         },
       });
-      const revoked = await this.sessions.revokeAllForUser(user.id, 'PASSWORD_CHANGED', {
+      const others = await this.sessions.revokeAllForUser(user.id, 'PASSWORD_CHANGED', {
         exceptSessionId: principal.sessionId,
         tx,
       });
@@ -321,13 +380,23 @@ export class AuthService {
           actorUserId: user.id,
           entityType: 'user',
           entityId: user.id,
-          metadata: { wasForced: user.mustChangePassword, otherSessionsRevoked: revoked },
+          metadata: {
+            wasForced: user.mustChangePassword,
+            otherSessionsRevoked: others.sessionIds.length,
+          },
           context: meta,
         },
         tx,
       );
-      return updated;
+      return { updated: saved, revoked: others };
     });
+    await this.sessions.announce(revoked);
+    return updated;
+  }
+
+  /** POST /auth/heartbeat: the only request that counts as activity (decisions.md SR2). */
+  heartbeat(principal: AuthUser): Promise<void> {
+    return this.sessions.heartbeat(principal.sessionId, principal.userId);
   }
 
   async me(userId: string): Promise<MeResponse> {
@@ -347,6 +416,13 @@ export class AuthService {
         code: 'UNAUTHENTICATED',
         message: 'Authentication required',
       });
-    return { ...user, student: user.student ?? null };
+    return {
+      ...user,
+      student: user.student ?? null,
+      session: {
+        idleTimeoutSeconds: this.env.SESSION_IDLE_TIMEOUT_SECONDS,
+        heartbeatIntervalSeconds: this.env.SESSION_HEARTBEAT_INTERVAL_SECONDS,
+      },
+    };
   }
 }

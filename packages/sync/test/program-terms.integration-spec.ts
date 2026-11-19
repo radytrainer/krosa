@@ -14,6 +14,7 @@ import {
 } from '@ssrs/sheets/testing';
 import { runSourceSync } from '../src/engine.js';
 import { previewSource } from '../src/preview.js';
+import { refreshLatestTerm } from '../src/student-terms.js';
 import { confirmAllTabs } from '../src/testing.js';
 import type { SyncCounts } from '../src/types.js';
 
@@ -536,5 +537,282 @@ describe('preview of Term 2', () => {
     expect(summary.studentIssues).toEqual({ PROGRAM_SWITCH: 1 });
     expect(summary.issues.map((i) => i.code)).toContain('IDENTITY_MISMATCH_TAB');
     expect((await termsOf(moved))[2]).toBe(`WEP ${programTerm2Class(moved)}`);
+  });
+});
+
+describe('roster check against earlier terms (decisions.md RP5)', () => {
+  const NEW = 500;
+  beforeEach(async () => {
+    await sync(sources.t1);
+    term2((tabs) => {
+      const copy = [...rosterRow(tabs, WEP_STUDENT)];
+      copy[1] = code(NEW);
+      tabs['ALL']!.push(copy);
+    });
+  });
+
+  it('lists who left after an earlier term and who is new; Term 1 has no check', async () => {
+    const { rosterCheck } = (await previewSource(prisma, reader, sources.t2)).summary;
+    expect(rosterCheck).toEqual({
+      earlierTerms: [1],
+      missing: [{ studentCode: code(PROGRAM_T1_ONLY), fullName: expect.any(String), lastTerm: 1 }],
+      new: [{ studentCode: code(NEW), fullName: expect.any(String), existingAccount: false }],
+    });
+    expect((await previewSource(prisma, reader, sources.t1)).summary.rosterCheck).toBeNull();
+  });
+
+  it('a sync without a preview creates nobody new, warns once and syncs everyone else', async () => {
+    const { job, counts } = await sync(sources.t2);
+    expect(job.errors.filter((e) => e.studentCode === code(NEW)).map((e) => e.code)).toEqual([
+      'ROSTER_APPROVAL_REQUIRED',
+    ]);
+    expect(issuesOf(job, 'ROSTER_APPROVAL_REQUIRED')[0]).toMatchObject({ severity: 'WARNING' });
+    expect(await prisma.student.count({ where: { studentCode: code(NEW) } })).toBe(0);
+    expect(counts.termEnrollments.created).toBe(100);
+    expect(counts.newStudents).toEqual({ ids: [] });
+  });
+});
+
+describe('refreshLatestTerm', () => {
+  it('clears the class and program of a student left with no term enrollment', async () => {
+    await sync(sources.t1);
+    const s = await student(WEP_STUDENT);
+    expect(s.className).not.toBeNull();
+    await prisma.$transaction(async (tx) => {
+      await tx.studentTerm.deleteMany({ where: { studentId: s.id } });
+      await refreshLatestTerm(tx, [s.id]);
+    });
+    expect(await student(WEP_STUDENT)).toMatchObject({ className: null, programId: null });
+  });
+});
+
+/** The Term 2 workbook without Web Design (its fixture rows block an all-or-nothing sync). */
+function term2Copy(change: (tabs: Tabs) => void = () => undefined) {
+  const sheet = programTerm2Workbook();
+  delete (sheet.tabs as Record<string, unknown>)['Web Design'];
+  change(sheet.tabs);
+  return sheet;
+}
+const without = (i: number) => (tabs: Tabs) => {
+  for (const [name, rows] of Object.entries(tabs)) {
+    if (name !== '_meta') tabs[name] = rows.filter((r) => r[1] !== code(i));
+  }
+};
+
+async function confirmPreview(sourceId: string) {
+  const result = await previewSource(prisma, reader, sourceId);
+  await prisma.sheetPreview.create({
+    data: {
+      sourceId,
+      fingerprint: result.fingerprint,
+      mappingVersions: result.mappingVersions,
+      summary: result.summary as never,
+      runById: adminId,
+      confirmedById: adminId,
+      confirmedAt: new Date(),
+    },
+  });
+  return {
+    id: (
+      await prisma.sheetPreview.findFirstOrThrow({
+        where: { sourceId },
+        orderBy: { createdAt: 'desc' },
+      })
+    ).id,
+    summary: result.summary,
+  };
+}
+
+/** Everything Term 1 holds for students, to prove a replacement of Term 2 never touches it. */
+const term1Full = async () => ({
+  terms: await prisma.studentTerm.findMany({
+    where: { termId: termIds[0] },
+    orderBy: { id: 'asc' },
+  }),
+  enrollments: await prisma.enrollment.findMany({
+    where: { offering: { termId: termIds[0] } },
+    orderBy: { id: 'asc' },
+  }),
+  scores: await prisma.assessmentScore.findMany({
+    where: { enrollment: { offering: { termId: termIds[0] } } },
+    orderBy: { id: 'asc' },
+  }),
+  revisions: await prisma.assessmentScoreRevision.findMany({
+    where: { score: { enrollment: { offering: { termId: termIds[0] } } } },
+    orderBy: { id: 'asc' },
+  }),
+  issues: await prisma.studentTermIssue.findMany({
+    where: { termId: termIds[0] },
+    orderBy: { id: 'asc' },
+  }),
+});
+
+describe('replacing Term 2 (decisions.md RP1, RP4, RP5)', () => {
+  const X = WEP_STUDENT;
+  let replacements = 0;
+
+  beforeEach(async () => {
+    await sync(sources.t1);
+    await sync(sources.t2);
+  });
+
+  /** A pending Term 2 sheet with a confirmed preview, as the admin would leave it. */
+  async function pendingTerm2(sheet: ReturnType<typeof programTerm2Workbook>, id?: string) {
+    const spreadsheetId = id ?? `1ReplacementTermTwo${String(++replacements).padStart(21, '0')}`;
+    reader.set(spreadsheetId, sheet);
+    const source = await prisma.googleSheetSource.create({
+      data: {
+        generationId: (await prisma.term.findUniqueOrThrow({ where: { id: termIds[1]! } }))
+          .generationId,
+        termId: termIds[1]!,
+        spreadsheetId,
+        label: 'Term 2 replacement',
+        status: 'PENDING',
+        createdById: adminId,
+      },
+    });
+    // The admin's review of the new sheet: the Term 2 tabs, confirmed as before.
+    const names = new Set(Object.keys(sheet.tabs));
+    const tabs = await prisma.sheetTabMapping.findMany({
+      where: { sourceId: sources.t2, status: 'CONFIRMED' },
+      include: { columns: true },
+    });
+    for (const { id: _id, sourceId: _s, columns, createdAt: _c, updatedAt: _u, ...tab } of tabs) {
+      if (!names.has(tab.tabName)) continue;
+      await prisma.sheetTabMapping.create({
+        data: {
+          ...tab,
+          sourceId: source.id,
+          columns: {
+            create: columns.map(({ id: _cid, tabMappingId: _t, ...c }) => c),
+          },
+        },
+      });
+    }
+    const preview = await confirmPreview(source.id);
+    return { id: source.id, summary: preview.summary };
+  }
+  it('omitting a student with Term 1 data: Term 1 identical, account kept, Term 2 data gone', async () => {
+    const before = await term1Full();
+    const { id, summary } = await pendingTerm2(term2Copy(without(X)));
+    expect(summary.replacement).not.toBeNull();
+    expect(summary.replacement!.students.accountsDeleted).toEqual([]);
+    expect(summary.replacement!.students.dataRemoved.map((s) => s.studentCode)).toContain(code(X));
+    expect(summary.rosterCheck!.missing.map((m) => m.studentCode)).toContain(code(X));
+    const { job, counts } = await sync(id);
+    expect(job.status).toBe('SUCCEEDED');
+    expect(counts.replacement).toMatchObject({ accounts: 0 });
+    expect(await term1Full()).toEqual(before);
+    expect(await prisma.student.count({ where: { studentCode: code(X) } })).toBe(1);
+    expect(Object.keys(await termsOf(X))).toEqual(['1']);
+    expect(
+      await prisma.enrollment.count({
+        where: { student: { studentCode: code(X) }, offering: { termId: termIds[1] } },
+      }),
+    ).toBe(0);
+    await expectLatestInStep();
+  });
+
+  it('renaming a student with Term 1 data skips them (STUDENT_NAME_MISMATCH); Term 1 identical', async () => {
+    const before = await term1Full();
+    const stored = await student(X);
+    const { id, summary } = await pendingTerm2(
+      term2Copy((tabs) => {
+        rosterRow(tabs, X)[3] = 'RENAMED';
+        rosterRow(tabs, X)[4] = `${String(rosterRow(tabs, X)[2])} RENAMED`;
+      }),
+    );
+    expect(summary.replacement!.students.accountsDeleted).toEqual([]);
+    expect(summary.nameMismatches).toEqual([
+      expect.objectContaining({
+        studentCode: code(X),
+        sheetName: expect.stringContaining('RENAMED'),
+      }),
+    ]);
+    expect(summary.canConfirm).toBe(true);
+    const { job } = await sync(id);
+    expect(job.status).toBe('SUCCEEDED_WITH_ERRORS');
+    const mine = job.errors.filter((e) => e.studentCode === code(X));
+    expect(mine.map((e) => `${e.severity} ${e.code}`)).toEqual(['ERROR STUDENT_NAME_MISMATCH']);
+    expect(mine[0]!.message).toContain('RENAMED');
+    expect(await term1Full()).toEqual(before);
+    expect(await student(X)).toMatchObject({ id: stored.id, fullName: stored.fullName });
+    expect(Object.keys(await termsOf(X))).toEqual(['1']);
+  });
+
+  it('fails ROSTER_CHANGED when the new or missing students change after the preview', async () => {
+    const preview = await confirmPreview(sources.t2);
+    term2((tabs) => {
+      const copy = [...rosterRow(tabs, WEP_STUDENT)];
+      copy[1] = code(501);
+      tabs['ALL']!.push(copy);
+    });
+    const before = await prisma.studentTerm.count({ where: { termId: termIds[1] } });
+    const job = await prisma.syncJob.create({
+      data: {
+        scope: 'SOURCE',
+        sourceId: sources.t2,
+        requestedById: adminId,
+        previewId: preview.id,
+      },
+    });
+    await runSourceSync({ prisma, reader }, job.id, { attempt: 1, maxAttempts: 1 });
+    const done = await prisma.syncJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(done).toMatchObject({ status: 'FAILED', failureCode: 'ROSTER_CHANGED' });
+    expect(await prisma.student.count({ where: { studentCode: code(501) } })).toBe(0);
+    expect(await prisma.studentTerm.count({ where: { termId: termIds[1] } })).toBe(before);
+  });
+
+  it('Remove, then a different sheet: a replacement that deletes', async () => {
+    await prisma.googleSheetSource.update({
+      where: { id: sources.t2 },
+      data: { status: 'DISABLED' },
+    });
+    const { id, summary } = await pendingTerm2(term2Copy(without(X)));
+    expect(summary.replacement).toMatchObject({ oldSourceId: sources.t2 });
+    expect((await sync(id)).job.status).toBe('SUCCEEDED');
+    expect(
+      await prisma.assessmentScore.count({
+        where: {
+          enrollment: { student: { studentCode: code(X) }, offering: { termId: termIds[1] } },
+        },
+      }),
+    ).toBe(0);
+  });
+
+  it('Remove, then the same spreadsheet again: same-sheet rules, nothing deleted', async () => {
+    const marks = await prisma.assessmentScore.count({
+      where: {
+        enrollment: { student: { studentCode: code(X) }, offering: { termId: termIds[1] } },
+      },
+    });
+    expect(marks).toBeGreaterThan(0);
+    await prisma.googleSheetSource.update({
+      where: { id: sources.t2 },
+      data: { status: 'DISABLED' },
+    });
+    // Reconnecting a spreadsheet reuses its source row as the pending sheet.
+    await prisma.googleSheetSource.update({
+      where: { id: sources.t2 },
+      data: { status: 'PENDING' },
+    });
+    term2((tabs) => {
+      delete (tabs as Record<string, unknown>)['Web Design'];
+      without(X)(tabs);
+    });
+    await prisma.sheetTabMapping.deleteMany({
+      where: { sourceId: sources.t2, tabName: 'Web Design' },
+    });
+    const preview = await confirmPreview(sources.t2);
+    expect(preview.summary.replacement).toBeNull();
+    const { job } = await sync(sources.t2);
+    expect(job.status).toBe('SUCCEEDED');
+    expect(
+      await prisma.assessmentScore.count({
+        where: {
+          enrollment: { student: { studentCode: code(X) }, offering: { termId: termIds[1] } },
+        },
+      }),
+    ).toBe(marks);
   });
 });

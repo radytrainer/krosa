@@ -1,8 +1,10 @@
 'use client';
 
 import { ExternalLink, Pencil, Power, TriangleAlert } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { SyncJobsTable } from '@/components/admin/sync-jobs-table';
 import { useRefreshOnJobFinish } from '@/components/admin/use-refresh-on-job-finish';
 import { SheetPreviewPanel } from '@/components/admin/sheet-preview';
@@ -13,7 +15,8 @@ import { Field, fieldErrors, onSubmit } from '@/components/app/form';
 import { PageHeader, Section } from '@/components/app/page-header';
 import { Pagination } from '@/components/app/pagination';
 import { ActivePill, StatusPill } from '@/components/app/status';
-import { EmptyState, ErrorState, LoadingRows, PageLoading } from '@/components/app/states';
+import { PageSkeleton, Spinner, useLoading } from '@/components/app/loading';
+import { EmptyState, ErrorState, LoadingRows } from '@/components/app/states';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -28,7 +31,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { apiFetch } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
-import { json, qs, useApi, useApiMutation, useFreshApi } from '@/lib/query';
+import { apiKey, json, qs, useApi, useApiMutation, useFreshApi } from '@/lib/query';
 import type { Paginated, SheetPreview, Source, SyncJob, TermWorkbooks } from '@/lib/types';
 
 function RenameDialog({ source }: { source: Source }) {
@@ -71,6 +74,20 @@ function RenameDialog({ source }: { source: Source }) {
   );
 }
 
+/** When the sync shown as running ends, every admin view is read again (as on the job page). */
+function useRefreshWhenSyncEnds(runningJobId: string | null) {
+  const queryClient = useQueryClient();
+  const seen = useRef<string | null>(null);
+  useEffect(() => {
+    if (runningJobId) {
+      seen.current = runningJobId;
+    } else if (seen.current) {
+      seen.current = null;
+      void queryClient.invalidateQueries({ queryKey: apiKey('/admin'), refetchType: 'all' });
+    }
+  }, [runningJobId, queryClient]);
+}
+
 export default function SourceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [page, setPage] = useState(1);
@@ -83,7 +100,10 @@ export default function SourceDetailPage() {
     },
   );
   const preview = useApi<SheetPreview | null>(`/admin/sources/${id}/preview`);
-  const workbooks = useFreshApi<TermWorkbooks[]>('/admin/term-workbooks');
+  // Polled every 3 s only while a sync runs, so "Syncing…" ends without a reload.
+  const workbooks = useFreshApi<TermWorkbooks[]>('/admin/term-workbooks', {
+    refetchInterval: (q) => (q.state.data?.some((r) => r.runningJobId) ? 3000 : false),
+  });
   useRefreshOnJobFinish(history.data?.data ?? null);
   const discard = useApiMutation(
     () => apiFetch(`/admin/sources/${id}/discard`, { method: 'POST' }),
@@ -105,8 +125,12 @@ export default function SourceDetailPage() {
     },
   );
 
+  const runningJobId = workbooks.data?.find((w) => w.term.id === s?.term.id)?.runningJobId ?? null;
+  useRefreshWhenSyncEnds(runningJobId);
+  const loading = useLoading(!s);
+
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
-  if (!s) return <PageLoading />;
+  if (loading || !s) return <PageSkeleton columns={4} />;
   const active = s.status === 'ACTIVE';
   const pending = s.status === 'PENDING';
   const term = workbooks.data?.find((w) => w.term.id === s.term.id);
@@ -169,15 +193,32 @@ export default function SourceDetailPage() {
               </Button>
             )}
             {pending ? (
-              <SyncPendingSheet sourceId={s.id} disabled={!previewConfirmed} />
+              <SyncPendingSheet
+                sourceId={s.id}
+                disabled={!previewConfirmed}
+                running={runningJobId !== null}
+              />
             ) : (
-              <SyncActiveSheet sourceId={s.id} disabled={!active} />
+              <SyncActiveSheet sourceId={s.id} disabled={!active} running={runningJobId !== null} />
             )}
           </>
         }
       />
 
       <div className="space-y-8">
+        {runningJobId ? (
+          <p
+            role="status"
+            aria-live="polite"
+            className="flex items-center gap-2 text-sm text-muted-foreground"
+          >
+            <Spinner />
+            Syncing…{' '}
+            <Link href={`/admin/sync/${runningJobId}`} className="font-medium underline">
+              View the job
+            </Link>
+          </p>
+        ) : null}
         {pending ? (
           <Alert>
             <TriangleAlert aria-hidden />

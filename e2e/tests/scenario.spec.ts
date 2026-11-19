@@ -62,6 +62,26 @@ async function expectAutoDetected(page: Page) {
   expect(detections.count(), 'one automatic detection').toBe(1);
 }
 
+/**
+ * The replacement dialog: it says the term's data is deleted for good, and its button stays
+ * disabled until the term label is typed exactly (case sensitive).
+ */
+async function confirmReplacement(page: Page) {
+  const dialog = page.getByRole('dialog');
+  await expect(
+    dialog.getByRole('heading', { name: /Permanently delete the data of GEN2027 Term 1/ }),
+  ).toBeVisible();
+  await expect(dialog.getByText('This cannot be undone.', { exact: false }).first()).toBeVisible();
+  const button = dialog.getByRole('button', { name: 'Delete and replace' });
+  const label = dialog.getByLabel('Type GEN2027 Term 1 to confirm');
+  await expect(button).toBeDisabled();
+  await label.fill('gen2027 term 1');
+  await expect(button).toBeDisabled();
+  await label.fill('GEN2027 Term 1');
+  await button.click();
+  await expect(dialog).toHaveCount(0);
+}
+
 test.beforeAll(async ({ browser }) => {
   admin = await newPage(browser);
   student = await newPage(browser);
@@ -171,14 +191,20 @@ test('5b. a long issue list is paged 5 at a time', async () => {
   await expect(admin.getByText(/^1–5 of \d+$/)).toBeVisible();
 });
 
+/** Session upkeep that may run while a page sits still: the live connection and the heartbeat. */
+const SESSION_UPKEEP = new Set(['GET /api/v1/auth/live', 'POST /api/v1/auth/heartbeat']);
+
 /**
- * Counts the admin API requests a page makes while it sits still for `ms`: none means nothing
- * polls. (Requests already started before the window are not counted.)
+ * Counts the API requests a page makes while it sits still for `ms`: none means nothing polls.
+ * Only session upkeep is allowed. (Requests already started before the window are not counted.)
  */
 async function requestsWhileIdle(page: Page, ms: number): Promise<string[]> {
   const seenUrls: string[] = [];
-  const onRequest = (r: { url(): string }) => {
-    if (r.url().includes('/api/v1/admin/')) seenUrls.push(new URL(r.url()).pathname);
+  const onRequest = (r: { url(): string; method(): string }) => {
+    const { pathname } = new URL(r.url());
+    if (!pathname.startsWith('/api/v1/')) return;
+    const request = `${r.method()} ${pathname}`;
+    if (!SESSION_UPKEEP.has(request)) seenUrls.push(request);
   };
   page.on('request', onRequest);
   await page.waitForTimeout(ms);
@@ -771,9 +797,11 @@ test('10. changing the sheet changes nothing for students until its sync complet
     await expect(admin.getByRole('button', { name: 'Not a subject' })).toHaveCount(0);
   }
   await admin.getByRole('button', { name: 'Run preview' }).click();
-  await expect(admin.getByText(/1 changed/)).toBeVisible();
+  // A replacement starts the term from the new sheet: every Logic mark is new (decisions.md RP1).
+  await expect(admin.getByText('18 new · 0 changed · 0 unchanged · 0 invalid')).toBeVisible();
+  // A different spreadsheet replaces the term's data for good: the term label must be typed.
   await admin.getByRole('button', { name: 'Confirm preview' }).click();
-  await admin.getByRole('dialog').getByRole('button', { name: 'Confirm' }).click();
+  await confirmReplacement(admin);
   await expect(admin.getByRole('button', { name: 'Sync now' })).toBeEnabled();
   await student.reload();
   await expect(student.getByRole('button', { name: /Logic/ })).toContainText('78.90');
@@ -854,7 +882,7 @@ test('10c. a failed sync of a new sheet keeps the notice', async () => {
   await expect(failure).toContainText('The sheet is still connected');
   await expect(admin.getByRole('alert').getByText(NOT_SYNCED)).toBeVisible();
   await admin.unroute('**/api/v1/admin/sources/*/detect');
-  await failure.getByRole('button', { name: 'Try again' }).click();
+  await failure.getByRole('button', { name: 'Retry' }).click();
   await expect(admin.getByText('3 students found in "ALL"')).toBeVisible();
   await expect(failure).toHaveCount(0);
 
@@ -867,8 +895,9 @@ test('10c. a failed sync of a new sheet keeps the notice', async () => {
     await expect(admin.getByRole('button', { name: 'Not a subject' })).toHaveCount(0);
   }
   await admin.getByRole('button', { name: 'Run preview' }).click();
+  // Back to the first spreadsheet is a replacement too.
   await admin.getByRole('button', { name: 'Confirm preview' }).click();
-  await admin.getByRole('dialog').getByRole('button', { name: 'Confirm' }).click();
+  await confirmReplacement(admin);
   await expect(admin.getByRole('button', { name: 'Sync now' })).toBeEnabled();
 
   // Make the real sync fail: the confirmed preview no longer matches the sheet's content, as if
@@ -905,6 +934,44 @@ test('10c. a failed sync of a new sheet keeps the notice', async () => {
   await expect(admin.getByRole('alert').getByText(NOT_SYNCED)).toBeVisible();
   await admin.goto('/admin/sync');
   await expect(admin.getByText(NOT_SYNCED)).toBeVisible();
+
+  // The generation's Terms table: "Last sync" has its own column, once per row; the Workbook
+  // column keeps the sheet's name and the "not synced yet" badge with the new sheet's name.
+  await nav(admin, 'Generations').click();
+  await admin.getByRole('link', { name: 'GEN2027' }).click();
+  const terms = admin.locator('#terms table');
+  await expect(terms.locator('thead th')).toHaveText([
+    '#',
+    'Name',
+    'Workbook',
+    'Last sync',
+    'Scores',
+    'Actions',
+  ]);
+  const term1 = terms.getByRole('row', { name: /Term 1/ });
+  const workbook = term1.getByRole('cell').nth(2);
+  const lastSync = term1.getByRole('cell').nth(3);
+  await expect(workbook).toContainText('TERM1- GEN 2027 Scoring (corrected)');
+  await expect(workbook).toContainText(NOT_SYNCED);
+  await expect(workbook).toContainText('TERM1- GEN 2027 Scoring');
+  await expect(workbook).not.toContainText('Last sync');
+  await expect(lastSync).toHaveText(/^Last sync \d/);
+  await expect(term1.getByText(/Last sync/)).toHaveCount(1);
+  // A term without a sheet: an empty-style dash.
+  const term2 = terms.getByRole('row', { name: /Term 2/ });
+  await expect(term2.getByRole('cell').nth(3)).toHaveText('—');
+  // Same destinations as before: the badge opens the new sheet; the name and Last sync the active one.
+  await expect(workbook.getByRole('link', { name: new RegExp(NOT_SYNCED) })).toHaveAttribute(
+    'href',
+    sourcePath,
+  );
+  const activeHref = await workbook.getByRole('link').first().getAttribute('href');
+  expect(activeHref).toMatch(/^\/admin\/sources\/[0-9a-f-]+$/);
+  expect(activeHref).not.toBe(sourcePath);
+  await expect(lastSync.getByRole('link')).toHaveAttribute('href', activeHref!);
+  await lastSync.getByRole('link').click();
+  await expect(admin).toHaveURL(new RegExp(`${activeHref}$`));
+  await expect(admin.getByRole('heading', { name: 'Sync history' })).toBeVisible();
 
   // Discard it, so the active sheet can be removed next.
   await admin.goto(sourcePath);

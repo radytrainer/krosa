@@ -71,18 +71,29 @@ export class AuditController {
     const [rows, total] = await Promise.all([
       this.prisma.client.auditLog.findMany({
         where,
-        include: { actor: { select: { id: true, username: true, role: true } } },
         orderBy: { createdAt: 'desc' },
         ...skipTake(query),
       }),
       this.prisma.client.auditLog.count({ where }),
     ]);
+    // No foreign key to users (an actor's account may be deleted): looked up separately, and a
+    // deleted account is `actor: null` with `actorUserId` kept.
+    const actorIds = [...new Set(rows.flatMap((r) => (r.actorUserId ? [r.actorUserId] : [])))];
+    const actors = new Map(
+      (
+        await this.prisma.client.user.findMany({
+          where: { id: { in: actorIds } },
+          select: { id: true, username: true, role: true },
+        })
+      ).map((u) => [u.id, u]),
+    );
     return paginated(
       rows.map((r) => ({
         id: r.id,
         action: r.action,
         actorType: r.actorType,
-        actor: r.actor,
+        actorUserId: r.actorUserId,
+        actor: r.actorUserId ? (actors.get(r.actorUserId) ?? null) : null,
         entityType: r.entityType,
         entityId: r.entityId,
         metadata: r.metadata,

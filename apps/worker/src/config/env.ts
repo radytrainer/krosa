@@ -8,6 +8,8 @@ export const workerEnvSchema = z
     DATABASE_URL: envFields.postgresUrl,
     DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(5),
     REDIS_URL: envFields.redisUrl,
+    /** Must match the API's: how long a denylisted session id is kept (a sheet replacement). */
+    ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
     /** Concurrent sync jobs processed by one worker process. */
     WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(2),
     WORKER_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().min(1000).max(60_000).default(15_000),

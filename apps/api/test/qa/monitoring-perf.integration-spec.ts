@@ -123,10 +123,12 @@ describe('QA monitoring: no N+1, and timings at 300 students', () => {
       summary: large.summary,
       students: large.students,
     }).toEqual({
-      generations: 1,
-      page1: 4,
-      summary: 5,
-      students: 4,
+      // +1 each since 2026-11-17: every request reads its session by primary key
+      // (AuthSession.findUnique; no positive cache, decisions.md SR).
+      generations: 2,
+      page1: 5,
+      summary: 6,
+      students: 5,
     });
 
     // AC14: page 1 for the full term (5 subjects x 300) and page 2 for 300 students, each < 1 s.

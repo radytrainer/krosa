@@ -3,6 +3,7 @@ import request from 'supertest';
 import {
   clearRateLimits,
   createTestApp,
+  insertSession,
   login,
   parseSetCookies,
   resetState,
@@ -433,7 +434,8 @@ describe('Authentication & authorization (integration)', () => {
 
     it('changes the password and revokes the user’s other sessions', async () => {
       const a = await login(ctx, ADMIN.username, ADMIN.password);
-      const b = await login(ctx, ADMIN.username, ADMIN.password);
+      // A second login would replace `a` (one session per user), so insert the other session.
+      const b = await insertSession(ctx, a.body.user.id);
 
       await change(a, { currentPassword: ADMIN.password, newPassword: NEW_PASSWORD }).expect(204);
 

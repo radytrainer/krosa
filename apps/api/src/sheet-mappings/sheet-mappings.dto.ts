@@ -38,6 +38,23 @@ export class ConfirmPreviewDto {
   @IsOptional()
   @IsBoolean()
   acknowledgeRemovals?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Required for a sheet replacement: the term label exactly as shown, e.g. "GEN2027 Term 1"',
+    maxLength: 100,
+  })
+  @IsOptional()
+  @IsString()
+  @Length(0, 100)
+  confirmTermLabel?: string;
+
+  @ApiPropertyOptional({
+    description: 'Required when the roster check lists missing or new students',
+  })
+  @IsOptional()
+  @IsBoolean()
+  rosterChecked?: boolean;
 }
 
 export class ConfirmColumnDto {

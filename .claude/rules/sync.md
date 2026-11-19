@@ -40,8 +40,26 @@ Full rules for teachers and admins: `docs/google-sheets-template.md` §2–§3. 
 - Blank mark = not entered (never zero); an erased mark is `CLEARED`, kept in history.
 - Comments: blank clears; over 4000 characters keeps the old one and warns.
 
+## Replacement and roster checks (decisions.md RP1–RP9)
+
+- A pending sheet of another spreadsheet than the one that last fed the term is a **replacement**:
+  in the pending-sheet transaction the term's enrollments, marks, history, comments, SHEET term
+  enrollments, student issues and unfed subjects are deleted, then the new sheet imports. Admin
+  term assignments stay for students still listed. Accounts created by the term's sheets with no
+  other-term data go when `ALL` drops them or names them differently, unless protected: an account
+  ever used (not PENDING, password changed or logged in) or whose name an admin edited is never
+  deleted; only its term data goes (RP10). Other terms are never touched.
+- One deletion-set function for preview and sync (`replacement.ts`); the sync recomputes it under
+  the roster lock: `REPLACEMENT_CHANGED` on any difference. Confirm by typing the term label.
+- Terms 2–5: roster check (missing / new by ID). Previewed syncs recompute it and the skips under the
+  lock (`ROSTER_CHANGED`); unpreviewed jobs create no new student (`ROSTER_APPROVAL_REQUIRED`).
+- `ALL` vs the stored name: another word order is the same (`STUDENT_NAME_ORDER`); otherwise
+  `STUDENT_NAME_MISMATCH` skips that student. `STUDENT_IN_OTHER_GENERATION` and
+  `STUDENT_ID_CONFLICT` skip too. Skips never block an all-or-nothing sync.
+
 ## Safety
 
 - Re-syncing unchanged data writes nothing but "last seen" markers and `sync.completed`.
-- A pending sheet, or a sync that removes subjects, is all-or-nothing and needs zero errors.
+- A pending sheet, or a sync that removes subjects, is all-or-nothing and needs zero errors
+  (per-student skips excepted).
 - The preview runs the same code as the sync and writes nothing.

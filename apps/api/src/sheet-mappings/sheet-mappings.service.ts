@@ -837,10 +837,26 @@ export class SheetMappingsService {
       });
     }
     const removed = summary.comparison?.removed ?? [];
-    if (removed.length > 0 && !dto.acknowledgeRemovals) {
+    const replacement = summary.replacement ?? null;
+    if (replacement) {
+      // A replacement deletes for good: the typed term label replaces the removal tick.
+      if ((dto.confirmTermLabel ?? '').trim() !== replacement.termLabel) {
+        throw new UnprocessableEntityException({
+          code: 'TERM_LABEL_MISMATCH',
+          message: `Type ${replacement.termLabel} exactly to confirm the replacement.`,
+        });
+      }
+    } else if (removed.length > 0 && !dto.acknowledgeRemovals) {
       throw new UnprocessableEntityException({
         code: 'REMOVAL_ACK_REQUIRED',
         message: 'Acknowledge the subjects this sync will remove.',
+      });
+    }
+    const check = summary.rosterCheck ?? null;
+    if (check && (check.missing.length > 0 || check.new.length > 0) && dto.rosterChecked !== true) {
+      throw new UnprocessableEntityException({
+        code: 'ROSTER_CHECK_REQUIRED',
+        message: 'Check the students missing from and new in this sheet, then confirm again.',
       });
     }
     const saved = await this.prisma.client.$transaction(async (tx) => {
@@ -854,7 +870,13 @@ export class SheetMappingsService {
           actorUserId: actor.userId,
           entityType: 'source',
           entityId: sourceId,
-          metadata: { previewId, removals: removed.map((r) => r.subject) },
+          // Counts only: no names or student IDs.
+          metadata: {
+            previewId,
+            removals: replacement ? [] : removed.map((r) => r.subject),
+            replacement: replacement?.counts ?? null,
+            rosterCheck: check ? { missing: check.missing.length, new: check.new.length } : null,
+          },
           context: meta,
         },
         tx,

@@ -15,6 +15,9 @@ x-app-env: &app-env
   SENTRY_DSN: ${SENTRY_DSN:-}
   SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
   GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google-sa.json
+  # Shared by api and worker so they always match: the worker sizes the session denylist
+  # entries it writes from it (docs/deployment.md §6). Must not exceed SESSION_IDLE_TIMEOUT_SECONDS.
+  ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-900}
 
 services:
   caddy:
@@ -64,6 +67,11 @@ services:
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET}
       TEMP_PASSWORD_TTL_DAYS: ${TEMP_PASSWORD_TTL_DAYS:-14}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+      # Inactivity logout and live connections (docs/decisions.md SR2, SR5).
+      SESSION_IDLE_TIMEOUT_SECONDS: ${SESSION_IDLE_TIMEOUT_SECONDS:-900}
+      SESSION_HEARTBEAT_INTERVAL_SECONDS: ${SESSION_HEARTBEAT_INTERVAL_SECONDS:-300}
+      LIVE_MAX_PER_SESSION: ${LIVE_MAX_PER_SESSION:-3}
+      LIVE_MAX_PER_USER: ${LIVE_MAX_PER_USER:-5}
     secrets: [google-sa.json]
     depends_on:
       migrate: { condition: service_completed_successfully }

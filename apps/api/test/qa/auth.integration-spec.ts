@@ -8,6 +8,7 @@ import { JWT_AUDIENCE, JWT_ISSUER } from '../../src/auth/token.service.js';
 import {
   api,
   clearRateLimits,
+  insertSession,
   login,
   parseSetCookies,
   resetState,
@@ -255,6 +256,9 @@ describe('QA A: authentication and sessions', () => {
       await api(session).get(`${V1}/student/me`).expect(403);
       const again = api(await login(ctx, STUDENT.username, TEMP));
       await again.get(`${V1}/student/me`).expect(403);
+      // One session per user: the second sign-in ended the first.
+      const first = await api(session).get(`${V1}/auth/me`).expect(401);
+      expect(first.body.error.code).toBe('SESSION_REPLACED');
     });
 
     it('A-18b changing the password in one session lets that session through', async () => {
@@ -313,7 +317,9 @@ describe('QA A: authentication and sessions', () => {
       expect((await loginRaw(ctx, STUDENT.username, STUDENT.password)).status).toBe(401);
     });
 
-    it('A-21 reset during a Redis failure: the token is refused once Redis is back', async () => {
+    // Redis cannot help or hurt: every request reads the session from PostgreSQL (no positive
+    // cache), so a revocation whose denylist write failed is refused at once.
+    it('A-21 reset during a Redis failure: the token is refused', async () => {
       const user = await seedStudent();
       const s = api(await login(ctx, STUDENT.username, STUDENT.password));
       const redis = ctx.app.get(RedisService).client;
@@ -325,7 +331,7 @@ describe('QA A: authentication and sessions', () => {
       await s.get(`${V1}/auth/me`).expect(401);
     });
 
-    it('A-22 disable during a Redis failure: the token is refused once Redis is back', async () => {
+    it('A-22 disable during a Redis failure: the token is refused', async () => {
       const user = await seedStudent();
       const s = api(await login(ctx, STUDENT.username, STUDENT.password));
       const redis = ctx.app.get(RedisService).client;
@@ -340,6 +346,7 @@ describe('QA A: authentication and sessions', () => {
       await s.get(`${V1}/student/me`).expect(401);
     });
 
+    // The denylist is only a fast reject; PostgreSQL still says revoked without it.
     it('A-22b a Redis restart that loses the denylist does not resurrect a revoked session', async () => {
       const user = await seedStudent();
       const s = api(await login(ctx, STUDENT.username, STUDENT.password));
@@ -470,8 +477,10 @@ describe('QA A: authentication and sessions', () => {
 
   it('A-30 change password revokes other sessions and enforces the limit', async () => {
     await seedStudent();
-    const a = api(await login(ctx, STUDENT.username, STUDENT.password));
-    const b = api(await login(ctx, STUDENT.username, STUDENT.password));
+    const first = await login(ctx, STUDENT.username, STUDENT.password);
+    const a = api(first);
+    // A second login would replace `a` (one session per user), so insert the other session.
+    const b = api(await insertSession(ctx, first.body.user.id));
     await a
       .post(`${V1}/auth/change-password`, {
         currentPassword: STUDENT.password,

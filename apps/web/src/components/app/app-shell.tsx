@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Suspense, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
 import { PnMark } from '@/components/app/pn-logo';
+import { RouteProgress } from '@/components/app/route-progress';
 import { PageLoading } from '@/components/app/states';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
@@ -262,6 +263,7 @@ function Shell({ role, subtitle, nav, footerNav, children }: AppShellProps) {
 
   return (
     <div className="flex min-h-full flex-1">
+      <RouteProgress />
       <a
         href="#main"
         className="sr-only z-50 rounded bg-background px-3 py-2 focus:not-sr-only focus:fixed focus:top-2 focus:left-2"

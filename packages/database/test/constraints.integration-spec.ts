@@ -446,6 +446,136 @@ describe('append-only tables', () => {
   });
 });
 
+type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
+const allowReplacement = (tx: Tx, termId: string) =>
+  tx.$queryRaw`SELECT set_config('ssrs.allow_term_replacement', 'on', true),
+                      set_config('ssrs.replacement_term_id', ${termId}, true)`;
+
+/** A published scheme with one item, and one mark with its history, in the fixture's term. */
+async function protectedRows() {
+  const scheme = await createScheme('DRAFT', 1);
+  await prisma.gradingScheme.update({
+    where: { id: scheme.id },
+    data: { status: 'PUBLISHED', publishedAt: new Date() },
+  });
+  const score = await prisma.assessmentScore.create({
+    data: {
+      enrollmentId: fx.enrollmentId,
+      offeringId: fx.offeringId,
+      criterionId: fx.criterionId,
+      status: 'RECORDED',
+      mark: 7,
+    },
+  });
+  await prisma.assessmentScoreRevision.create({
+    data: { scoreId: score.id, newStatus: 'RECORDED', newMark: 7 },
+  });
+  return { schemeId: scheme.id, scoreId: score.id };
+}
+
+const deleteAll = async (tx: Tx, rows: { schemeId: string; scoreId: string }) => {
+  await tx.assessmentScoreRevision.deleteMany({ where: { scoreId: rows.scoreId } });
+  await tx.assessmentScore.deleteMany({ where: { id: rows.scoreId } });
+  await tx.gradingSchemeItem.deleteMany({ where: { schemeId: rows.schemeId } });
+  await tx.gradingScheme.deleteMany({ where: { id: rows.schemeId } });
+};
+
+describe('term replacement bypass (decisions.md RP2)', () => {
+  it('refuses the deletes without the flags', async () => {
+    const rows = await protectedRows();
+    await expect(
+      prisma.assessmentScoreRevision.deleteMany({ where: { scoreId: rows.scoreId } }),
+    ).rejects.toThrow(/append-only/);
+    await expect(
+      prisma.gradingSchemeItem.deleteMany({ where: { schemeId: rows.schemeId } }),
+    ).rejects.toThrow(/immutable/);
+    await expect(prisma.gradingScheme.delete({ where: { id: rows.schemeId } })).rejects.toThrow(
+      /cannot be deleted/,
+    );
+  });
+
+  it('refuses the deletes when the flags name another term', async () => {
+    const rows = await protectedRows();
+    const other = await prisma.term.findFirstOrThrow({
+      where: { generationId: fx.generationId, number: 2 },
+    });
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await allowReplacement(tx, other.id);
+        await tx.assessmentScoreRevision.deleteMany({ where: { scoreId: rows.scoreId } });
+      }),
+    ).rejects.toThrow(/append-only/);
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await allowReplacement(tx, other.id);
+        await tx.gradingSchemeItem.deleteMany({ where: { schemeId: rows.schemeId } });
+      }),
+    ).rejects.toThrow(/immutable/);
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT set_config('ssrs.replacement_term_id', ${fx.termId}, true)`;
+        await tx.gradingScheme.delete({ where: { id: rows.schemeId } });
+      }),
+    ).rejects.toThrow(/cannot be deleted/);
+    expect(await prisma.assessmentScoreRevision.count()).toBe(1);
+    expect(await prisma.gradingScheme.count()).toBe(1);
+  });
+
+  it('allows the deletes inside a replacement of the row term, then forgets the flags', async () => {
+    const rows = await protectedRows();
+    await prisma.$transaction(async (tx) => {
+      await allowReplacement(tx, fx.termId);
+      await deleteAll(tx, rows);
+    });
+    expect(await prisma.assessmentScoreRevision.count()).toBe(0);
+    expect(await prisma.assessmentScore.count()).toBe(0);
+    expect(await prisma.gradingSchemeItem.count()).toBe(0);
+    expect(await prisma.gradingScheme.count()).toBe(0);
+
+    const [flags] = await prisma.$queryRaw<{ allow: string | null; term: string | null }[]>`
+      SELECT current_setting('ssrs.allow_term_replacement', true) AS allow,
+             current_setting('ssrs.replacement_term_id', true) AS term`;
+    expect(flags?.allow ?? '').toBe('');
+    expect(flags?.term ?? '').toBe('');
+    // The connection that ran the replacement no longer bypasses anything.
+    const again = await protectedRows();
+    await expect(
+      prisma.assessmentScoreRevision.deleteMany({ where: { scoreId: again.scoreId } }),
+    ).rejects.toThrow(/append-only/);
+  });
+
+  it('never lets the replacement flags touch the audit log', async () => {
+    const log = await prisma.auditLog.create({
+      data: { actorType: 'SYSTEM', action: 'test.event', metadata: { a: 1 } },
+    });
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await allowReplacement(tx, fx.termId);
+        await tx.auditLog.update({ where: { id: log.id }, data: { action: 'tampered' } });
+      }),
+    ).rejects.toThrow(/append-only/);
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await allowReplacement(tx, fx.termId);
+        await tx.auditLog.delete({ where: { id: log.id } });
+      }),
+    ).rejects.toThrow(/append-only/);
+    expect(await prisma.auditLog.count()).toBe(1);
+  });
+
+  it('keeps audit entries of a deleted account (no foreign key)', async () => {
+    const user = await prisma.user.create({
+      data: { username: 'GEN26-0099', role: 'STUDENT', passwordHash: 'x' },
+    });
+    await prisma.auditLog.create({
+      data: { actorType: 'USER', actorUserId: user.id, action: 'test.event' },
+    });
+    await prisma.user.delete({ where: { id: user.id } });
+    const log = await prisma.auditLog.findFirstOrThrow({ where: { action: 'test.event' } });
+    expect(log.actorUserId).toBe(user.id);
+  });
+});
+
 async function termSource(termId: string) {
   return prisma.googleSheetSource.create({
     data: {
@@ -893,10 +1023,12 @@ describe('term enrollments (step 3)', () => {
       expect(row.program.code).toBe('GENERAL');
       // The latest term's values are mirrored on the student.
       const general = await program('GENERAL');
-      expect(await prisma.student.findUniqueOrThrow({ where: { id: s.id } })).toMatchObject({
-        className: 'B',
-        programId: general.id,
-      });
+      expect(
+        await prisma.student.findUniqueOrThrow({
+          where: { id: s.id },
+          select: { className: true, programId: true },
+        }),
+      ).toEqual({ className: 'B', programId: general.id });
       expect(await prisma.auditLog.count({ where: { action: 'student_terms.backfilled' } })).toBe(
         1,
       );
