@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { applyTermDefaults, type PrismaClient, type SyncStatus } from '@ssrs/database';
-import { truncateAllTables } from '@ssrs/database/testing';
+import { assertTestAppDatabaseUrl, truncateAllTables } from '@ssrs/database/testing';
 import {
   InMemorySheetsReader,
   TERM_FIXTURE_SPREADSHEET_ID,
@@ -21,10 +21,11 @@ const TERMINAL: SyncStatus[] = ['SUCCEEDED', 'SUCCEEDED_WITH_ERRORS', 'FAILED', 
 
 function testEnv() {
   loadRootEnv();
-  const db = process.env['TEST_DATABASE_URL'];
+  // The worker under test connects as the restricted role, like production.
+  const db = assertTestAppDatabaseUrl();
   const redis = process.env['TEST_REDIS_URL'];
-  if (!db || !redis || new URL(redis).pathname !== '/15') {
-    throw new Error('TEST_DATABASE_URL and TEST_REDIS_URL (database 15) must be set');
+  if (!redis || new URL(redis).pathname !== '/15') {
+    throw new Error('TEST_REDIS_URL (database 15) must be set');
   }
   return loadWorkerEnv({
     ...process.env,

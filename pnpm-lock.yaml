@@ -335,6 +335,9 @@ importers:
 
   packages/migrate:
     dependencies:
+      '@ssrs/database':
+        specifier: workspace:*
+        version: link:../database
       dotenv:
         specifier: ^18.0.9
         version: 18.0.9

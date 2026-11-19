@@ -26,6 +26,7 @@
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "migrate:status": "prisma migrate status",
+    "app-role": "node --env-file-if-exists=../../.env dist/cli/app-role.js",
     "test:integration": "vitest run --config ./vitest.config.integration.ts"
   },
   "dependencies": {

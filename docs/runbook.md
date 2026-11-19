@@ -43,6 +43,10 @@ the release). What it **cannot** undo: database migrations (forward only) and da
 If the new release's migration damaged data, or the old code cannot run on the new schema, restore
 the backup taken just before the deploy (`ssrs-…-predeploy-<sha>.dump.age`, below).
 
+Rolling back to a release from before the restricted application role (before commit "feat(db):
+restricted application role") runs the api and worker as the database owner again, because that
+release's compose file does; prefer rolling forward with a fix.
+
 A deploy restarts api, worker and web on the one server: expect up to about a minute of errors
 while the new containers start (longer if a rollback follows). Deploy outside class hours.
 
@@ -95,6 +99,10 @@ It prints row counts of the restored copy next to the live ones and shreds `/dev
 (memory only, never on disk). Inspect the copy if needed
 (`ssrs exec postgres psql -U ssrs -d ssrs_restore_…`), then drop it with the command it prints.
 
+A backup taken before the application role existed (before migration
+`20261118120000_app_role`) cannot serve the current release: `--replace-live` refuses it and
+keeps the restored copy. After a replace, the kept old database is closed to the application role.
+
 **Restore drill:** the same, monthly, and after any change to backups; record it in
 [operations.md §2](operations.md).
 
@@ -114,6 +122,7 @@ Edit `/opt/ssrs/.env` with `nano`, or generate in place without printing:
 | `JWT_ACCESS_SECRET`             | generate; `ssrs up -d --force-recreate api`                                                                                                                                                                                    | Everyone is signed out                |
 | `REDIS_PASSWORD`                | generate; `ssrs up -d --force-recreate redis api worker`                                                                                                                                                                       | ~30 s of errors; queue kept (AOF)     |
 | `POSTGRES_PASSWORD`             | generate; then `p=$(sed -n 's/^POSTGRES_PASSWORD=//p' /opt/ssrs/.env); printf "ALTER USER ssrs PASSWORD '%s';\n" "$p" \| ssrs exec -T postgres psql -U ssrs -d postgres -q; unset p`; `ssrs up -d --force-recreate api worker` | Brief errors while api/worker restart |
+| `APP_DB_PASSWORD`               | generate; `ssrs run --rm --no-deps migrate node node_modules/@ssrs/database/dist/cli/app-role.js`; `ssrs up -d --force-recreate api worker`                                                                                    | Brief errors while api/worker restart |
 | Google key                      | new key in Google Cloud; `nano /opt/ssrs/secrets/google-sa.json` (keep root:ssrs-secrets 0440); `ssrs up -d --force-recreate api worker`; delete the old key in Google Cloud                                                   | None                                  |
 | GHCR token                      | new classic token (`read:packages`); `docker login` as in checklist step 13; revoke the old one                                                                                                                                | None                                  |
 | `SENTRY_DSN`, healthchecks URLs | edit; `ssrs up -d --force-recreate api worker` (Sentry) — the URLs are read on each run                                                                                                                                        | None                                  |

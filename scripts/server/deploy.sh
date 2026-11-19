@@ -13,8 +13,9 @@
 #   2. back up the database to S3 (backup.sh, the same script as the daily timer) and confirm it
 #      arrived. Required whenever the database volume exists; skipped only on the very first
 #      deploy, when there is no database yet.
-#   3. run the migrations from the NEW api image as a one-off container. If they fail: stop here;
-#      the running release is untouched.
+#   3. run the migrations from the NEW api image as a one-off container, as the database owner,
+#      then give the restricted application role its login and grants (APP_DB_PASSWORD). If
+#      either fails: stop here; the running release is untouched.
 #   4. start the new release and wait until every health check passes
 #   5. if a health check fails: start the previous release again, report, exit 1
 #   6. record the tag (/opt/ssrs/state), point /opt/ssrs/current at the release, install the
@@ -112,6 +113,12 @@ compose "$tag" up -d --wait --wait-timeout 120 postgres redis || die "postgres/r
 if ! compose "$tag" run --rm --no-deps migrate 2>&1 | sed -E 's#://[^@[:space:]/]*@#://***@#g'; then
   summary FAILED_MIGRATION "${previous:-none}"
   die "migrations failed; the running release (${previous:-none}) was left as it is (docs/runbook.md \"A migration failed\")"
+fi
+# The application role (api, worker): LOGIN, password and grants. Idempotent, prints no secret.
+if ! compose "$tag" run --rm --no-deps migrate node node_modules/@ssrs/database/dist/cli/app-role.js 2>&1 |
+  sed -E 's#://[^@[:space:]/]*@#://***@#g'; then
+  summary FAILED_MIGRATION "${previous:-none}"
+  die "setting up the application role failed; the running release (${previous:-none}) was left as it is"
 fi
 
 # --- 4. Start -------------------------------------------------------------------------------

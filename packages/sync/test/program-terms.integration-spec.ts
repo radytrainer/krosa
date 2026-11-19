@@ -1,5 +1,5 @@
 import { applyTermDefaults, createPrismaClient, type PrismaClient } from '@ssrs/database';
-import { assertTestDatabaseUrl, truncateAllTables } from '@ssrs/database/testing';
+import { assertTestAppDatabaseUrl, truncateAllTables } from '@ssrs/database/testing';
 import {
   InMemorySheetsReader,
   PROGRAM_SNAC_STUDENTS,
@@ -45,7 +45,7 @@ const student = (i: number) =>
 
 beforeAll(() => {
   prisma = createPrismaClient({
-    connectionString: assertTestDatabaseUrl(process.env['TEST_DATABASE_URL']),
+    connectionString: assertTestAppDatabaseUrl(),
     poolMax: 4,
     log: [],
   });

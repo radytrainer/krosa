@@ -138,10 +138,21 @@ compose() {
 log "stopping api, worker and web"
 compose stop api worker web
 kept="ssrs_before_restore_${stamp,,}"
+app_role="${live_db}_app"
+# A backup from before the application role (migration 20261118120000_app_role) cannot serve the
+# current release, which connects as that role: refuse before anything changes.
+if [ "$(psql_in -d "$target" -c "SELECT to_regprocedure('ssrs_grant_app_role()') IS NOT NULL")" != t ]; then
+  die "this backup predates the application role; nothing was replaced. Restored copy kept as '$target'. See docs/runbook.md \"Restore a backup\""
+fi
 psql_in -d postgres \
   -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN ('$live_db', '$target') AND pid <> pg_backend_pid()" \
   -c "ALTER DATABASE \"$live_db\" RENAME TO \"$kept\"" \
   -c "ALTER DATABASE \"$target\" RENAME TO \"$live_db\"" >/dev/null
+# Backups are taken with --no-privileges: give the application role its grants on the restored
+# database (the role itself and its password are cluster-wide and unchanged).
+psql_in -d "$live_db" -c "SELECT ssrs_grant_app_role()" >/dev/null
+# The kept copy still carries the old grants: the application role must not read it.
+psql_in -d postgres -c "REVOKE ALL ON DATABASE \"$kept\" FROM PUBLIC, \"$app_role\"" >/dev/null
 log "live database is now the backup; the previous one is kept as '$kept'"
 compose up -d --wait --wait-timeout 300 api worker web
 log "app started. Re-run each term's sync to bring marks up to date (docs/runbook.md)."

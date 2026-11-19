@@ -360,7 +360,7 @@ test.describe('Change Password', () => {
         env: {
           ...process.env,
           NODE_ENV: 'test',
-          DATABASE_URL: process.env['TEST_DATABASE_URL'],
+          DATABASE_URL: process.env['TEST_APP_DATABASE_URL'],
           REDIS_URL: process.env['TEST_REDIS_URL'],
         },
         input: testPassword('second-admin'),

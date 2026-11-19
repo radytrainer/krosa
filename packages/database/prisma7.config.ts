@@ -13,6 +13,8 @@ export default defineConfig({
     path: 'prisma/migrations',
   },
   datasource: {
-    url: process.env['DATABASE_URL'],
+    // Migrations run as the database owner. The app itself connects as the restricted role
+    // (DATABASE_URL); the CLI uses the owner URL when one is set.
+    url: process.env['DATABASE_MIGRATION_URL'] || process.env['DATABASE_URL'],
   },
 });

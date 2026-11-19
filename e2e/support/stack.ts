@@ -19,9 +19,10 @@ export const API_URL = `http://localhost:${E2E.apiPort}`;
 
 /** Environment shared by the API and worker under test: test database, fixture Sheets. */
 export function serviceEnv(): NodeJS.ProcessEnv {
-  const db = process.env['TEST_DATABASE_URL'];
+  // API and worker connect as the restricted role (TEST_APP_DATABASE_URL), like production.
+  const db = process.env['TEST_APP_DATABASE_URL'];
   const redis = process.env['TEST_REDIS_URL'];
-  if (!db || !redis) throw new Error('TEST_DATABASE_URL and TEST_REDIS_URL must be set (.env)');
+  if (!db || !redis) throw new Error('TEST_APP_DATABASE_URL and TEST_REDIS_URL must be set (.env)');
   if (new URL(redis).pathname !== '/15') {
     throw new Error('TEST_REDIS_URL must select Redis database 15 (it is flushed by tests)');
   }

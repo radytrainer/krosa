@@ -29,7 +29,8 @@ export default async function globalSetup(): Promise<void> {
   await assertPortFree(E2E.webPort);
 
   const env = serviceEnv();
-  await prepareTestDatabase(env['DATABASE_URL']);
+  // Migrations and the role setup run as the owner; the services use env['DATABASE_URL'] (app role).
+  await prepareTestDatabase(process.env['TEST_DATABASE_URL'], env['DATABASE_URL']);
   // Flush the test Redis (queue and cache) in a plain Node process: Playwright's TypeScript
   // loader cannot load ioredis in-process.
   const flush = spawnSync(

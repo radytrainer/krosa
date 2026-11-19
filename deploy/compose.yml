@@ -26,7 +26,9 @@ x-app-env: &app-env
   NODE_ENV: production
   TZ: UTC
   LOG_LEVEL: ${LOG_LEVEL:-info}
-  DATABASE_URL: postgresql://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+  # The restricted application role (<database>_app: data access only, no DDL); the owner
+  # (POSTGRES_USER) is used only by `migrate`, backups and restores.
+  DATABASE_URL: postgresql://${POSTGRES_DB:?}_app:${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:?}
   REDIS_URL: redis://:${REDIS_PASSWORD:?}@redis:6379/0
   SENTRY_DSN: ${SENTRY_DSN:-}
   SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-beta}
@@ -190,7 +192,10 @@ services:
     environment:
       NODE_ENV: production
       TZ: UTC
+      # The owner: migrations, then the application role's login and grants (deploy.sh step 3).
       DATABASE_URL: postgresql://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+      DATABASE_MIGRATION_URL: postgresql://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}
     mem_limit: 256m
     depends_on:
       postgres: { condition: service_healthy }

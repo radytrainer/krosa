@@ -32,7 +32,7 @@ export default async function globalSetup(): Promise<void> {
   rmSync(SHEETS_DIR, { recursive: true, force: true });
   mkdirSync(SHEETS_DIR, { recursive: true });
   const env = manualEnv();
-  await prepareTestDatabase(env['DATABASE_URL']);
+  await prepareTestDatabase(process.env['TEST_DATABASE_URL'], process.env['TEST_APP_DATABASE_URL']);
   const flush = spawnSync(
     process.execPath,
     [

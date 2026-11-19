@@ -22,6 +22,8 @@ env:
   # Job-local throwaway service containers below (the CI equivalent of ssrs_test). This password
   # protects nothing outside the job.
   TEST_DATABASE_URL: postgresql://ssrs:ci-only-throwaway@localhost:5432/ssrs_test
+  # The restricted role the code under test connects as (created by the test setup).
+  TEST_APP_DATABASE_URL: postgresql://ssrs_test_app:ci-only-throwaway-app@localhost:5432/ssrs_test
   TEST_REDIS_URL: redis://localhost:6379/15
 
 jobs:

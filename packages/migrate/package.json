@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Runtime for one-off migrations in the api image (/app/migrate): the Prisma CLI and what the Prisma config imports, nothing else. Dockerfile copies packages/database/prisma and its config in.",
+  "description": "Runtime for one-off database jobs in the api image (/app/migrate): the Prisma CLI, what the Prisma config imports, and @ssrs/database for the app-role command; no test or build tools. Dockerfile copies packages/database/prisma and its config in.",
   "dependencies": {
+    "@ssrs/database": "workspace:*",
     "dotenv": "^18.0.9",
     "prisma": "7.10.1"
   }

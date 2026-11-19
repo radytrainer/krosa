@@ -17,6 +17,7 @@
     "db:generate": "pnpm --filter @ssrs/database generate",
     "db:migrate": "pnpm --filter @ssrs/database migrate:dev",
     "db:deploy": "pnpm --filter @ssrs/database migrate:deploy",
+    "db:app-role": "pnpm --filter @ssrs/database app-role",
     "infra:up": "docker compose up -d postgres redis",
     "infra:down": "docker compose down",
     "test:integration": "turbo run test:integration --concurrency=1",

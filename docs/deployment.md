@@ -131,8 +131,10 @@ Deploy beta → Run workflow** on `beta` with an image tag (rollback).
 5. **On the server** (`scripts/server/deploy.sh`), stopping at the first failure:
    1. pull the three images;
    2. back up the database (`backup.sh`, the daily script) and confirm the upload in S3;
-   3. run the migrations from the **new** api image as a one-off container. If they fail, stop:
-      the old release keeps running;
+   3. run the migrations from the **new** api image as a one-off container, as the database
+      owner, then give the restricted application role its login and grants
+      ([database-design.md "Roles"](database-design.md)). If either fails, stop: the old release
+      keeps running;
    4. start the new containers and wait for every health check (5 minutes);
    5. if a health check fails: start the previous release again and fail the job;
    6. record the tag (`/opt/ssrs/state`), point `current` at it, install the release's timers.
@@ -158,7 +160,8 @@ All settings live in `/opt/ssrs/.env` (template with a comment per variable:
 `NODE_ENV=production`, `WEB_ORIGIN=https://$BETA_DOMAIN`, `TRUST_PROXY_HOPS=1` (Caddy),
 `SWAGGER_ENABLED=false`; the API refuses to start in production without https and secure cookies.
 
-Secrets: `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `JWT_ACCESS_SECRET` (also derives the CSRF key),
+Secrets: `POSTGRES_PASSWORD` (the database owner), `APP_DB_PASSWORD` (the restricted role the api
+and worker connect as), `REDIS_PASSWORD`, `JWT_ACCESS_SECRET` (also derives the CSRF key),
 `SENTRY_DSN`, the healthchecks.io ping URLs, and the Google key file. They exist only on the server
 (and in the school's password manager). GitHub holds only `AWS_ROLE_ARN`, `AWS_REGION` and
 `EC2_INSTANCE_ID` in the `beta` environment.

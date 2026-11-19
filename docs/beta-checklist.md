@@ -150,10 +150,10 @@ manager, and [age](https://github.com/FiloSottile/age) on your computer
     `BETA_DOMAIN`, `ACME_EMAIL`, `IMAGE_PREFIX=ghcr.io/radytrainer/krosa`,
     `BACKUP_BUCKET` (`BackupBucketName`), `AWS_REGION=ap-southeast-2` (already in the template), `SENTRY_DSN` (Sentry → the project →
     Settings → Client Keys), and, after step 25, the two `HEALTHCHECKS_*` URLs. Save, then generate
-    the three secrets in place (new values, never copied from a laptop; nothing is printed):
+    the four secrets in place (new values, never copied from a laptop; nothing is printed):
 
     ```bash
-    for v in POSTGRES_PASSWORD REDIS_PASSWORD JWT_ACCESS_SECRET; do
+    for v in POSTGRES_PASSWORD APP_DB_PASSWORD REDIS_PASSWORD JWT_ACCESS_SECRET; do
       sed -i "s|^$v=.*|$v=$(openssl rand -hex 32)|" /opt/ssrs/.env
     done
     grep -c '=$' /opt/ssrs/.env      # only the optional empty ones remain
@@ -213,10 +213,6 @@ manager, and [age](https://github.com/FiloSottile/age) on your computer
     **Before step 19:** CI's dependency audit passes with one documented exception (picomatch,
     no fixed release; `pnpm-workspace.yaml`, review by 2026-12-31). If a new high advisory appears,
     every required CI run fails and the first deploy (step 20) cannot start until it is fixed.
-
-    **Known risk to accept or fix before real data:** the app connects to PostgreSQL as the
-    database owner, not a restricted role ([security.md §13](security.md),
-    [backlog.md](backlog.md)).
 
 19. **Branch protection.** Create `beta` first if it does not exist (step 20). Settings → **Rules →
     Rulesets** → New branch ruleset, one per branch (or one for all three):

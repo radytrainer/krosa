@@ -10,7 +10,7 @@ import {
   type PrismaClient,
   type SyncStatus,
 } from '@ssrs/database';
-import { truncateAllTables } from '@ssrs/database/testing';
+import { assertTestAppDatabaseUrl, truncateAllTables } from '@ssrs/database/testing';
 import {
   InMemorySheetsReader,
   TERM_FIXTURE_SPREADSHEET_ID,
@@ -31,7 +31,8 @@ import { bigWorkbook, mark, STUDENTS, TABS, code } from './big-workbook.mjs';
 
 const TERMINAL: SyncStatus[] = ['SUCCEEDED', 'SUCCEEDED_WITH_ERRORS', 'FAILED', 'CANCELLED'];
 const SHEET = TERM_FIXTURE_SPREADSHEET_ID;
-const db = process.env['TEST_DATABASE_URL']!;
+// Workers under test connect as the restricted role, like production.
+const db = assertTestAppDatabaseUrl();
 const redisUrl = process.env['TEST_REDIS_URL']!;
 if (new URL(redisUrl).pathname !== '/15' || !db.includes('_test')) throw new Error('test DB only');
 if (new URL(db).hostname !== 'localhost') throw new Error('localhost only');
