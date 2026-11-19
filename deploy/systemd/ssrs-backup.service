@@ -1,0 +1,15 @@
+# Daily encrypted database backup to S3 (scripts/server/backup.sh). Installed by deploy.sh.
+[Unit]
+Description=SSRS encrypted database backup to S3
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+OnFailure=ssrs-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ssrs/current/bin/backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=1h
+PrivateTmp=yes

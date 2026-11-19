@@ -9,7 +9,8 @@
 #     (an empty name would make PostgreSQL fall back to the user's own database);
 #   - `ssrs` (the dev database, real student data) is refused unless
 #     DB_GUARD_ALLOW_SSRS=yes is set for this one run, after explicit approval.
-# Then prints the host and database, and runs the command with DATABASE_URL set to <database-url>.
+# Then prints the host and database, and runs the command with DATABASE_URL and
+# DATABASE_MIGRATION_URL both set to <database-url>.
 #
 # Command `psql` is special: it runs psql in the Postgres container (DB_GUARD_PG_CONTAINER,
 # default student-score-system-postgres-1) against the checked database, with ON_ERROR_STOP=1
@@ -71,4 +72,5 @@ if [ "$1" = 'psql' ]; then
     psql -v ON_ERROR_STOP=1 -X -q -U "$user" -d "$name" "$@"
 fi
 
-DATABASE_URL="$url" exec "$@"
+# Both names: the Prisma CLI prefers DATABASE_MIGRATION_URL, which .env may also set.
+DATABASE_URL="$url" DATABASE_MIGRATION_URL="$url" exec "$@"

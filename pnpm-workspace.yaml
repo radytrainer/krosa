@@ -12,3 +12,25 @@ allowBuilds:
   unrs-resolver: false
   '@scarf/scarf': false # swagger-ui telemetry
   msgpackr-extract: false # optional native accelerator for BullMQ; pure-JS fallback is used
+
+# Security overrides (docs/backlog.md). Remove each once its parent package ships the fix.
+overrides:
+  # GHSA-q7qp-rjg7-q26m (high, DoS via a pending async fileFilter): @nestjs/platform-express
+  # 12.2.0 pins multer 2.4.0; 12.3+ ships 2.5.0. Drop this after upgrading Nest to 12.3+.
+  multer: 2.5.0
+
+auditConfig:
+  ignoreGhsas:
+    # GHSA-fc5q-39xc-vjpf (high): picomatch ReDoS when a glob PATTERN contains repeated extglobs
+    # such as +(*). Affects every version up to 4.0.7; no fixed release exists (2026-11-18).
+    # Where it is, checked 2026-11-18 (docs/progress.md):
+    #   - dependency tree (picomatch 4.0.7 and 2.3.2): build and dev tools only - the shadcn CLI
+    #     (declared in @ssrs/web dependencies, used for its CSS at build time, not traced into the
+    #     standalone output), vitest and vite, the Nest CLI, ESLint plugins; not in the api or
+    #     worker image.
+    #   - web image: Next.js's own bundled copy (next/dist/compiled/picomatch). Next compiles
+    #     patterns only from next.config (images.localPatterns/remotePatterns, none set here) and
+    #     only tests request URLs against them; no configured pattern uses an extglob, so the
+    #     vulnerable expression is never built and no user input ever becomes a pattern.
+    # Review by 2026-12-31, and again after the Next.js 16.4.5 upgrade; remove once fixed.
+    - GHSA-fc5q-39xc-vjpf

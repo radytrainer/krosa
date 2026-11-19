@@ -1,0 +1,309 @@
+# Beta server stack (docs/deployment.md). Runs from /opt/ssrs/releases/<commit>/compose.yml, put
+# there by the deploy (scripts/server/deploy.sh); never edit it on the server.
+#
+#   IMAGE_TAG=<commit sha> docker compose -p ssrs --env-file /opt/ssrs/.env -f compose.yml <command>
+#
+# - Only caddy publishes ports (80, 443). postgres and redis sit on `data`, an internal network
+#   with no route out; api and worker join it. Only api (via `edge`) and worker (via `egress`)
+#   reach the internet, for Google Sheets and Sentry.
+# - Sized for 1 GB RAM + 2 GB swap (docs/deployment.md §2): every container has a memory limit,
+#   Node heaps are capped below it, PostgreSQL and Redis are tuned small.
+# - Images come from GHCR by commit sha. There is no default tag, so `latest` can never run.
+# - `migrate` only runs on demand (profile), from the api image, before a release starts.
+# - App images are pinned by digest (API_DIGEST, WORKER_DIGEST, WEB_DIGEST from the release's
+#   digests.env, written by ssrs-deploy); the tag is only for people reading `docker ps`.
+
+name: ssrs
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: '10m', max-file: '3' }
+
+x-hardening: &hardening
+  security_opt: ['no-new-privileges:true']
+
+x-app-env: &app-env
+  NODE_ENV: production
+  TZ: UTC
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  # The restricted application role (<database>_app: data access only, no DDL); the owner
+  # (POSTGRES_USER) is used only by `migrate`, backups and restores.
+  DATABASE_URL: postgresql://${POSTGRES_DB:?}_app:${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:?}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?}@redis:6379/0
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-beta}
+  GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google-sa.json
+  # One value for api and worker: the worker sizes the session denylist entries it writes from it.
+  ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-900}
+
+services:
+  caddy:
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    <<: *hardening
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    environment:
+      TZ: UTC
+      SITE_ADDRESS: ${BETA_DOMAIN:?Set BETA_DOMAIN (public host name)}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL (certificate expiry notices)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    read_only: true
+    tmpfs: ['/tmp:size=8m']
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    mem_limit: 64m
+    healthcheck:
+      # The admin endpoint listens on localhost inside the container only.
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:2019/config/']
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    depends_on:
+      web: { condition: service_healthy }
+      api: { condition: service_healthy }
+    logging: *logging
+    networks: [edge, web]
+
+  web:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX}-web:${IMAGE_TAG:?Set IMAGE_TAG (commit sha)}@${WEB_DIGEST:?Set WEB_DIGEST}
+    <<: *hardening
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: ['/tmp:size=16m']
+    cap_drop: [ALL]
+    environment:
+      NODE_ENV: production
+      TZ: UTC
+      NODE_OPTIONS: --max-old-space-size=160
+      # Caddy routes /api to the API; web has no route to it (or to the internet) by design.
+    volumes:
+      - web-cache:/app/apps/web/.next/cache
+    mem_limit: 256m
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    depends_on:
+      api: { condition: service_healthy }
+    logging: *logging
+    networks: [web]
+
+  api:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX}-api:${IMAGE_TAG:?Set IMAGE_TAG (commit sha)}@${API_DIGEST:?Set API_DIGEST}
+    <<: *hardening
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: ['/tmp:size=16m']
+    cap_drop: [ALL]
+    stop_grace_period: 30s
+    environment:
+      <<: *app-env
+      NODE_OPTIONS: --max-old-space-size=192
+      DATABASE_POOL_MAX: '8'
+      API_PORT: '4000'
+      WEB_ORIGIN: https://${BETA_DOMAIN:?}
+      # Caddy is the one proxy in front: client IPs come from its X-Forwarded-For.
+      TRUST_PROXY_HOPS: '1'
+      SWAGGER_ENABLED: 'false'
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET}
+      TEMP_PASSWORD_TTL_DAYS: ${TEMP_PASSWORD_TTL_DAYS:-14}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+      SESSION_IDLE_TIMEOUT_SECONDS: ${SESSION_IDLE_TIMEOUT_SECONDS:-900}
+      SESSION_HEARTBEAT_INTERVAL_SECONDS: ${SESSION_HEARTBEAT_INTERVAL_SECONDS:-300}
+      LIVE_MAX_PER_SESSION: ${LIVE_MAX_PER_SESSION:-3}
+      LIVE_MAX_PER_USER: ${LIVE_MAX_PER_USER:-5}
+    secrets: [google-sa.json]
+    # The key file is root:<SECRETS_GID> 0440 on the host; this group lets `node` read it.
+    group_add: ['${SECRETS_GID:-2000}']
+    mem_limit: 320m
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/api/v1/health/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    logging: *logging
+    networks: [edge, data]
+
+  worker:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX}-worker:${IMAGE_TAG:?Set IMAGE_TAG (commit sha)}@${WORKER_DIGEST:?Set WORKER_DIGEST}
+    <<: *hardening
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: ['/tmp:size=64m']
+    cap_drop: [ALL]
+    # Lets a running sync finish on deploys (BullMQ re-delivers anything interrupted).
+    stop_grace_period: 120s
+    environment:
+      <<: *app-env
+      NODE_OPTIONS: --max-old-space-size=192
+      DATABASE_POOL_MAX: '4'
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+    secrets: [google-sa.json]
+    group_add: ['${SECRETS_GID:-2000}']
+    mem_limit: 320m
+    healthcheck:
+      test: ['CMD', 'node', '/app/healthcheck.mjs']
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    logging: *logging
+    networks: [data, egress]
+
+  # One-off: `docker compose run --rm migrate` (scripts/server/deploy.sh step 3). Same image as the
+  # api of this release, so code and migrations always match.
+  migrate:
+    image: ${IMAGE_PREFIX:?Set IMAGE_PREFIX}-api:${IMAGE_TAG:?Set IMAGE_TAG (commit sha)}@${API_DIGEST:?Set API_DIGEST}
+    profiles: [migrate]
+    <<: *hardening
+    restart: 'no'
+    read_only: true
+    tmpfs: ['/tmp:size=16m']
+    cap_drop: [ALL]
+    working_dir: /app/migrate
+    command: ['node', 'node_modules/prisma/build/index.js', 'migrate', 'deploy']
+    environment:
+      NODE_ENV: production
+      TZ: UTC
+      # The owner: migrations, then the application role's login and grants (deploy.sh step 3).
+      DATABASE_URL: postgresql://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+      DATABASE_MIGRATION_URL: postgresql://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}
+    mem_limit: 256m
+    depends_on:
+      postgres: { condition: service_healthy }
+    logging: *logging
+    networks: [data]
+
+  postgres:
+    image: postgres:17.12-alpine@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7
+    <<: *hardening
+    restart: unless-stopped
+    shm_size: 64m
+    # The entrypoint fixes data-directory ownership, then drops to the postgres user.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    # Small-memory tuning: ~150-200 MB resident. 30 connections cover api (8) + worker (4) +
+    # migrate + backups + psql, with the 3 reserved for the superuser.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=256MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - max_connections=30
+      - -c
+      - max_parallel_workers_per_gather=0
+      - -c
+      - max_wal_size=512MB
+      - -c
+      - timezone=UTC
+      - -c
+      - log_timezone=UTC
+    environment:
+      TZ: UTC
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    mem_limit: 288m
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 10
+    logging: *logging
+    networks: [data]
+
+  redis:
+    image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+    <<: *hardening
+    restart: unless-stopped
+    # Settings (and the password) come from a config file, not the command line, so the password
+    # never shows in the host's process list.
+    command: ['redis-server', '/usr/local/etc/redis/redis.conf']
+    configs:
+      - source: redis-conf
+        target: /usr/local/etc/redis/redis.conf
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    environment:
+      TZ: UTC
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?}
+    volumes:
+      - redis-data:/data
+    mem_limit: 80m
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 10
+    logging: *logging
+    networks: [data]
+
+configs:
+  redis-conf:
+    content: |
+      requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+      appendonly yes
+      maxmemory 48mb
+      # BullMQ requires keys never to be evicted: a full Redis refuses writes instead.
+      maxmemory-policy noeviction
+
+secrets:
+  google-sa.json:
+    file: ${GOOGLE_SA_FILE:-/opt/ssrs/secrets/google-sa.json}
+
+volumes:
+  postgres-data:
+  redis-data:
+  caddy-data:
+  caddy-config:
+  web-cache:
+
+networks:
+  # caddy ↔ api, and the way out for caddy (certificates) and api (Google Sheets, Sentry).
+  edge:
+  # caddy ↔ web only. No route to the outside world.
+  web:
+    internal: true
+  # api, worker ↔ postgres, redis. No route to the outside world.
+  data:
+    internal: true
+  # worker → Google Sheets and Sentry.
+  egress:

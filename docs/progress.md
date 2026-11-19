@@ -1,11 +1,11 @@
 # Progress
 
-Last verified: 2026-10-31, commit b222954 plus uncommitted working tree.
+Last verified: 2026-11-18, branch feature/beta-deploy (sections below carry their own dates).
 
 Legend: ✅ done · 🟡 in progress · ⬜ pending · ⛔ blocked · unverified = finished at the time, but the
 code was later removed or changed, so it cannot be checked now
 
-_Last updated: 2026-11-01_
+_Last updated: 2026-11-18_
 
 ## Phases
 
@@ -41,6 +41,81 @@ _Last updated: 2026-11-01_
 | STU-01…05   | ✅         | API + UI. STU-05: responsive (checked at 390 px and 1280 px, no page overflow), labelled controls, status never color-only |
 | ADM pages   | unverified | Offering, criteria and scheme pages removed by D15                                                                         |
 | OBS-01…04   | ✅         | OBS-04: Sentry in API and worker, off without `SENTRY_DSN`, all data collection disabled                                   |
+
+## Restricted application role (2026-11-18, actually executed)
+
+Migration `20261118120000_app_role`, on `ssrs_test` only (not on `ssrs`). Every suite ran with
+the code under test connected as `ssrs_test_app`; resets and fixtures that need it use the owner.
+
+| Check                                                                                                                                                                                                                                                                                                                                                                                                                                     | Result                                                                                                                       |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Database suite, incl. new role checks: no superuser/BYPASSRLS/CREATEDB/CREATEROLE/INHERIT, owns nothing; cannot DROP, ALTER, DISABLE or DROP TRIGGER, TRUNCATE, CREATE TABLE/TEMP TABLE/FUNCTION (also `pg_temp`), replace a trigger function, set `session_replication_role`, create a role, run `ssrs_grant_app_role()`, read `_prisma_migrations`; cannot UPDATE/DELETE audit rows, even with the purge flag; only the owner can purge | 62/62 ✅ (after review fixes; incl. a test pinning RESTRICT on score history, so no cascade can bypass the owner-only purge) |
+| Sync suite (replacement bypass, roster lock, enrollments)                                                                                                                                                                                                                                                                                                                                                                                 | 63/63 ✅                                                                                                                     |
+| Worker suite                                                                                                                                                                                                                                                                                                                                                                                                                              | 15 passed, 2 skipped (need `QA_*` containers) ✅                                                                             |
+| API suite (auth, session rules, replacement, audit, isolation)                                                                                                                                                                                                                                                                                                                                                                            | 563/563 ✅                                                                                                                   |
+| e2e (Edge)                                                                                                                                                                                                                                                                                                                                                                                                                                | 59 passed, 11 skipped (short-limit session specs) ✅                                                                         |
+| Stand-in server: first deploy and redeploy run the app-role step after migrations; the api connects as `<db>_app`; admin sign-in over HTTPS                                                                                                                                                                                                                                                                                               | ✅                                                                                                                           |
+| `restore.sh --replace-live`: typed confirmation, old database kept, grants re-applied (`users` DML yes, `audit_logs` DELETE no), app healthy and sign-in works                                                                                                                                                                                                                                                                            | ✅                                                                                                                           |
+| api image: app-role command in `/app/migrate`, no picomatch, no TypeScript; 1.54 GB (the Prisma client of `@ssrs/database`)                                                                                                                                                                                                                                                                                                               | ✅                                                                                                                           |
+
+Review fixes (task-reviewer, security-reviewer: PASS WITH FIXES): `TEST_APP_DATABASE_URL` passed
+through turbo (CI); role steps skipped in `prisma migrate dev` shadow databases (checked with a real
+`migrate dev` on `ssrs_test`: no drift, no leftover role); connection limit 20; the grant function
+re-revokes its own EXECUTE (lost on restore otherwise); `ALTER ROLE ... RESET ALL` on every run; the CLI
+accepts only `DATABASE_MIGRATION_URL`; `restore.sh --replace-live` refuses a backup from before the role
+and closes the kept old database to the role. Limits recorded in database-design.md "Roles" and
+security.md §13; follow-ups in backlog.md.
+
+Two existing database tests changed on purpose: audit-log updates and deletes by the app role now
+fail with "permission denied" (no privilege) instead of reaching the trigger, and the purge flag
+only works for the owner; `ssrs_backfill_student_terms()` (a maintenance function that uses a
+temporary table) is called as the owner.
+
+## Dependency audit fix (2026-11-18, actually executed)
+
+- multer GHSA-q7qp-rjg7-q26m: pnpm override to 2.5.0 (`@nestjs/platform-express` 12.2.0 pins 2.4.0).
+  The app has no upload route; `robustness.integration-spec.ts` (multipart bodies) passes 29/29.
+- picomatch GHSA-fc5q-39xc-vjpf: no fixed release exists; ignored in `pnpm-workspace.yaml` with
+  the reasons and a review date (2026-12-31).
+- Images searched for picomatch after the change: api none, worker none, web only Next.js's own
+  bundled copy (`next/dist/compiled/picomatch`). Next compiles patterns only from
+  `images.localPatterns`/`remotePatterns`, which are not set; `headers()` (`/:path*`) and the
+  proxy matcher are path patterns, not globs; no extglob anywhere.
+- `/app/migrate` is now `@ssrs/migrate` (Prisma CLI only): 401 → 280 MB, api image 1.63 → 1.46 GB.
+  `prisma migrate deploy` from the image applied every migration to an emptied `ssrs_test`
+  (read-only root file system).
+- `pnpm audit --audit-level high` passes ("1 high (1 ignored)"); lint, typecheck, build pass.
+
+## Beta deployment setup verification (2026-11-18, actually executed)
+
+Branch `feature/beta-deploy`, on a laptop (Docker Desktop), not on AWS. The server scripts ran in a
+stand-in host container against a local registry, with `systemctl` and the S3 calls stubbed and
+Caddy on port 8443 (80/443 were taken locally). Test values and a throwaway `ssrs_test` database.
+
+| Check                                                                                                                                                                                                                                                                                                          | Result                                       |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `docker compose config`: only caddy publishes ports (80, 443/tcp+udp); every service has a memory limit, a health check and `unless-stopped`; a missing `IMAGE_TAG` is refused                                                                                                                                 | ✅                                           |
+| Three images build; no env, key, dump or credential files and no Sheets test fakes inside; uid 1000; `/app` not writable; no secret in the build history                                                                                                                                                       | ✅                                           |
+| First deploy: migrations from the api image (19 applied), every health check healthy, release recorded                                                                                                                                                                                                         | ✅                                           |
+| Redeploy over a running database: pre-deploy backup encrypted and confirmed, then `OK`                                                                                                                                                                                                                         | ✅                                           |
+| Release with an unhealthy web: health checks fail, previous release started again (`ROLLED_BACK`), `/health` OK                                                                                                                                                                                                | ✅                                           |
+| Release with a failing migration: `FAILED_MIGRATION`, the running containers untouched; `migrate resolve --rolled-back` then a normal deploy                                                                                                                                                                   | ✅                                           |
+| Google key at root:2000 0440 readable by api and worker through `group_add`                                                                                                                                                                                                                                    | ✅                                           |
+| Admin sign-in over HTTPS through Caddy: Secure cookies (tokens HttpOnly), HSTS, CSP, `X-Frame-Options`; `/health` → `OK`                                                                                                                                                                                       | ✅                                           |
+| `backup.sh`: age-encrypted custom dump, upload confirmed by size; `--local-dir`                                                                                                                                                                                                                                | ✅                                           |
+| `restore.sh`: from S3 key and from a file into a new database, row counts match; refuses the live name, an existing database, `--replace-live` without a terminal; a wrong key drops the partial copy                                                                                                          | ✅                                           |
+| Memory after 180 requests: api 222, worker 156, web 74, postgres 47, caddy 31, redis 10 MiB                                                                                                                                                                                                                    | ✅                                           |
+| shellcheck 0.10.0 (all server scripts, including the two inside `bootstrap.sh`), actionlint 1.7.7, Prettier                                                                                                                                                                                                    | ✅                                           |
+| After the review fixes, the whole sequence again through the real `ssrs-deploy` (registry check pointed at the local registry): images pulled and run by digest, digests recorded per release; first deploy, redeploy, rollback, failed migration then `migrate resolve`, and a rollback with `stored` digests | ✅                                           |
+| `ssrs-deploy` refuses a sha whose api image carries another revision label, malformed digests, and `stored` for a release the server never deployed                                                                                                                                                            | ✅                                           |
+| Failed release: container logs only in `/opt/ssrs/state/last-failure.log` (none in the job output)                                                                                                                                                                                                             | ✅                                           |
+| Public `/api/v1/health*` → 404, `/health` → `OK`; web has no route out; Redis password not on its command line; postgres and redis healthy with capability allowlists                                                                                                                                          | ✅                                           |
+| `restore.sh` refuses an identity outside `/dev/shm`; the key in `/dev/shm` is shredded after use                                                                                                                                                                                                               | ✅                                           |
+| `bootstrap.sh` on Ubuntu 24.04, systemd timers, SSM, S3, IAM, OIDC, GHCR, `--replace-live`                                                                                                                                                                                                                     | not run (needs the real server and accounts) |
+
+Found and fixed during the run: the Prisma engine was built for OpenSSL 1.1, so `migrate deploy`
+tried to download another engine at run time (the old `migrate` image had the same latent bug);
+a failed timer install after a successful start would have failed the job for a live release.
 
 ## Term workbook flow verification (2026-10-30, actually executed)
 

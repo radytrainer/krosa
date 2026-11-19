@@ -4,7 +4,12 @@ import {
   createPrismaClient,
   type PrismaClient,
 } from '../src/index.js';
-import { assertTestDatabaseUrl, truncateAllTables } from '../src/testing.js';
+import {
+  assertTestAppDatabaseUrl,
+  closeOwnerTestClient,
+  createOwnerTestClient,
+  truncateAllTables,
+} from '../src/testing.js';
 
 /**
  * Verifies that data-integrity rules hold at the database level, independently of any
@@ -145,16 +150,22 @@ async function source() {
   });
 }
 
+/** The database owner (migrations): only for the checks the application role must not pass. */
+let owner: PrismaClient;
+
 beforeAll(async () => {
   prisma = createPrismaClient({
-    connectionString: assertTestDatabaseUrl(process.env['TEST_DATABASE_URL']),
+    connectionString: assertTestAppDatabaseUrl(),
     poolMax: 2,
     log: [],
   });
+  owner = createOwnerTestClient();
 });
 
 afterAll(async () => {
   await prisma.$disconnect();
+  await owner.$disconnect();
+  await closeOwnerTestClient();
 });
 
 beforeEach(async () => {
@@ -411,20 +422,61 @@ describe('sync jobs', () => {
 });
 
 describe('append-only tables', () => {
-  it('rejects updates and deletes of audit logs unless a purge is explicitly enabled', async () => {
+  it('rejects updates and deletes of audit logs; only the owner can purge', async () => {
     const log = await prisma.auditLog.create({
       data: { actorType: 'SYSTEM', action: 'test.event', metadata: { a: 1 } },
     });
+    // The application role has no UPDATE or DELETE privilege on audit_logs at all.
     await expect(
       prisma.auditLog.update({ where: { id: log.id }, data: { action: 'tampered' } }),
+    ).rejects.toThrow(/permission denied|append-only/);
+    await expect(prisma.auditLog.delete({ where: { id: log.id } })).rejects.toThrow(
+      /permission denied|append-only/,
+    );
+    // The purge flag does not help it (any session can set the flag).
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL ssrs.allow_append_only_purge = 'on'`);
+        await tx.auditLog.delete({ where: { id: log.id } });
+      }),
+    ).rejects.toThrow(/permission denied|append-only/);
+    // The owner still updates nothing, but may purge with the flag (retention).
+    await expect(
+      owner.auditLog.update({ where: { id: log.id }, data: { action: 'tampered' } }),
     ).rejects.toThrow(/append-only/);
-    await expect(prisma.auditLog.delete({ where: { id: log.id } })).rejects.toThrow(/append-only/);
-
-    await prisma.$transaction(async (tx) => {
+    await expect(owner.auditLog.delete({ where: { id: log.id } })).rejects.toThrow(/append-only/);
+    await owner.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(`SET LOCAL ssrs.allow_append_only_purge = 'on'`);
       await tx.auditLog.delete({ where: { id: log.id } });
     });
     expect(await prisma.auditLog.count()).toBe(0);
+  });
+
+  it('lets only the owner purge score history with the purge flag', async () => {
+    const score = await prisma.assessmentScore.create({
+      data: {
+        enrollmentId: fx.enrollmentId,
+        offeringId: fx.offeringId,
+        criterionId: fx.criterionId,
+        status: 'RECORDED',
+        mark: 7,
+      },
+    });
+    await prisma.assessmentScoreRevision.create({
+      data: { scoreId: score.id, newStatus: 'RECORDED', newMark: 7 },
+    });
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL ssrs.allow_append_only_purge = 'on'`);
+        await tx.assessmentScoreRevision.deleteMany({ where: { scoreId: score.id } });
+      }),
+    ).rejects.toThrow(/append-only/);
+    expect(await prisma.assessmentScoreRevision.count()).toBe(1);
+    await owner.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL ssrs.allow_append_only_purge = 'on'`);
+      await tx.assessmentScoreRevision.deleteMany({ where: { scoreId: score.id } });
+    });
+    expect(await prisma.assessmentScoreRevision.count()).toBe(0);
   });
 
   it('rejects updates of score revisions', async () => {
@@ -443,6 +495,100 @@ describe('append-only tables', () => {
     await expect(
       prisma.assessmentScoreRevision.update({ where: { id: rev.id }, data: { newMark: 9 } }),
     ).rejects.toThrow(/append-only/);
+  });
+});
+
+// Migration 20261118120000_app_role: `prisma` here is the restricted application role, as the
+// api and worker connect; `owner` is the database owner (migrations).
+describe('application role (migration 20261118120000_app_role)', () => {
+  const denied = /permission denied|must be owner|not allowed|insufficient privilege/i;
+
+  it('is a plain login role: no superuser, no BYPASSRLS, no DDL rights', async () => {
+    const [me] = await prisma.$queryRaw<{ user: string; db: string }[]>`
+      SELECT current_user AS "user", current_database() AS db`;
+    expect(me?.user).toBe(`${me?.db}_app`);
+    const [role] = await owner.$queryRaw<
+      {
+        rolsuper: boolean;
+        rolbypassrls: boolean;
+        rolcreatedb: boolean;
+        rolcreaterole: boolean;
+        rolreplication: boolean;
+        rolinherit: boolean;
+        rolcanlogin: boolean;
+      }[]
+    >`SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication, rolinherit,
+             rolcanlogin
+        FROM pg_roles WHERE rolname = ${me?.user ?? ''}`;
+    expect(role).toEqual({
+      rolsuper: false,
+      rolbypassrls: false,
+      rolcreatedb: false,
+      rolcreaterole: false,
+      rolreplication: false,
+      rolinherit: false,
+      rolcanlogin: true,
+    });
+    const owns = await owner.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner
+       WHERE r.rolname = ${me?.user ?? ''}`;
+    expect(Number(owns[0]?.n)).toBe(0);
+  });
+
+  it.each([
+    ['DROP TABLE', 'DROP TABLE "users"'],
+    ['ALTER TABLE', 'ALTER TABLE "users" ADD COLUMN "x" int'],
+    ['DISABLE TRIGGER (audit)', 'ALTER TABLE "audit_logs" DISABLE TRIGGER ALL'],
+    [
+      'DISABLE TRIGGER (score history)',
+      'ALTER TABLE "assessment_score_revisions" DISABLE TRIGGER "assessment_score_revisions_append_only"',
+    ],
+    ['DROP TRIGGER', 'DROP TRIGGER "audit_logs_append_only" ON "audit_logs"'],
+    ['TRUNCATE', 'TRUNCATE "audit_logs"'],
+    ['CREATE TABLE', 'CREATE TABLE "x" (id int)'],
+    ['CREATE TEMP TABLE', 'CREATE TEMP TABLE "x" (id int)'],
+    [
+      'CREATE FUNCTION',
+      'CREATE FUNCTION public.ssrs_x() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$',
+    ],
+    [
+      'CREATE FUNCTION in pg_temp',
+      'CREATE FUNCTION pg_temp.ssrs_x() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$',
+    ],
+    [
+      'replace a trigger function',
+      `CREATE OR REPLACE FUNCTION ssrs_audit_log_append_only() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN OLD; END $$`,
+    ],
+    ['session_replication_role', 'SET session_replication_role = replica'],
+    ['CREATE ROLE', 'CREATE ROLE "x"'],
+    ['re-grant itself', 'SELECT ssrs_grant_app_role()'],
+    ['read migration history', 'SELECT * FROM "_prisma_migrations"'],
+  ])('cannot %s', async (_name, sql) => {
+    await expect(prisma.$executeRawUnsafe(sql)).rejects.toThrow(denied);
+  });
+
+  it('keeps score history out of every cascade (a cascade would run as the owner)', async () => {
+    const rows = await owner.$queryRaw<{ confdeltype: string }[]>`
+      SELECT confdeltype::text AS confdeltype FROM pg_constraint
+       WHERE conrelid = 'assessment_score_revisions'::regclass AND contype = 'f'
+         AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
+                              WHERE attrelid = 'assessment_score_revisions'::regclass
+                                AND attname = 'score_id')]`;
+    // 'r' = RESTRICT, 'a' = NO ACTION: deleting a score never deletes its history implicitly.
+    expect(rows.map((r) => r.confdeltype)).toEqual([expect.stringMatching(/^[ra]$/)]);
+  });
+
+  it('can read and write data, and the triggers still guard it', async () => {
+    const log = await prisma.auditLog.create({
+      data: { actorType: 'SYSTEM', action: 'test.app-role', metadata: {} },
+    });
+    expect(await prisma.auditLog.count({ where: { id: log.id } })).toBe(1);
+    const triggers = await owner.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM pg_trigger
+       WHERE tgname IN ('audit_logs_append_only', 'assessment_score_revisions_append_only',
+                        'grading_schemes_guard', 'grading_scheme_items_guard')
+         AND tgenabled = 'O'`;
+    expect(Number(triggers[0]?.n)).toBe(4);
   });
 });
 
@@ -548,14 +694,22 @@ describe('term replacement bypass (decisions.md RP2)', () => {
     const log = await prisma.auditLog.create({
       data: { actorType: 'SYSTEM', action: 'test.event', metadata: { a: 1 } },
     });
+    // The application role: no UPDATE/DELETE privilege on audit_logs at all.
     await expect(
       prisma.$transaction(async (tx) => {
         await allowReplacement(tx, fx.termId);
         await tx.auditLog.update({ where: { id: log.id }, data: { action: 'tampered' } });
       }),
-    ).rejects.toThrow(/append-only/);
+    ).rejects.toThrow(/permission denied|append-only/);
     await expect(
       prisma.$transaction(async (tx) => {
+        await allowReplacement(tx, fx.termId);
+        await tx.auditLog.delete({ where: { id: log.id } });
+      }),
+    ).rejects.toThrow(/permission denied|append-only/);
+    // Even the owner: the audit trigger never looks at the replacement flags.
+    await expect(
+      owner.$transaction(async (tx) => {
         await allowReplacement(tx, fx.termId);
         await tx.auditLog.delete({ where: { id: log.id } });
       }),
@@ -805,9 +959,12 @@ describe('term workbooks (delivery plan A.3)', () => {
   });
 });
 
-/** Runs the migration's re-runnable backfill and returns its report. */
+/**
+ * Runs the migration's re-runnable backfill and returns its report. A maintenance function: it
+ * uses a temporary table, so only the owner can run it (the application role has no TEMPORARY).
+ */
 const backfill = async () =>
-  (await prisma.$queryRaw<{ r: unknown }[]>`SELECT ssrs_backfill_student_terms() AS r`)[0]!.r;
+  (await owner.$queryRaw<{ r: unknown }[]>`SELECT ssrs_backfill_student_terms() AS r`)[0]!.r;
 
 const terms = () =>
   prisma.term.findMany({ where: { generationId: fx.generationId }, orderBy: { number: 'asc' } });

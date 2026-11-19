@@ -8,7 +8,7 @@ import {
   type UserRole,
   type UserStatus,
 } from '@ssrs/database';
-import { truncateAllTables } from '@ssrs/database/testing';
+import { assertTestAppDatabaseUrl, truncateAllTables } from '@ssrs/database/testing';
 import type { SheetsReader } from '@ssrs/sheets';
 import { InMemorySheetsReader } from '@ssrs/sheets/testing';
 import { loadRootEnv } from '@ssrs/shared/node';
@@ -39,9 +39,10 @@ export interface TestContext {
 
 function testEnv(overrides: Record<string, string> = {}): ApiEnv {
   loadRootEnv();
-  const dbUrl = process.env['TEST_DATABASE_URL'];
+  // The app under test connects as the restricted role, like production; resets use the owner.
+  const dbUrl = assertTestAppDatabaseUrl();
   const redisUrl = process.env['TEST_REDIS_URL'];
-  if (!dbUrl || !redisUrl) throw new Error('TEST_DATABASE_URL and TEST_REDIS_URL must be set');
+  if (!redisUrl) throw new Error('TEST_REDIS_URL must be set');
   if (new URL(redisUrl).pathname !== '/15') {
     throw new Error('TEST_REDIS_URL must select Redis database 15 (it is flushed by tests)');
   }

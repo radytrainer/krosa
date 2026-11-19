@@ -1,0 +1,275 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  SSRS beta: GitHub OIDC deploy role (SSM only, this instance, this repository's beta branch and
+  environment), EC2 instance role (SSM + backup bucket, no delete), private encrypted backup
+  bucket with lifecycle rules, security group (80/443 only), and the SSM deploy document.
+  Created by hand from docs/beta-checklist.md step 10. Contains no secrets.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: radytrainer
+    Description: GitHub user or organization that owns the repository.
+  GitHubRepo:
+    Type: String
+    Default: krosa
+    Description: Repository name.
+  GitHubEnvironment:
+    Type: String
+    Default: beta
+  GitHubBranch:
+    Type: String
+    Default: beta
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >-
+      false if this AWS account already has the token.actions.githubusercontent.com identity
+      provider (IAM -> Identity providers); then the existing one is used.
+  InstanceId:
+    Type: AWS::EC2::Instance::Id
+    Description: The beta EC2 instance (checklist step 6).
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The instance's VPC.
+  BackupBucketName:
+    Type: String
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+    Description: Globally unique S3 bucket name, e.g. ssrs-beta-backups-<random>.
+  BackupPrefix:
+    Type: String
+    Default: beta
+    AllowedPattern: '^[a-z0-9-]+$'
+
+Conditions:
+  MakeOidcProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  # Assumed by .github/workflows/deploy-beta.yml (job `deploy`, environment `beta`). The token's
+  # subject must name this repository, the beta environment AND the beta branch; the repository's
+  # OIDC subject template is set to include `ref` in docs/beta-checklist.md step 9.
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: GitHub Actions deploys the SSRS beta through SSM (no other permissions).
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - MakeOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${GitHubRepo}:environment:${GitHubEnvironment}:ref:refs/heads/${GitHubBranch}
+      Policies:
+        - PolicyName: ssm-deploy-beta
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Only the deploy document, only on this instance.
+              - Sid: SendDeployCommand
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${InstanceId}
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/${DeployDocument}
+              # Read the result of the command it sent (this action has no resource-level scope).
+              - Sid: ReadCommandResult
+                Effect: Allow
+                Action: ssm:GetCommandInvocation
+                Resource: '*'
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: SSRS beta EC2 instance - Systems Manager and the backup bucket (no delete).
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: backup-bucket
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Upload, confirm (HEAD needs GetObject) and download for a restore. No delete:
+              # the instance cannot remove backups; versioning keeps overwritten ones.
+              - Sid: BackupObjects
+                Effect: Allow
+                Action: [s3:PutObject, s3:GetObject]
+                Resource: !Sub arn:${AWS::Partition}:s3:::${BackupBucket}/${BackupPrefix}/*
+              - Sid: ListBackups
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub arn:${AWS::Partition}:s3:::${BackupBucket}
+                Condition:
+                  StringLike:
+                    s3:prefix: [!Sub '${BackupPrefix}/*', !Sub '${BackupPrefix}/']
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref BackupBucketName
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+            BucketKeyEnabled: true
+      VersioningConfiguration: { Status: Enabled }
+      LifecycleConfiguration:
+        Rules:
+          - Id: daily-14-days
+            Status: Enabled
+            Prefix: !Sub '${BackupPrefix}/daily/'
+            ExpirationInDays: 14
+          - Id: weekly-8-weeks
+            Status: Enabled
+            Prefix: !Sub '${BackupPrefix}/weekly/'
+            ExpirationInDays: 56
+          # An expired or overwritten backup stays recoverable as an old version for 30 days.
+          - Id: old-versions-30-days
+            Status: Enabled
+            NoncurrentVersionExpiration: { NoncurrentDays: 30 }
+            ExpiredObjectDeleteMarker: true
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+
+  BackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BackupBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt BackupBucket.Arn
+              - !Sub '${BackupBucket.Arn}/*'
+            Condition:
+              Bool: { aws:SecureTransport: 'false' }
+          - Sid: DenyUnencryptedUploads
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub '${BackupBucket.Arn}/*'
+            Condition:
+              StringNotEquals: { s3:x-amz-server-side-encryption: AES256 }
+
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SSRS beta - HTTP and HTTPS only (no SSH, no database ports)
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: '0.0.0.0/0'
+          Description: 'HTTP - certificates and redirect'
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIpv6: '::/0'
+          Description: 'HTTP - certificates and redirect'
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: '0.0.0.0/0'
+          Description: 'HTTPS'
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIpv6: '::/0'
+          Description: 'HTTPS'
+        - IpProtocol: udp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: '0.0.0.0/0'
+          Description: 'HTTP/3'
+        - IpProtocol: udp
+          FromPort: 443
+          ToPort: 443
+          CidrIpv6: '::/0'
+          Description: 'HTTP/3'
+
+  # The only thing GitHub may run on the server: ssrs-deploy <commit sha> <image digests>. The
+  # patterns block any other input, so the role cannot run arbitrary commands. Images are named by
+  # digest, so re-tagging an image in the registry cannot change what is deployed; "stored" means
+  # a release this server deployed before, with the digests it recorded then (rollback).
+  DeployDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: SSRS-Beta-Deploy
+      DocumentType: Command
+      UpdateMethod: NewVersion
+      Content:
+        schemaVersion: '2.2'
+        description: Deploy one SSRS release (commit sha and image digests) on the beta server.
+        parameters:
+          ImageTag:
+            type: String
+            description: Full 40-character commit sha of the release.
+            allowedPattern: '^[0-9a-f]{40}$'
+          Digests:
+            type: String
+            description: sha256 digests of the api, worker and web images, comma separated, or "stored".
+            default: stored
+            allowedPattern: '^(stored|sha256:[0-9a-f]{64},sha256:[0-9a-f]{64},sha256:[0-9a-f]{64})$'
+        mainSteps:
+          - action: aws:runShellScript
+            name: deploy
+            inputs:
+              timeoutSeconds: '1800'
+              runCommand:
+                - 'set -eu'
+                - 'export HOME=/root'
+                - 'exec /usr/local/sbin/ssrs-deploy "{{ ImageTag }}" "{{ Digests }}"'
+
+Outputs:
+  DeployRoleArn:
+    Description: GitHub environment `beta` secret AWS_ROLE_ARN.
+    Value: !GetAtt GitHubDeployRole.Arn
+  InstanceProfileName:
+    Description: Attach to the instance (EC2 -> Actions -> Security -> Modify IAM role).
+    Value: !Ref InstanceProfile
+  SecurityGroupId:
+    Description: Attach to the instance and remove every other security group.
+    Value: !Ref WebSecurityGroup
+  BackupBucketName:
+    Description: BACKUP_BUCKET in /opt/ssrs/.env.
+    Value: !Ref BackupBucket
+  DeployDocumentName:
+    Value: !Ref DeployDocument

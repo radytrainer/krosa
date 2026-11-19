@@ -1,0 +1,7 @@
+# Runs when an SSRS unit fails (OnFailure=); logs an error line (scripts/server/alert.sh).
+[Unit]
+Description=Report failure of %i
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ssrs/current/bin/alert.sh %i

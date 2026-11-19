@@ -51,12 +51,13 @@ student-score-system/            (repository root = this folder)
                                  (framework-free; run by the worker, tested against PostgreSQL)
     config/                      tsconfig bases
   docs/
-  scripts/                       restore drill, load test, workbook verifier, .xlsx converter
+  scripts/                       load test, workbook verifier, .xlsx converter
+    server/                      bootstrap, deploy, backup, restore, disk check (beta server)
   e2e/                           Playwright tests
-  docker/                        backup job, Caddyfile, PostgreSQL init
-  Dockerfile                     production images (web, api, worker, migrate)
+  docker/                        worker health check, local PostgreSQL init
+  Dockerfile                     production images (web, api, worker; migrations run from api)
   docker-compose.yml             local development (postgres, redis)
-  docker-compose.prod.yml        complete production stack
+  deploy/                        server stack (compose.yml, Caddyfile), env template, systemd, AWS
   .env.example
 ```
 

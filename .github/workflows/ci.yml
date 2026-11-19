@@ -1,66 +1,81 @@
 name: CI
 
+# Every pull request, every push to development and main, and every push to beta (through
+# deploy-beta.yml, which calls this workflow before building images). Deploys live in
+# deploy-beta.yml only.
 on:
-  push:
-    branches: [main, development]
   pull_request:
+  push:
+    branches: [development, main]
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  # Pull requests: a new push cancels the old run. Branch pushes queue instead, so a newer
-  # commit never cuts off a deploy halfway.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # Pull requests: a new push cancels the old run. Branch pushes queue instead.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   NODE_VERSION: '22.17.0'
-  # Integration and E2E tests use the service containers below (throwaway, job-local).
-  TEST_DATABASE_URL: postgresql://ssrs:ci-postgres-password@localhost:5432/ssrs_test
+  # Job-local throwaway service containers below (the CI equivalent of ssrs_test). This password
+  # protects nothing outside the job.
+  TEST_DATABASE_URL: postgresql://ssrs:ci-only-throwaway@localhost:5432/ssrs_test
+  # The restricted role the code under test connects as (created by the test setup).
+  TEST_APP_DATABASE_URL: postgresql://ssrs_test_app:ci-only-throwaway-app@localhost:5432/ssrs_test
   TEST_REDIS_URL: redis://localhost:6379/15
 
 jobs:
   checks:
-    name: Lint, typecheck, unit tests
+    name: Lint, typecheck, unit tests, build, audit
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm format:check
       - run: pnpm test
+      - run: pnpm build
+      # Fails on any high or critical advisory in the dependency tree.
+      - name: Dependency audit
+        run: pnpm audit --audit-level high
 
   integration:
     name: Integration tests
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17.12-alpine
         env:
           POSTGRES_USER: ssrs
-          POSTGRES_PASSWORD: ci-postgres-password
+          POSTGRES_PASSWORD: ci-only-throwaway
           POSTGRES_DB: ssrs_test
         ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U ssrs -d ssrs_test" --health-interval 5s --health-timeout 3s
           --health-retries 20
       redis:
-        image: redis:7.4-alpine
+        image: redis:7.4.12-alpine
         ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -68,130 +83,68 @@ jobs:
       - run: pnpm build
       - run: pnpm test:integration
 
+  # Pull requests into beta and main only: one browser (Chromium).
   e2e:
-    name: End-to-end (Playwright)
+    name: End-to-end (Playwright, Chromium)
+    if: github.event_name == 'pull_request' && (github.base_ref == 'beta' || github.base_ref == 'main')
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17.12-alpine
         env:
           POSTGRES_USER: ssrs
-          POSTGRES_PASSWORD: ci-postgres-password
+          POSTGRES_PASSWORD: ci-only-throwaway
           POSTGRES_DB: ssrs_test
         ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U ssrs -d ssrs_test" --health-interval 5s --health-timeout 3s
           --health-retries 20
       redis:
-        image: redis:7.4-alpine
+        image: redis:7.4.12-alpine
         ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm --filter @ssrs/e2e exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
+      # No traces: they record request bodies and cookies. The HTML report keeps screenshots of
+      # synthetic test data only.
+      - run: pnpm --filter @ssrs/e2e exec playwright test --trace off
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-report
-          path: |
-            e2e/playwright-report
-            e2e/test-results
+          path: e2e/playwright-report
           retention-days: 7
+          if-no-files-found: ignore
 
-  # Pull requests: build only. Pushes to main/development: also publish to GitHub Container
-  # Registry as ghcr.io/<owner>/<repo>-<target>:<commit sha> (docs/deployment.md §7).
+  # Pull requests into beta and main: prove the three production images still build (no push).
   images:
-    name: Build production images
+    name: Build images (${{ matrix.target }})
+    if: github.event_name == 'pull_request' && (github.base_ref == 'beta' || github.base_ref == 'main')
     runs-on: ubuntu-24.04
-    needs: [checks]
-    permissions:
-      contents: read
-      packages: write
+    timeout-minutes: 40
     strategy:
       matrix:
-        target: [api, worker, web, migrate]
+        target: [api, worker, web]
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Image name
-        id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
-      - if: github.event_name == 'push'
-        uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: ${{ matrix.target }}
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=ssrs
-          cache-to: type=gha,mode=max,scope=ssrs
-
-  # Runs only when every check passed. development → `staging` environment, main → `production`.
-  # Each GitHub environment holds its own server's secrets (docs/deployment.md §8.7); until they
-  # are set, this job reports "not configured" and does nothing.
-  deploy:
-    name: Deploy (${{ github.ref_name == 'main' && 'production' || 'staging' }})
-    if: github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'development')
-    needs: [checks, integration, e2e, images]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: read
-    environment:
-      name: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
-      url: ${{ vars.SITE_URL }}
-    concurrency:
-      group: deploy-${{ github.ref_name }}
-      cancel-in-progress: false
-    steps:
-      - name: Check configuration
-        id: config
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: |
-          if [ -n "$DEPLOY_HOST" ] && [ -n "$DEPLOY_SSH_KEY" ] && [ -n "$DEPLOY_KNOWN_HOSTS" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::Deploy not configured for this environment (DEPLOY_HOST, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS); skipped."
-          fi
-      - name: Deploy over SSH
-        if: steps.config.outputs.ready == 'true'
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ vars.DEPLOY_USER || 'ubuntu' }}
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          # The server pins this key to scripts/deploy.sh; the token (valid for this job only)
-          # goes on stdin so it never appears in a command line or log.
-          printf '%s\n' "$REGISTRY_TOKEN" | ssh -i ~/.ssh/deploy_key \
-            -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $GITHUB_SHA"
-      - name: Smoke test
-        if: steps.config.outputs.ready == 'true' && vars.SITE_URL != ''
-        env:
-          SITE_URL: ${{ vars.SITE_URL }}
-        run: curl -fsS --retry 6 --retry-delay 5 --retry-all-errors "$SITE_URL/api/v1/health/ready"
+          push: false
+          cache-from: type=gha,scope=ssrs-${{ matrix.target }}

@@ -1,5 +1,5 @@
 import { applyTermDefaults, createPrismaClient, type PrismaClient } from '@ssrs/database';
-import { assertTestDatabaseUrl, truncateAllTables } from '@ssrs/database/testing';
+import { assertTestAppDatabaseUrl, truncateAllTables } from '@ssrs/database/testing';
 import {
   InMemorySheetsReader,
   TERM_FIXTURE_SPREADSHEET_ID,
@@ -75,7 +75,7 @@ async function scoreOf(studentCode: string, courseKey: string, criterionKey: str
 
 beforeAll(() => {
   prisma = createPrismaClient({
-    connectionString: assertTestDatabaseUrl(process.env['TEST_DATABASE_URL']),
+    connectionString: assertTestAppDatabaseUrl(),
     poolMax: 4,
     log: [],
   });

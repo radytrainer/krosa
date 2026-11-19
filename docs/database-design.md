@@ -64,16 +64,16 @@ audit_logs ·· users (actor_user_id, no FK: the account may be deleted)
 
 One row per login (a refresh-token family).
 
-| column                   | type             | notes                                                                                                    |
-| ------------------------ | ---------------- | -------------------------------------------------------------------------------------------------------- |
-| id                       | uuid PK          | also the `sid` claim in access tokens                                                                    |
-| user_id                  | uuid FK users    | ON DELETE CASCADE                                                                                        |
-| created_at, last_used_at | timestamptz      | `last_used_at`: last refresh                                                                             |
-| last_activity_at         | timestamptz      | NOT NULL, default now(); set at login and by `POST /auth/heartbeat` only; the idle limit counts from it  |
-| expires_at               | timestamptz      | absolute session lifetime (default 7 days)                                                               |
-| revoked_at               | timestamptz NULL |                                                                                                          |
+| column                   | type             | notes                                                                                                                                                                                            |
+| ------------------------ | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| id                       | uuid PK          | also the `sid` claim in access tokens                                                                                                                                                            |
+| user_id                  | uuid FK users    | ON DELETE CASCADE                                                                                                                                                                                |
+| created_at, last_used_at | timestamptz      | `last_used_at`: last refresh                                                                                                                                                                     |
+| last_activity_at         | timestamptz      | NOT NULL, default now(); set at login and by `POST /auth/heartbeat` only; the idle limit counts from it                                                                                          |
+| expires_at               | timestamptz      | absolute session lifetime (default 7 days)                                                                                                                                                       |
+| revoked_at               | timestamptz NULL |                                                                                                                                                                                                  |
 | revoke_reason            | enum NULL        | `SessionRevokeReason`: LOGOUT, REUSE_DETECTED, PASSWORD_CHANGED, PASSWORD_RESET, ACCOUNT_DISABLED, ADMIN, ACCOUNT_DELETED, SIGNED_IN_ELSEWHERE (one session per user), IDLE_TIMEOUT (inactivity) |
-| ip, user_agent           | text NULL        |                                                                                                          |
+| ip, user_agent           | text NULL        |                                                                                                                                                                                                  |
 
 Index: `(user_id) WHERE revoked_at IS NULL`.
 
@@ -323,18 +323,18 @@ Append-only history.
 
 ### audit_logs
 
-| column                                                                                                                                                                                                                                                                    | type                | notes                                                                                       |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------- |
-| id                                                                                                                                                                                                                                                                        | uuid PK             |                                                                                             |
-| actor_user_id                                                                                                                                                                                                                                                             | uuid NULL (no FK)   | NULL for SYSTEM (worker). No foreign key since 2026-11-14: kept when the account is deleted |
-| actor_type                                                                                                                                                                                                                                                                | enum (USER, SYSTEM) |                                                                                             |
-| action                                                                                                                                                                                                                                                                    | text                | dotted: `auth.login.success`, `student.credentials.issued`, `scheme.published`…             |
-| entity_type, entity_id                                                                                                                                                                                                                                                    | text NULL           |                                                                                             |
-| metadata                                                                                                                                                                                                                                                                  | jsonb               | scrubbed by a key denylist (known deviation, see security.md)                               |
-| ip, user_agent, request_id                                                                                                                                                                                                                                                | text NULL           |                                                                                             |
-| created_at                                                                                                                                                                                                                                                                | timestamptz         |                                                                                             |
-| Indexes: `(created_at DESC)`, `(entity_type, entity_id)`, `(actor_user_id, created_at DESC)`, `(action, created_at)`.                                                                                                                                                     |
-| Append-only: the production DB role used by the app is granted INSERT/SELECT only on this table. **Known deviation, to fix before go-live:** no GRANT exists and production connects as the bootstrap role. Only the `audit_logs_append_only` trigger protects the table. |
+| column                                                                                                                                                                                                                                 | type                | notes                                                                                       |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------- |
+| id                                                                                                                                                                                                                                     | uuid PK             |                                                                                             |
+| actor_user_id                                                                                                                                                                                                                          | uuid NULL (no FK)   | NULL for SYSTEM (worker). No foreign key since 2026-11-14: kept when the account is deleted |
+| actor_type                                                                                                                                                                                                                             | enum (USER, SYSTEM) |                                                                                             |
+| action                                                                                                                                                                                                                                 | text                | dotted: `auth.login.success`, `student.credentials.issued`, `scheme.published`…             |
+| entity_type, entity_id                                                                                                                                                                                                                 | text NULL           |                                                                                             |
+| metadata                                                                                                                                                                                                                               | jsonb               | scrubbed by a key denylist (known deviation, see security.md)                               |
+| ip, user_agent, request_id                                                                                                                                                                                                             | text NULL           |                                                                                             |
+| created_at                                                                                                                                                                                                                             | timestamptz         |                                                                                             |
+| Indexes: `(created_at DESC)`, `(entity_type, entity_id)`, `(actor_user_id, created_at DESC)`, `(action, created_at)`.                                                                                                                  |
+| Append-only: the application role has SELECT and INSERT only on this table (no UPDATE or DELETE privilege), and the `audit_logs_append_only` trigger rejects UPDATE and DELETE for every role; only the owner may purge (see "Roles"). |
 
 ### course_aliases
 
@@ -446,6 +446,49 @@ one before `reverts/20261113090000_grade_scale_2026_11.sql`, which inserts bands
 in the sheet. If per-session attendance is later required, add `participation_records
 (enrollment_id, session_date, status)` and a documented formula producing the PARTICIPATION mark.
 
+## Roles (migration `20261118120000_app_role`)
+
+| Role                                                          | Used by                                                                  | Rights                                                                                                                                                                                                       |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Owner (`POSTGRES_USER`, e.g. `ssrs`)                          | `prisma migrate deploy`, `db-guard.sh` maintenance, backups and restores | Owns every object                                                                                                                                                                                            |
+| `<database>_app` (e.g. `ssrs_app`; `ssrs_test_app` for tests) | api and worker (`DATABASE_URL`)                                          | CONNECT; USAGE on `public`; SELECT/INSERT/UPDATE/DELETE on every table except `audit_logs` (SELECT, INSERT) and `_prisma_migrations` (none); USAGE/SELECT on sequences; default privileges for future tables |
+
+The application role is NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOREPLICATION, NOBYPASSRLS and
+NOINHERIT. It owns nothing, so it cannot ALTER, DROP or DISABLE TRIGGER on any table; it has no
+TRUNCATE (which skips row triggers), no CREATE on the schema and no TEMPORARY on the database, so
+it cannot create tables or functions (not even in `pg_temp`), and cannot set
+`session_replication_role`. PUBLIC has no rights on the database. The scoped replacement bypass
+(`ssrs.allow_term_replacement` with the term id) works for it, because the sync performs
+replacements; the retention purge flag only works for the owner.
+
+The migration creates the role without a password. `@ssrs/database`'s `dist/cli/app-role.js`
+(run as the owner: by `deploy.sh` after every migration, through `db-guard.sh` in development, by
+the test setup for `ssrs_test`) sets LOGIN and the password from `APP_DB_PASSWORD`, sending a
+SCRAM verifier, and calls `ssrs_grant_app_role()`, which re-applies every grant (needed after a
+restore, because backups are taken with `--no-privileges`). Tables created by later migrations get
+the same access through default privileges, as long as migrations run as the same owner.
+
+**What the role does not protect.** It protects the schema, the triggers and the audit log from
+a compromised api or worker. It does not protect the data itself: the app can still change or
+delete marks and enrollments through its normal rights, and, because the sync performs sheet
+replacements, it can set the scoped replacement flags for any term and so delete that term's
+score history and published schemes. Backups are the recovery for that (backlog: move
+replacement deletions into an owner-run SECURITY DEFINER function).
+
+**Requirements.** Migrations run as the owner, which needs CREATEROLE (the Docker image's
+`POSTGRES_USER` is a superuser; on a managed PostgreSQL such as RDS give the migration role
+CREATEROLE). Default privileges only cover tables created by that same owner. `prisma migrate dev`
+replays migrations in a shadow database; the role steps are skipped there.
+
+**Local development.** Until the migration is applied to `ssrs` (only with explicit approval), the
+dev app keeps connecting as the owner. Afterwards, in this order:
+
+1. `DB_GUARD_ALLOW_SSRS=yes scripts/db-guard.sh ssrs "<owner url>" pnpm db:deploy`
+2. `DB_GUARD_ALLOW_SSRS=yes scripts/db-guard.sh ssrs "<owner url>" pnpm db:app-role` (reads
+   `APP_DB_PASSWORD` from `.env`; the command only accepts `DATABASE_MIGRATION_URL`)
+3. set `DATABASE_MIGRATION_URL` to the owner URL and `DATABASE_URL` to
+   `postgresql://ssrs_app:<APP_DB_PASSWORD>@localhost:5432/ssrs` in `.env`
+
 ## 3. Implementation notes (Phase 2)
 
 - **Prisma 7.10** with preview features `partialIndexes` and `postgresqlExtensions`: citext, pg_trgm,
@@ -464,7 +507,8 @@ in the sheet. If per-session attendance is later required, add `participation_re
   - `grading_scheme_items_guard`: rejects INSERT/UPDATE/DELETE of items unless the scheme is a DRAFT.
   - `audit_logs_append_only` and `assessment_score_revisions_append_only`: reject UPDATE and
     DELETE. A retention job may purge only after `SET LOCAL ssrs.allow_append_only_purge = 'on'`
-    inside its transaction.
+    inside its transaction, and only when connected as the table's owner (since migration
+    `20261118120000_app_role`; any session can set the flag, so it no longer helps the app role).
   - Sheet replacement (migration `20261114120000_term_replacement`): inside a transaction with
     `ssrs.allow_term_replacement = 'on'` and `ssrs.replacement_term_id = <term id>` (both
     transaction-local, `set_config(..., true)`), score revisions, non-draft schemes and their items

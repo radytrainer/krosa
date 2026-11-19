@@ -1,4 +1,5 @@
-# Build context for the production Dockerfile: sources only, never local builds or secrets.
+# Build context for the production Dockerfile: sources only, never local builds, secrets, data or
+# test output. Anything listed here can never reach an image layer.
 **/node_modules
 **/dist
 **/.next
@@ -11,10 +12,28 @@
 .github
 .vscode
 .idea
-.env
-.env.*
-!.env.example
-secrets
-backups
-*.pem
-*service-account*.json
+.claude
+
+# Environment files and credentials (the templates are not needed in images either)
+**/.env
+**/.env.*
+**/secrets
+**/*.pem
+**/*.key
+**/id_*
+**/*service-account*.json
+**/*credentials*.json
+**/.docker
+
+# Database dumps and backups (may hold real student data)
+**/backups
+**/*.dump
+**/*.dump.age
+**/*.age
+**/*.agekey
+**/*.sql.gz
+
+# Local working folders
+reports
+research_notes
+**/*.log
