@@ -19,6 +19,10 @@ export function buildCsp(nonce: string, dev: boolean): string {
     "img-src 'self' data: blob:",
     "font-src 'self'",
     `connect-src 'self'${dev ? ' ws:' : ''}`,
+    // The service worker (public/sw.js). Needed explicitly: with 'strict-dynamic' in script-src,
+    // browsers ignore 'self' there, and workers would otherwise fall back to script-src.
+    "worker-src 'self'",
+    "manifest-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",

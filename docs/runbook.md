@@ -173,6 +173,47 @@ Signs: the disk check fails (healthchecks.io email, `journalctl -u ssrs-disk`), 
 6. Still full: grow the volume (EC2 → Volumes → Modify → larger size), then on the server
    `growpart /dev/nvme0n1 1 && resize2fs /dev/nvme0n1p1` (check the device with `lsblk`).
 
+## Service worker
+
+The web app installs a service worker (`apps/web/public/sw.js`) so it can be added to a phone's
+home screen and shows an offline page. It caches only the build's static files, the icons and
+`/offline.html`. It never stores pages, `/api/*` responses or user data. Signing out, an idle
+sign-out and "signed in elsewhere" clear its caches.
+
+**New release:** nothing to do. Each build registers `/sw.js?v=<build id>`, and `/sw.js` is served
+with `Cache-Control: no-cache`. A browser's next visit installs the new worker, which takes over
+at once and deletes the previous build's cache.
+
+**Kill switch** (a broken worker sticks, pages fail to load or show old files):
+
+1. Replace the whole of `apps/web/public/sw.js` with:
+
+   ```js
+   // Kill switch: removes this service worker and every cache. It handles no requests, so pages
+   // load straight from the network; it never reloads them (no loop if step 2 is missed).
+   self.addEventListener('install', () => self.skipWaiting());
+   self.addEventListener('activate', (event) => {
+     event.waitUntil(
+       (async () => {
+         for (const key of await caches.keys()) await caches.delete(key);
+         await self.registration.unregister();
+       })(),
+     );
+   });
+   ```
+
+2. In `apps/web/src/lib/pwa.ts`, set `SERVICE_WORKER_ENABLED = false`. Pages then unregister the
+   worker and clear its caches instead of registering it. Ship steps 1 and 2 **in the same
+   deploy**: with step 1 alone, each page load registers the kill switch again (harmless, but
+   wasted work).
+3. Deploy as usual. Browsers check `/sw.js` on their next visit (it is never served from a cache),
+   get the kill switch, and drop the worker. No one needs to clear anything by hand.
+4. Leave both in place for at least two weeks, so that rarely used browsers get the kill switch.
+   Then fix the worker, restore `sw.js` and the flag, and deploy again.
+
+To check one browser: DevTools → Application → Service workers (should be empty after the kill
+switch) and Cache storage (no `krosa-static-*` caches).
+
 ## Server lost
 
 Launch a new instance (checklist steps 6, 11–16) and move the Elastic IP to it (EC2 → Elastic IPs

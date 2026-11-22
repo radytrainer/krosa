@@ -9,6 +9,13 @@ import { createPrismaClient } from '@ssrs/database';
 import { loadRootEnv } from '@ssrs/shared/node';
 import { E2E } from '../support/stack.js';
 import { testStudentPassword } from '../support/credentials.js';
+import {
+  cacheContents,
+  expectCachesCleared,
+  forbiddenEntries,
+  plantCacheMarker,
+  waitForWorker,
+} from '../support/pwa.js';
 
 /**
  * The core journey, end to end through the real web app, API, queue and worker (only the Google
@@ -1000,9 +1007,16 @@ test('12. the student cannot reach admin pages or data, then signs out', async (
   await expect(student).toHaveURL(/\/student$/);
   const response = await student.request.get('/api/v1/admin/students');
   expect(response.status()).toBe(403);
+  // PWA: after the student's results were viewed, the service worker holds no API response or
+  // page; signing out clears its caches (the marker proves it).
+  await student.goto('/student/results');
+  await waitForWorker(student);
+  expect(forbiddenEntries(await cacheContents(student))).toEqual([]);
+  await plantCacheMarker(student);
   await student.getByRole('button', { name: 'Sign out' }).click();
   await expect(student).toHaveURL(/\/login$/);
   expect((await student.request.get('/api/v1/student/me')).status()).toBe(401);
+  await expectCachesCleared(student);
 });
 
 test('13. a first sheet connected from the Edit term form is read once, by itself', async () => {

@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { connection } from 'next/server';
 import { Geist, Geist_Mono } from 'next/font/google';
 import { Providers } from '@/components/providers';
@@ -20,7 +20,15 @@ export const metadata: Metadata = {
     template: '%s · Student Score Record System',
   },
   description: 'Academic results for students and administrators.',
+  // Installed on an iPhone home screen: the app's name under the icon, and a light status bar.
+  appleWebApp: { capable: true, title: 'PNC Scores', statusBarStyle: 'default' },
 };
+
+/**
+ * Browser and installed-app title bar colour: the light page background (globals.css
+ * --background). The app always renders light (nothing sets the `.dark` class), so no dark value.
+ */
+export const viewport: Viewport = { themeColor: '#f8fafc' };
 
 /**
  * Pages are rendered per request, never served from a prerendered shell: the CSP nonce set in
