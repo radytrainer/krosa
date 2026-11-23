@@ -96,3 +96,15 @@ Start with **one generation** before moving the whole school onto the system.
 
 **Roll back the pilot** at any point with _Hide scores_ on the term (students then see nothing) or
 disabling the accounts; the spreadsheets remain the source of truth throughout.
+
+## 6. Note for students: the app on your phone
+
+Hand this to students with their first password.
+
+- **Install it:** on Android (Chrome), open the site and tap _Install_ (or ⋮ → _Add to home
+  screen_). On an iPhone (Safari), tap _Share_ → _Add to Home Screen_.
+- **iPhone:** the home-screen app and Safari count as **two separate browsers**. You can be signed
+  in on only one at a time: signing in on one signs you out of the other. Use one of them.
+- **Shared phone or computer:** always tap _Sign out_ when you finish. Nothing about your results
+  is kept on the device.
+- **No connection:** the app shows an "offline" page. Your results need the internet.

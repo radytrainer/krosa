@@ -6,6 +6,7 @@ import { createPrismaClient } from '@ssrs/database';
 import { loadRootEnv } from '@ssrs/shared/node';
 import { API_URL, E2E, ROOT, WEB_URL, serviceEnv } from '../support/stack.js';
 import { testPassword } from '../support/credentials.js';
+import { expectCachesCleared, plantCacheMarker, waitForWorker } from '../support/pwa.js';
 
 /**
  * Session rules in the browser (QA): one session per user (Rule A) and the inactivity logout
@@ -265,6 +266,8 @@ test('A1 student: browser A is signed out with the message, no click, when brows
   const saved = await jarOf(a.context);
   expect((await call(saved, 'GET', '/student/me')).status).toBe(200);
   const auditBefore = await prisma.auditLog.count({ where: { action: 'auth.sessions.replaced' } });
+  await waitForWorker(a.page);
+  await plantCacheMarker(a.page);
 
   const b = await browser.newContext();
   const bPage = await b.newPage();
@@ -275,6 +278,7 @@ test('A1 student: browser A is signed out with the message, no click, when brows
   await expect(a.page.getByText(ELSEWHERE)).toBeVisible({ timeout: 10_000 });
   await expect(a.page).toHaveURL(/\/login\?reason=elsewhere$/);
   const shownMs = Date.now() - t0;
+  await expectCachesCleared(a.page);
   console.log(
     `[A1] A on login after ${shownMs} ms of B's sign-in click; navigations`,
     JSON.stringify(navs),
@@ -587,6 +591,8 @@ test('B3 the only tab hidden past the limit: no heartbeat while hidden, and comi
   test.setTimeout((IDLE + 90) * 1000);
   const a = await studentPage(browser, S2);
   const saved = await jarOf(a.context);
+  await waitForWorker(a.page);
+  await plantCacheMarker(a.page);
   const w = watch(a.context);
   const t0 = Date.now();
   const navs = loginNavigations(a.page, t0);
@@ -610,6 +616,7 @@ test('B3 the only tab hidden past the limit: no heartbeat while hidden, and comi
     .catch(() => undefined);
   await expect(a.page.getByText(IDLE_TEXT)).toBeVisible();
   await expect(a.page).toHaveURL(/\/login\?reason=idle$/);
+  await expectCachesCleared(a.page);
   console.log(`[B3] heartbeats while hidden=${hidden}; login navigations`, JSON.stringify(navs));
   // Heartbeats sent while hidden before the session ended (any after the sign-out are irrelevant).
   expect(hidden).toBe(0);

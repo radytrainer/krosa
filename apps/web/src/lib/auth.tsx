@@ -13,6 +13,7 @@ import {
 } from 'react';
 import { ApiError, apiFetch, isCurrentSession, onSessionEnded } from './api';
 import { startHeartbeat } from './heartbeat';
+import { clearAppCaches } from './pwa';
 import { broadcastEnded, isCurrentSessionHash, startSessionLive } from './session-live';
 import type { Me, Role, SessionEndReason } from './types';
 
@@ -116,12 +117,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   /**
    * Revokes the session, then reloads the page at /login. A full load (not client navigation)
    * discards every cached query and every kept-alive page, so nothing of this user's data
-   * survives in the tab for the next person on a shared computer.
+   * survives in the tab for the next person on a shared computer. The service worker's caches
+   * (static files only) are cleared too.
    */
   const signOut = useCallback(async () => {
     ending.current = true; // the live connection's `ended` for this logout is expected
     await apiFetch('/auth/logout', { method: 'POST' }).catch(() => undefined);
     queryClient.clear();
+    await clearAppCaches();
     window.location.replace('/login');
   }, [queryClient]);
 
@@ -133,8 +136,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (returnTo: string) => {
       // A session end in progress loads the login page with its reason instead.
       if (ending.current || settling.current) return;
+      ending.current = true;
       queryClient.clear();
-      window.location.replace(`/login?next=${encodeURIComponent(returnTo)}`);
+      void clearAppCaches().then(() =>
+        window.location.replace(`/login?next=${encodeURIComponent(returnTo)}`),
+      );
     },
     [queryClient],
   );
@@ -173,6 +179,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       ending.current = true;
       if (!fromOtherTab) await broadcastEnded(reason, source.marker).catch(() => undefined);
       queryClient.clear();
+      await clearAppCaches();
       window.location.replace(loginUrlFor(reason));
     },
     [queryClient],

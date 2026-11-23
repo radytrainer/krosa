@@ -136,7 +136,14 @@ needs them for checks, tab detection and previews.
 - Web: CSP set per request in `apps/web/src/proxy.ts`: `script-src 'self' 'nonce-…' 'strict-dynamic'`
   (fresh nonce per request; Next.js stamps it on its own scripts), `style-src 'self' 'unsafe-inline'`
   (toast and chart libraries inject `<style>` at runtime), `object-src 'none'`, `base-uri 'self'`,
-  `form-action 'self'`, `frame-ancestors 'none'`, `connect-src 'self'`. Because a nonce only exists at
+  `form-action 'self'`, `frame-ancestors 'none'`, `connect-src 'self'`, `worker-src 'self'` and
+  `manifest-src 'self'` (the installable app: `'strict-dynamic'` makes browsers ignore `'self'` in
+  `script-src`, so the service worker needs its own directive). The service worker caches only
+  static build files, the icons and the offline page, never pages or API responses, and its caches
+  are cleared on every sign-out (runbook.md "Service worker"). Accepted risk: `worker-src 'self'`
+  lets script that already runs on the origin register any same-origin JavaScript as a worker that
+  outlives a reload; it needs an XSS first (still blocked by the nonce), and the origin serves no
+  user-supplied scripts. Because a nonce only exists at
   request time, pages are rendered per request (root layout: `connection()` + `instant = false`); a
   prerendered shell would carry no nonce. Subresource Integrity alone was tried and rejected: it
   covers script files but not the inline scripts Next.js uses to stream page data. Plus

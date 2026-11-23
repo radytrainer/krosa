@@ -1,11 +1,12 @@
 'use client';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Toaster } from '@/components/ui/sonner';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ApiError } from '@/lib/api';
 import { AuthProvider } from '@/lib/auth';
+import { registerServiceWorker } from '@/lib/pwa';
 
 function makeQueryClient(): QueryClient {
   return new QueryClient({
@@ -23,6 +24,10 @@ function makeQueryClient(): QueryClient {
 
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(makeQueryClient);
+  // Installable app: the worker stores static files only (src/lib/pwa.ts).
+  useEffect(() => {
+    void registerServiceWorker();
+  }, []);
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
